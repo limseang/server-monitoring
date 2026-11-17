@@ -95,13 +95,13 @@ export default {
     const serversUp = computed(() => (data.value?.servers || []).filter((s) => s.status === 'up').length);
     const healthy = computed(() => (data.value?.projects || []).filter((p) => p.deployments.find((d) => d.is_active)?.health === 'up').length);
     const icon = { error: '✖', warn: '⚠', info: 'ℹ' };
-    return { data, errors, problems, serversUp, healthy, icon, addServer: () => openDialog('server'), addProject: () => openDialog('project'), newApp: () => openDialog('template-project') };
+    return { data, errors, problems, serversUp, healthy, icon, addServer: () => openDialog('server'), addProject: () => openDialog('project'), newApp: () => openDialog('template-project'), fromGithub: () => openDialog('template-project', { fromRepo: true }) };
   },
   template: `
   <div>
     <div class="page-head">
       <div><h1>Overview</h1><div class="sub">Your projects, the servers they run on, and what Switchboard is doing.</div></div>
-      <div class="actions admin-only"><button class="btn" @click="addServer">+ Server</button><button class="btn" @click="addProject">+ Existing app</button><button class="btn btn-primary" @click="newApp">+ New app from template</button></div>
+      <div class="actions admin-only"><button class="btn" @click="addServer">+ Server</button><button class="btn" @click="addProject">+ Existing app</button><button class="btn" @click="newApp">+ New app</button><button class="btn btn-primary" @click="fromGithub">+ Deploy from my GitHub</button></div>
     </div>
     <div v-if="!data" class="muted">Loading…</div>
     <template v-else>

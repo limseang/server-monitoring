@@ -79,6 +79,8 @@ let ports;
 
 await step('Prepare vps-ci with a small compose stack', async () => {
   await api('POST', '/auth/login', { username: 'admin', password: 'admin-password-123' });
+  // Projects that use vps-ci (left by other tests) go first, then the server itself.
+  for (const p of await api('GET', '/projects')) if (!p.parent_id && p.deployments?.some((d) => d.server_name === 'vps-ci')) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
   for (const s of await api('GET', '/servers')) if (s.name === 'vps-ci') await api('DELETE', `/servers/${s.id}`);
   const { users } = await api('GET', '/users');
   for (const u of users) if (u.username === 'dev-srv') await api('DELETE', `/users/${u.id}`);

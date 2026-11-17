@@ -76,6 +76,15 @@ ssh-copy-id -i switchboard.pub root@SERVER_IP      # once per server
 
 Switchboard sees which server Cloudflare points to and marks it **LIVE**. Done! 🎉
 
+### Deploy one of your GitHub repos (also to a home server)
+
+1. **Settings → GitHub**: paste a token → **Test** (see the CI/CD guide below for the permissions).
+2. Overview → **+ Deploy from my GitHub** → pick the repository from the list. Switchboard looks at it and picks the type: a repo with its **own `docker-compose.yml`** (like this project), Laravel, Node or a static site. For a compose repo, check the port it listens on.
+3. Choose the server(s). A domain is optional — on a **home server** just leave it empty and open `http://SERVER-IP:PORT` on your network.
+4. Keep **"Switchboard deploys"** selected → **Create and deploy**.
+
+From then on, every push to that branch is deployed by itself within a minute (after its tests pass on GitHub, if you add tests in the CI/CD tab). Nothing is installed on the server for this and nothing has to reach it from the internet — Switchboard only needs to reach the server over SSH. Only commits that are really on the branch are ever deployed.
+
 ### 6. (Recommended) Get alerts
 **Settings → Alerts**: a Telegram bot token (from **@BotFather**) and your chat id (from **@userinfobot**) → **Send test message**.
 
@@ -132,8 +141,10 @@ Every backup is uploaded right after it's made; the local copy is removed about 
 <summary><b>GitHub CI/CD (self-hosted runners), staging and PR previews</b></summary>
 
 1. **Settings → GitHub**: a token → **Test**. Classic token with scopes `repo` + `workflow`, or a fine-grained token with *Administration, Contents, Workflows, Actions* (read & write) and *Pull requests* (read).
-2. Project → **CI/CD** tab → repository (`owner/name`) and live branch → **Set up CI/CD**.
-3. Push to the live branch: tests run on GitHub's machines, then the runner on each of your servers deploys that exact commit — standby servers first, the live one last, with a health check after each.
+2. Project → **CI/CD** tab → repository (`owner/name`), live branch and how commits get to your servers → **Set up CI/CD**:
+   - **Switchboard deploys** (recommended): every minute Switchboard checks the branch and deploys a new commit over SSH — after its tests pass, if you have tests. No runner, works behind NAT (home servers) and is safe for **public repos**.
+   - **GitHub runner on each server**: deploys right after the tests, and is needed for pull-request previews. ⚠️ On a **public** repo, a self-hosted runner can be targeted by strangers' pull requests — use the first mode, or require approval for outside contributors (GitHub → Settings → Actions).
+3. Push to the live branch: the commit is deployed to each server — standby servers first, the live one last, with a health check after each. A commit that is not on the branch (e.g. from a pull request) is always refused.
 
 - The runner runs as user `sb-runner` and may only run Switchboard's deploy/preview commands.
 - Your servers only need **outgoing** access to GitHub; nothing has to reach them or Switchboard from outside.

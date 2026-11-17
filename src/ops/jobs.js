@@ -345,7 +345,10 @@ defineJob('deploy', async (ctx, p) => {
         if (!dep.app_dir) ctx.warn(`${dep.server_name}: no app directory set — running in the SSH user's home directory`);
         const conn = await connectTo(ctx, getServer(dep.server_id));
         try {
-          await runRemote(ctx, conn, shellScript(script, { cwd: dep.app_dir, strict: true }), { timeout: 60 * 60000 });
+          // A deploy started from GitHub (pull mode) passes the exact commit, like the runner does.
+          const env = /^[0-9a-f]{7,40}$/.test(String(p.commit || '')) ? `export SB_COMMIT=${p.commit}; export SB_BRANCH=${shq(project.git_branch || 'main')}\n` : '';
+          if (env) ctx.log(`Commit ${p.commit.slice(0, 7)} (${project.git_branch})`);
+          await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true }), { timeout: 60 * 60000 });
         } finally {
           conn.end();
         }

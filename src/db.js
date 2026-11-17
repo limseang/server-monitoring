@@ -299,6 +299,10 @@ const MIGRATIONS = [
   ALTER TABLE backups ADD COLUMN s3_at TEXT;
   ALTER TABLE backups ADD COLUMN s3_error TEXT;
   `,
+  // v8: CI/CD deploy mode — 'runner' (GitHub self-hosted runner) or 'pull' (Switchboard deploys new commits itself)
+  `
+  ALTER TABLE projects ADD COLUMN ci_mode TEXT NOT NULL DEFAULT 'runner';
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

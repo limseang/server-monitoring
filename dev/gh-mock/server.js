@@ -128,6 +128,7 @@ http
       // ---- REST API
       if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(res, 401, { message: 'Bad credentials' });
       if (p === '/user') return send(res, 200, { login: LOGIN, name: 'Lab User' });
+      if (p === '/user/repos' && req.method === 'GET') return send(res, 200, Object.values(S.repos).map((r) => ({ ...r, description: '', pushed_at: new Date().toISOString() })));
       if (p === '/repos/actions/runner/releases/latest') {
         const v = '9.9.9';
         return send(res, 200, { tag_name: `v${v}`, assets: ['x64', 'arm64', 'arm'].map((a) => ({ name: `actions-runner-linux-${a}-${v}.tar.gz`, browser_download_url: `${SELF}/__download/runner.tgz` })) });
@@ -150,6 +151,16 @@ http
         const k = { id: S.keys[repo].length + 1, title: body.title, key: body.key.trim().split(' ').slice(0, 2).join(' '), read_only: body.read_only };
         S.keys[repo].push(k);
         return send(res, 201, k);
+      }
+      if (rest === '/branches') {
+        const out = tryGit(['-C', bare(repo), 'for-each-ref', '--format=%(refname:short)', 'refs/heads']);
+        return send(res, 200, (out || '').split('\n').filter(Boolean).map((name) => ({ name })));
+      }
+      if (rest === '/contents') {
+        const ref = url.searchParams.get('ref') || 'main';
+        const out = tryGit(['-C', bare(repo), 'ls-tree', '--name-only', ref]);
+        if (out === null) return send(res, 404, { message: 'Not Found' });
+        return send(res, 200, out.split('\n').filter(Boolean).map((name) => ({ name, type: 'file' })));
       }
       if ((m = rest.match(/^\/git\/ref\/heads\/(.+)$/))) {
         const sha = tryGit(['-C', bare(repo), 'rev-parse', '--verify', `refs/heads/${decodeURIComponent(m[1])}`]);

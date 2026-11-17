@@ -133,3 +133,41 @@ export const listOpenPulls = async (repo) => {
   const r = await gh('GET', `/repos/${repoPath(repo)}/pulls?state=open&per_page=100`);
   return Array.isArray(r) ? r : Object.values(r).filter((x) => x && typeof x === 'object' && x.number);
 };
+
+/** Repositories the token can see (newest activity first). */
+export async function listMyRepos() {
+  const out = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await gh('GET', `/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&page=${page}`);
+    const list = Array.isArray(r) ? r : [];
+    out.push(...list.map((x) => ({ full_name: x.full_name, private: !!x.private, default_branch: x.default_branch || 'main', description: x.description || '', updated_at: x.pushed_at || x.updated_at })));
+    if (list.length < 100) break;
+  }
+  return out;
+}
+
+export async function listBranches(repo) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/branches?per_page=100`);
+  return (Array.isArray(r) ? r : []).map((b) => b.name);
+}
+
+const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+
+/**
+ * Look at a repo's top-level files and guess how to run it:
+ * its own Docker Compose file → "compose", artisan → Laravel, package.json → Node, else static.
+ */
+export async function detectRepo(repo, branch) {
+  const info = await getRepo(repo);
+  const ref = branch || info.default_branch || 'main';
+  const list = await gh('GET', `/repos/${repoPath(repo)}/contents?ref=${enc(ref)}`, { okStatus: [404] });
+  const names = Array.isArray(list) ? list.map((f) => f.name) : [];
+  const compose = COMPOSE_FILES.find((n) => names.includes(n)) || null;
+  let ports = [];
+  if (compose) {
+    const f = await getFile(repo, compose, ref).catch(() => null);
+    ports = [...new Set([...(f?.content || '').matchAll(/["'\s-](?:[\d.]+:)?(\d{2,5}):\d{2,5}(?:\/tcp)?["'\s]/g)].map((m) => Number(m[1])))].filter((p) => p > 0 && p < 65536);
+  }
+  const suggest = compose ? 'compose' : names.includes('artisan') ? 'laravel' : names.includes('package.json') ? 'node' : 'static';
+  return { repo: info.full_name, private: !!info.private, default_branch: info.default_branch, branch: ref, files: names.slice(0, 60), compose, ports, suggest, empty: !names.length };
+}

@@ -1,7 +1,9 @@
 import { all, get, insert, update, now } from '../db.js';
 import { bus } from '../bus.js';
 import { alert, logEvent } from '../events.js';
-import { defineJob } from '../jobs.js';
+import { defineJob, enqueue } from '../jobs.js';
+import { config } from '../config.js';
+import { isPrivateAddress } from '../util.js';
 import { getProject, getServer, getDeployment, deploymentsOf, parseJSON } from '../models.js';
 import * as cf from '../cloudflare.js';
 import * as gh from '../github.js';
@@ -26,8 +28,35 @@ export function deployScriptFor(template, { repo, branch }) {
 }
 
 /** Columns for a new project made from a template. */
-export function templateProjectRow({ name, template, db, domain, repo, branch, env = 'production', parentId = null, extraHosts = [] }) {
+export function templateProjectRow({ name, template, db, domain, repo, branch, env = 'production', parentId = null, extraHosts = [], appPort = null, healthPath = null }) {
   const t = TEMPLATES[template];
+  if (template === 'compose') {
+    return {
+      name,
+      domain: domain || null,
+      template,
+      template_opts: JSON.stringify({ db: 'none', extra_hosts: extraHosts, app_port: appPort }),
+      git_repo: repo,
+      git_branch: branch || 'main',
+      env,
+      parent_id: parentId,
+      // Checked on the app's own port (works without a domain, e.g. a home server on your network)
+      health_scheme: 'http',
+      health_port: appPort,
+      health_path: healthPath || '/',
+      health_expect: '200-399',
+      deploy_script: [
+        '# Exact commit from CI ($SB_COMMIT), or the newest commit of the branch for a manual deploy',
+        'git fetch --prune origin',
+        `git reset --hard "\${SB_COMMIT:-origin/${branch || 'main'}}"`,
+        'docker compose up -d --build --remove-orphans',
+      ].join('\n'),
+      maintenance_on_cmd: 'true',
+      maintenance_off_cmd: 'true',
+      ci_test_on: 'none',
+      ci_test_cmd: null,
+    };
+  }
   return {
     name,
     domain: domain || null,
@@ -157,6 +186,7 @@ defineJob('provision', async (ctx, p) => {
         await pushProjectConf(ctx, conn, server, project, dep);
         if (repo) await ensureRepoAccess(ctx, conn, server, repo, { write: !pushed, addKey: gh.addDeployKey });
 
+        if (project.template === 'compose' && !repo) throw new Error('A Docker Compose project needs its GitHub repository');
         const hasCode = (await exec(conn, asRoot(server, `[ -e ${shq(`${dep.app_dir}/.git`)} ] || [ -n "$(ls -A ${shq(dep.app_dir)} 2>/dev/null)" ] && echo yes || echo no`))).stdout.trim() === 'yes';
         if (!hasCode && (!repo || !pushed)) {
           ctx.log(`Start a new ${t.label} app in ${dep.app_dir}`);
@@ -170,6 +200,8 @@ defineJob('provision', async (ctx, p) => {
         const r = await helper(ctx, conn, server, ['setup', project.slug]);
         const port = Number(r.stdout.match(/SB_PORT=(\d+)/)?.[1]) || null;
         if (port) update('deployments', dep.id, { app_port: port });
+        const cont = r.stdout.match(/SB_CONTAINER=([A-Za-z0-9][A-Za-z0-9_.-]*)/)?.[1];
+        if (cont && project.template === 'compose') update('deployments', dep.id, { app_container: cont });
         deps.push(getDeployment(dep.id));
       } finally {
         conn.end();
@@ -178,7 +210,9 @@ defineJob('provision', async (ctx, p) => {
 
     project = getProject(project.id);
     const first = deps[0];
-    if (project.domain && p.zone?.zone_id) {
+    if (project.domain && p.zone?.zone_id && !config.allowPrivateDns && isPrivateAddress(first.server_ip)) {
+      ctx.warn(`${first.server_name} has the private IP ${first.server_ip} — visitors can't reach it, so no DNS record was made. Open it on your network at http://${first.server_ip}${project.health_port ? `:${project.health_port}` : ''}/`);
+    } else if (project.domain && p.zone?.zone_id) {
       ctx.step('Cloudflare DNS');
       const records = await setupDns(ctx, project, p.zone, first.server_ip, { takeover: !!p.takeoverDns });
       if (records.length) update('projects', project.id, { dns_records: JSON.stringify(records) });
@@ -187,6 +221,11 @@ defineJob('provision', async (ctx, p) => {
     refreshDnsState(project.id).catch(() => {});
     bus.emit('state', { projectId: project.id });
     logEvent('success', `${project.name}: set up from the ${t.label} template on ${servers.map((s) => s.name).join(', ')}`, { projectId: project.id, jobId: ctx.id, user: ctx.user });
+    if (p.ci && repo && !project.parent_id) {
+      update('projects', project.id, { ci_mode: p.ci === 'runner' ? 'runner' : 'pull' });
+      const job = enqueue({ type: 'ci-setup', title: `Set up CI/CD for ${project.name}`, projectId: project.id, params: { commit: true }, user: ctx.user });
+      ctx.log(`Next: CI/CD setup (job #${job.id}) — every push to ${project.git_branch} will be deployed`);
+    }
   } catch (e) {
     alert('error', `${project.name}: setup FAILED — ${e.message}`, { projectId: project.id, jobId: ctx.id, link: `#/projects/${project.id}` });
     throw e;

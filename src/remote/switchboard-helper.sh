@@ -34,7 +34,7 @@ load() {
   [ -f "$f" ] || die "project '$1' is not set up on this server (Switchboard → project → CI/CD → Update servers)"
   SB_SLUG='' SB_NAME='' SB_DIR='' SB_USER=root SB_REPO_URL='' SB_BRANCH=main SB_GIT_SSH='' SB_TEMPLATE='' SB_DB=none
   SB_ENV=production SB_HOSTS='' SB_URL='' SB_HEALTH_PATH=/ SB_HEALTH_URL='' SB_HEALTH_HOST='' SB_PREVIEW=0 SB_PREVIEW_ZONE=''
-  SB_PREVIEW_BASE=/srv/previews
+  SB_PREVIEW_BASE=/srv/previews SB_APP_PORT=''
   # shellcheck disable=SC1090
   . "$f"
   [ -n "$SB_GIT_SSH" ] && export GIT_SSH_COMMAND="$SB_GIT_SSH"
@@ -289,6 +289,20 @@ cmd_setup() {
   fi
   [ -d "$SB_DIR" ] || die "$SB_DIR does not exist"
   [ -n "$SB_TEMPLATE" ] || { say "No template: nothing to start"; return 0; }
+  if [ "$SB_TEMPLATE" = compose ]; then
+    # The repo's own docker-compose.yml: Switchboard only starts it (and puts a domain in front).
+    if [ ! -f "$SB_DIR/.env" ] && [ -f "$SB_DIR/.env.example" ]; then
+      cp "$SB_DIR/.env.example" "$SB_DIR/.env" && chown "$SB_USER": "$SB_DIR/.env"
+      say 'Created .env from .env.example — edit it on the server if the app needs settings'
+    fi
+    say "Build and start the containers in $SB_DIR (docker compose up -d --build)"
+    (cd "$SB_DIR" && docker compose up -d --build --remove-orphans --quiet-pull)
+    if [ -n "$SB_HOSTS" ] && [ -n "$SB_APP_PORT" ]; then edge_init; edge_site "$SB_SLUG" "$SB_APP_PORT" $SB_HOSTS; fi
+    echo "SB_PORT=$SB_APP_PORT"
+    echo "SB_CONTAINER=$(cd "$SB_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | head -n 1)"
+    if [ -n "$SB_HEALTH_URL" ]; then wait_healthy "$SB_HEALTH_HOST" "$SB_HEALTH_URL" 60 || die 'the app did not become healthy — see the container logs on the server page'; fi
+    return 0
+  fi
   [ -z "$SB_HOSTS" ] || edge_init
   stack_files "$SB_DIR"
   port=$(port_for "$SB_SLUG")
@@ -330,6 +344,11 @@ cmd_deploy() {
   [ -z "$commit" ] || [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]] || die "bad commit: $commit"
   [ -s "$script" ] || die "no deploy script for $SB_SLUG (project Settings → Deploy script)"
   [ -d "$SB_DIR" ] || die "$SB_DIR does not exist"
+  # Only commits that are on the project's branch: a pull request's code can never be deployed here.
+  if [ -n "$commit" ] && [ -n "$SB_REPO_URL" ] && [ -d "$SB_DIR/.git" ]; then
+    git_u "$SB_DIR" fetch -q origin "+refs/heads/$SB_BRANCH:refs/remotes/origin/$SB_BRANCH"
+    git_u "$SB_DIR" merge-base --is-ancestor "$commit" "origin/$SB_BRANCH" 2>/dev/null || die "commit ${commit:0:7} is not on branch $SB_BRANCH — refusing to deploy it"
+  fi
   say "Deploy $SB_NAME${commit:+ at ${commit:0:7}} in $SB_DIR (as $SB_USER)"
   # The script is passed on stdin, so the app user never needs to read /etc/switchboard.
   # (GIT_SSH_COMMAND, when set, is exported by load and passed on to the script.)

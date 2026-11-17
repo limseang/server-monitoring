@@ -14,7 +14,7 @@ import { asRoot, runRemote, shq } from './remote.js';
  *   /etc/switchboard/projects/<slug>.deploy.sh      the project's deploy script
  */
 
-export const HELPER_VERSION = '2';
+export const HELPER_VERSION = '3';
 export const HELPER = '/usr/local/bin/switchboard-helper';
 export const EDGE_IMAGE = 'nginx:1.27-alpine';
 const REMOTE_DIR = path.join(config.root, 'src/remote');
@@ -35,6 +35,15 @@ export const TEMPLATES = {
     port: 3000,
     health: '/',
     tests: 'npm ci\nnpm test --if-present',
+  },
+  compose: {
+    label: 'Docker Compose (the repo\'s own file)',
+    hint: 'For a repo that already has a docker-compose.yml (like Switchboard itself): it is cloned and started with docker compose up -d --build. Give the port the app listens on.',
+    dbs: ['none'],
+    port: null,
+    health: '/',
+    tests: '',
+    own: true, // uses the repo's own Dockerfile / compose file — Switchboard adds none
   },
   static: {
     label: 'Static site / Vue SPA',
@@ -184,6 +193,7 @@ export async function installHelper(ctx, conn, server) {
     .replaceAll('__EDGE_IMAGE__', EDGE_IMAGE);
   const cmds = ['set -e', 'mkdir -p /etc/switchboard/projects /etc/switchboard/ports', 'chmod 700 /etc/switchboard/projects', writeCmd(HELPER, helper, '755')];
   for (const [name, t] of Object.entries(TEMPLATES)) {
+    if (t.own) continue;
     const dir = `/etc/switchboard/templates/${name}`;
     cmds.push(`mkdir -p ${dir}`);
     for (const f of ['Dockerfile', 'Dockerfile.dockerignore']) cmds.push(writeCmd(`${dir}/${f}`, fs.readFileSync(path.join(REMOTE_DIR, 'templates', name, f), 'utf8')));
@@ -231,13 +241,14 @@ export function projectConf(project, dep, server) {
     SB_TEMPLATE: project.template || '',
     SB_DB: opts.db || 'none',
     SB_ENV: project.env || 'production',
-    SB_HOSTS: project.template ? projectHosts(project).join(' ') : '',
+    SB_HOSTS: project.template && !(project.template === 'compose' && !opts.app_port) ? projectHosts(project).join(' ') : '',
     SB_URL: project.domain ? `https://${project.domain}` : '',
     SB_HEALTH_PATH: project.health_path || '/',
     SB_HEALTH_URL: h.url,
     SB_HEALTH_HOST: h.host,
     SB_PREVIEW: root.preview_server_id && root.preview_server_id === server.id && project.id === root.id ? '1' : '0',
     SB_PREVIEW_ZONE: previewZone?.zone_name || '',
+    SB_APP_PORT: String(opts.app_port || ''),
   };
   return `# Switchboard project settings — written by Switchboard, don't edit.\n${Object.entries(vars)
     .map(([k, v]) => `${k}=${shq(v)}`)
