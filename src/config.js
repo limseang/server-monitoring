@@ -37,6 +37,11 @@ export const config = {
   appKey: env.APP_KEY || '',
   // Test lab only: its fake servers have private IPs. Never set this for real use.
   allowPrivateDns: env.ALLOW_PRIVATE_DNS === 'true',
+  // "Reinstall OS": the open-source reinstall tool (github.com/bin456789/reinstall), pinned to one commit.
+  reinstallRef: env.REINSTALL_REF || '54fae2067557b3c0ca49e7c9ce03bca63c793f8c',
+  // Test lab only: a fake reinstall script, and allowing it on the lab's container "servers".
+  reinstallScriptUrl: env.REINSTALL_SCRIPT_URL || '',
+  reinstallAllowContainer: env.REINSTALL_ALLOW_CONTAINER === 'true',
 };
 
 config.backupDir = path.join(config.dataDir, 'backups');

@@ -124,7 +124,7 @@ export const ServerPage = {
       load();
     }
     async function remove() {
-      const ok = await confirmBox({ title: `Remove ${s.value.name}?`, message: 'Removes it from Switchboard (and from any project where it is a standby). Nothing on the server itself changes.', confirmText: 'Remove server', danger: true, typeToConfirm: s.value.name });
+      const ok = await confirmBox({ title: `Remove ${s.value.name}?`, message: 'Removes it from Switchboard (and from any project where it is a standby). Nothing on the server itself changes — use "Reset server" to wipe it.', confirmText: 'Remove server', danger: true, typeToConfirm: s.value.name });
       if (!ok) return;
       try {
         await http.del(`/servers/${props.id}`);
@@ -136,10 +136,12 @@ export const ServerPage = {
       }
     }
     const power = (action) => openDialog('power', { server: s.value, action });
+    const reset = () => openDialog('server-reset', { server: s.value });
+    const reinstall = () => openDialog('server-reinstall', { server: s.value });
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, osUpgrade, logs, action, resetKey, remove, stateBadge, bytes, uptimeStr, fmtDate };
+    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -175,6 +177,8 @@ export const ServerPage = {
           <button class="admin-only menu-item" @click="osUpgrade">Upgrade OS (Ubuntu / Debian)…</button>
           <button class="admin-only menu-item" @click="resetKey">Reset SSH host key</button>
           <div class="menu-sep"></div>
+          <button class="admin-only menu-item danger" @click="reset">Reset server (delete everything)…</button>
+          <button class="admin-only menu-item danger" @click="reinstall">Reinstall OS (erase whole disk)…</button>
           <button class="admin-only menu-item danger" @click="remove">Remove server</button>
         </menu-btn>
       </div>

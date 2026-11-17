@@ -4,6 +4,7 @@ import { Modal, RecordsPicker, HealthPill, JobLog } from './components.js';
 import { LbSetupDialog, DbServerDialog, ScaleOutDialog, OsUpgradeDialog } from './lbdialogs.js';
 import { TemplateProjectDialog, StagingDialog } from './cicd.js';
 import { PowerDialog, PasswordDialog, PortDialog, DomainDialog } from './serverctl.js';
+import { RemoveDeploymentDialog, DeleteProjectDialog, ResetServerDialog, ReinstallDialog } from './wipedialogs.js';
 
 /* ======================================================================= SERVER */
 export const ServerDialog = {
@@ -832,6 +833,10 @@ export const DIALOGS = {
   switch: SwitchDialog,
   sync: SyncDialog,
   clone: CloneDialog,
+  'server-reset': ResetServerDialog,
+  'server-reinstall': ReinstallDialog,
+  'remove-deployment': RemoveDeploymentDialog,
+  'delete-project': DeleteProjectDialog,
   'lb-setup': LbSetupDialog,
   'db-server': DbServerDialog,
   'scale-out': ScaleOutDialog,

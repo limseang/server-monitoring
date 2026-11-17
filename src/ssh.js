@@ -46,6 +46,22 @@ function authConfig(server) {
 }
 
 /**
+ * The public key ("ssh-ed25519 AAAA…") of the private key Switchboard logs in with, or null
+ * when the server uses a password or ssh-agent.
+ */
+export function loginPublicKey(server) {
+  if (!['key', 'keyfile', undefined, null, ''].includes(server.auth_type)) return null;
+  const cfg = authConfig(server);
+  const k = ssh2.utils.parseKey(cfg.privateKey, cfg.passphrase);
+  const key = Array.isArray(k) ? k[0] : k;
+  if (!key || key instanceof Error) throw new Error(`Cannot read the SSH key of ${server.name}: ${key?.message || 'unknown format'}`);
+  return `${key.type} ${key.getPublicSSH().toString('base64')}`;
+}
+
+/** The saved SSH password (decrypted), for password logins. */
+export const loginPassword = (server) => (server.auth_type === 'password' ? authConfig(server).password : null);
+
+/**
  * Open an SSH connection. Host keys are trusted on first use and then pinned;
  * a changed host key refuses to connect (possible MITM or rebuilt server).
  */

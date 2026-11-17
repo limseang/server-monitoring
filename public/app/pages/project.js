@@ -66,24 +66,7 @@ const ProjectSettings = {
         saving.value = false;
       }
     }
-    async function del() {
-      const ok = await confirmBox({
-        title: `Delete ${p.name}?`,
-        message: 'This removes the project from Switchboard and deletes the backups stored here.\nYour servers, containers and Cloudflare records are NOT touched.',
-        confirmText: 'Delete project',
-        danger: true,
-        typeToConfirm: p.slug,
-      });
-      if (!ok) return;
-      try {
-        await http.del(`/projects/${p.id}`, { confirm: p.slug });
-        toast('Project deleted', 'success');
-        store.live++;
-        go('/');
-      } catch (e) {
-        toast(e.message, 'error');
-      }
-    }
+    const del = () => openDialog('delete-project', { project: p });
     return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE };
   },
   template: `
@@ -157,7 +140,7 @@ const ProjectSettings = {
     <div class="row gap-8"><button class="btn btn-primary" @click="save" :disabled="saving">Save settings</button></div>
 
     <div class="card card-body danger-zone">
-      <div class="row between wrap gap-12"><div><h3>Delete project</h3><div class="hint">Removes it from Switchboard only. Servers and DNS stay as they are.</div></div><button class="btn btn-danger" @click="del">Delete project</button></div>
+      <div class="row between wrap gap-12"><div><h3>Delete project</h3><div class="hint">From Switchboard only, or also from its servers (containers, volumes, files). DNS stays as it is.</div></div><button class="btn btn-danger" @click="del">Delete project</button></div>
     </div>
   </div>`,
 };
@@ -288,17 +271,7 @@ export default {
       if (!(await confirmBox({ title: 'Deploy on all servers?', message: 'Standby servers first, the live server last. Stops at the first failure.', confirmText: 'Deploy all' }))) return;
       runJob(http.post(`/projects/${props.id}/deploy`));
     }
-    async function removeDep(d) {
-      const ok = await confirmBox({ title: `Remove ${d.server_name} from ${p.value.name}?`, message: 'Only removes it from this project in Switchboard. Nothing on the server is changed.', confirmText: 'Remove', danger: true });
-      if (!ok) return;
-      try {
-        await http.del(`/deployments/${d.id}`);
-        toast('Removed', 'success');
-        load();
-      } catch (e) {
-        toast(e.message, 'error');
-      }
-    }
+    const removeDep = (d) => openDialog('remove-deployment', { project: p.value, deployment: d, onDone: load });
     const restore = (b) => openDialog('restore', { project: p.value, backup: b });
     async function reprovision() {
       if (!(await confirmBox({ title: 'Run the template setup again?', message: 'Safe to repeat: finished steps are skipped, existing .env files and data are kept. Use it after fixing a problem that stopped the first setup.', confirmText: 'Run setup' }))) return;
@@ -383,7 +356,7 @@ export default {
             <a class="menu-item" :href="'#/servers/' + d.server_id">Open server page</a>
             <div class="menu-sep"></div>
             <button v-if="!d.is_active" class="admin-only menu-item" @click="adopt(d)">Mark as live (no DNS change)</button>
-            <button class="admin-only menu-item danger" :disabled="d.is_active" @click="removeDep(d)">Remove from project</button>
+            <button class="admin-only menu-item danger" :disabled="d.is_active" @click="removeDep(d)">Remove from project…</button>
           </menu-btn>
         </div>
         <div class="row between wrap gap-8">

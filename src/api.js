@@ -10,7 +10,7 @@ import { getSetting, setSetting, publicSettings, DEFAULTS, SECRET_SETTINGS } fro
 import * as auth from './auth.js';
 import { ROLES, ROLE_INFO, requireRole } from './roles.js';
 import { bus } from './bus.js';
-import { enqueue, getJob, cancelJob, summary } from './jobs.js';
+import { enqueue, getJob, cancelJob, summary, hasActiveJob } from './jobs.js';
 import { logEvent } from './events.js';
 import {
   getServer,
@@ -32,6 +32,8 @@ import { ensureLocal, backupAvailable, removeBackupFiles } from './ops/backupsto
 import { s3Config, testS3 } from './s3.js';
 import { dockerBin, shq, asRoot } from './ops/remote.js';
 import { previewClone } from './ops/clone.js';
+import { previewReset, resetOptions, removalProblem, deleteProjectRecord } from './ops/wipe.js';
+import { previewReinstall, reinstallOptions, REINSTALL_OS } from './ops/reinstall.js';
 import { isLb, lbConfig } from './ops/lb.js';
 import { METHODS as LB_METHODS, nginxConfig } from './lb/nginx.js';
 import { cloudflareHealth } from './lb/cloudflare.js';
@@ -758,6 +760,53 @@ function cloneBusy(...ids) {
   });
 }
 
+function resetBusy(id) {
+  return all("SELECT params FROM jobs WHERE type IN ('server-reset', 'server-reinstall') AND status IN ('queued', 'running')").some((r) => parseJSON(r.params, {}).server === id);
+}
+
+api.get('/reinstall/os', (req, res) => res.json(Object.entries(REINSTALL_OS).map(([id, o]) => ({ id, label: o.label }))));
+
+api.post('/servers/:id/reinstall/preview', async (req, res) => {
+  const s = mustServer(req.params.id);
+  try {
+    res.json({ ok: true, plan: await previewReinstall(s, req.body) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.post('/servers/:id/reinstall', (req, res) => {
+  const s = mustServer(req.params.id);
+  if (str(req.body?.confirm) !== s.name) throw bad(`Type "${s.name}" to confirm`);
+  const roles = serverRoles(s.id);
+  if (roles.length) throw bad(`${s.name} is the ${roles.join(', ')}. Move that to another server first.`);
+  if (serverBusy(s.id) || cloneBusy(s.id) || resetBusy(s.id)) throw bad('A clone, OS upgrade, reset or reinstall involving this server is already running');
+  const opts = reinstallOptions(req.body);
+  const job = enqueue({ type: 'server-reinstall', title: `Reinstall ${s.name} with ${REINSTALL_OS[opts.os].label} (erase disk)`, serverId: s.id, params: { server: s.id, ...opts }, user: who(req) });
+  audit(req, 'warn', `Reinstall of ${s.name} (${s.ip}) with ${REINSTALL_OS[opts.os].label} started — the whole disk will be erased`, { serverId: s.id, jobId: job.id });
+  res.json({ job });
+});
+
+api.post('/servers/:id/reset/preview', async (req, res) => {
+  const s = mustServer(req.params.id);
+  try {
+    res.json({ ok: true, plan: await previewReset(s, req.body) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.post('/servers/:id/reset', (req, res) => {
+  const s = mustServer(req.params.id);
+  if (str(req.body?.confirm) !== s.name) throw bad(`Type "${s.name}" to confirm`);
+  const roles = serverRoles(s.id);
+  if (roles.length) throw bad(`${s.name} is the ${roles.join(', ')}. Move that to another server first.`);
+  if (serverBusy(s.id) || cloneBusy(s.id) || resetBusy(s.id)) throw bad('A clone, OS upgrade or reset involving this server is already running');
+  const job = enqueue({ type: 'server-reset', title: `Reset ${s.name} (delete everything)`, serverId: s.id, params: { server: s.id, ...resetOptions(req.body) }, user: who(req) });
+  audit(req, 'warn', `Reset of ${s.name} (${s.ip}) started — all containers, volumes and apps will be deleted`, { serverId: s.id, jobId: job.id });
+  res.json({ job });
+});
+
 api.post('/servers/:id/clone/preview', async (req, res) => {
   const { src, dst, params } = cloneInput(req);
   try {
@@ -887,13 +936,17 @@ api.put('/projects/:id', (req, res) => {
 api.delete('/projects/:id', (req, res) => {
   const p = mustProject(req.params.id);
   if (str(req.body?.confirm) !== p.slug) throw bad(`Type "${p.slug}" to confirm`);
-  const ids = [p.id, ...all('SELECT id FROM projects WHERE parent_id = ?', p.id).map((c) => c.id)];
-  const files = ids.flatMap((id) => all('SELECT * FROM backups WHERE project_id = ?', id));
-  run('DELETE FROM projects WHERE id = ?', p.id); // staging copies go with it (ON DELETE CASCADE)
-  for (const f of files) removeBackupFiles(f);
-  fs.rmSync(path.join(config.backupDir, p.slug), { recursive: true, force: true });
-  reloadSchedules();
-  audit(req, 'warn', `Project ${p.name} deleted (with ${files.length} backups)`);
+  if (bool(req.body?.remove_files)) {
+    // Also remove it from every server: runs as a job (backup → containers, volumes, folders → record).
+    if (p.parent_id) throw bad('Delete staging copies from their main project, or remove their server first');
+    if (isLb(p)) throw bad('Turn off load balancing first, then delete the project');
+    if (hasActiveJob(p.id)) throw bad('Another job of this project is running — wait for it to finish');
+    const job = enqueue({ type: 'project-delete', title: `Delete ${p.name} from Switchboard and its servers`, projectId: p.id, params: { backup: req.body?.backup !== false }, user: who(req) });
+    audit(req, 'warn', `Project ${p.name}: delete from all servers started`, { projectId: p.id, jobId: job.id });
+    return res.json({ job });
+  }
+  const r = deleteProjectRecord(p);
+  audit(req, 'warn', `Project ${p.name} deleted (with ${r.backups} backups)`);
   bus.emit('state', {});
   res.json({ ok: true });
 });
@@ -1041,6 +1094,13 @@ api.delete('/deployments/:id', (req, res) => {
   const d = mustDep(null, req.params.id);
   const p = getProject(d.project_id);
   if (p.active_deployment_id === d.id) throw bad(`${d.server_name} is the ACTIVE server of ${p.name}. Switch to another server first.`);
+  if (bool(req.body?.remove_files)) {
+    const problem = removalProblem(p, d);
+    if (problem) throw bad(problem);
+    const job = enqueue({ type: 'remove-deployment', title: `Remove ${p.name} from ${d.server_name}`, projectId: p.id, params: { deployment: d.id, backup: req.body?.backup !== false }, user: who(req) });
+    audit(req, 'warn', `Removing ${p.name} from ${d.server_name} (containers, volumes and files)`, { projectId: p.id, serverId: d.server_id, jobId: job.id });
+    return res.json({ job });
+  }
   run('DELETE FROM deployments WHERE id = ?', d.id);
   audit(req, 'warn', `${d.server_name} removed from project ${p.name}`, { projectId: p.id });
   bus.emit('state', { projectId: p.id });

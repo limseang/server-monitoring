@@ -65,7 +65,7 @@ const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const SAFE_TZ = /^[A-Za-z0-9_+\/-]{1,64}$/;
 
 /** docker command to use inside a script that already runs as root ("sudo docker" → "docker"). */
-const rootDocker = (server) =>
+export const rootDocker = (server) =>
   String(server.docker_cmd || 'docker')
     .trim()
     .replace(/^sudo(\s+-\S+)*\s+/, '') || 'docker';
@@ -212,7 +212,7 @@ async function sizes(ctx, conn, server, paths) {
 /* ------------------------------------------------------------------ plan */
 
 /** Group containers into compose stacks and work out what must be copied. */
-function buildStacks(scan) {
+export function buildStacks(scan) {
   const stacks = new Map();
   const standalone = [];
   const volByName = new Map(scan.volumes.map((v) => [v.Name, v]));

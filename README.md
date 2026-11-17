@@ -108,6 +108,10 @@ If a secret ever leaks: change the server passwords / SSH keys, database passwor
 | See what's happening on a server | Servers → a server → **Traffic** and **Logs** tabs. |
 | Point a subdomain at an app | Servers → a server → **Connect domain** (or Ports & domains tab). |
 | Deploy | Server card → **Deploy**, or push to GitHub when CI/CD is set up. |
+| Take a project off one server | Project → server card **⋯** → **Remove from project…** → "Also delete it from the server" (backs up the database first). |
+| Delete a project for good | Project → Settings → **Delete project** → "Also delete it from all servers". A final DB backup is kept in `backups/_deleted/`. |
+| Clean a server but keep its OS | Servers → a server → **More → Reset server…**. **Scan** shows what will be deleted first. |
+| Rebuild a server from zero (erase the whole disk) | Servers → a server → **More → Reinstall OS…**: fresh Debian/Ubuntu, same IP, login root with the same key/password, Docker installed. |
 
 **Good to know**
 - Use **proxied (orange cloud)** DNS records — then a switch takes effect in seconds.
@@ -164,6 +168,8 @@ Servers → a server:
 - **Shared database server**: MySQL / MariaDB / PostgreSQL + Redis on one server, reachable only by your app servers.
 - **Clone a server** (server → Clone): Docker, images, compose stacks with volumes and databases, host setup (packages, users, cron, nginx, certificates, firewall…). "Scan" shows what will be copied first.
 - **Upgrade OS**: Ubuntu LTS / Debian, one release at a time, containers restarted and health-checked afterwards.
+- **Reset a server** (server → More → Reset server): deletes every container, volume, image and compose folder, plus (optional) PM2/systemd apps, nginx sites and crontabs, GitHub runners and Switchboard's files. Keeps the OS, users, SSH and Docker, and saves the old configs to `/root/switchboard-reset-<date>.tar.gz`. Refused while the server is live for a project, a load balancer, a database server, or runs Switchboard itself.
+- **Reinstall OS** (server → More → Reinstall OS): erases the **whole disk** and installs a fresh Debian 12/13 or Ubuntu 22.04/24.04/26.04 over SSH, on any provider (DigitalOcean, AWS, home servers). Uses the open-source [bin456789/reinstall](https://github.com/bin456789/reinstall) tool pinned to one commit (`REINSTALL_REF` to change it). Afterwards: user root with the same SSH key or password, same SSH port, new host key pinned, Docker installed. Takes 5–20 minutes. If it is cancelled before the reboot, the prepared installer is cancelled again. If the installer can't bring the network up (rare), you need the provider's web console (or a screen and keyboard for a home server) — try it on a spare server first.
 </details>
 
 <details>
@@ -211,7 +217,7 @@ The `dev/` folder has a complete **test lab** — fake servers, fake Cloudflare,
 ./dev/setup.sh                       # starts the lab → http://localhost:8090 (admin / admin-password-123)
 node dev/e2e.mjs                     # switch, copy, backup/restore, failover, alerts, deploy
 node dev/e2e-extra.mjs               # PostgreSQL, MariaDB, failed import rollback
-./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-lb.mjs, e2e-os.mjs)
+./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs)
 ./dev/ci-setup.sh && node dev/e2e-ci.mjs         # templates, CI/CD, staging, previews (also e2e-server.mjs, e2e-traffic.mjs)
 docker compose -f dev/docker-compose.yml --profile s3 up -d s3 && node dev/e2e-s3.mjs   # S3 backups
 docker compose -f dev/docker-compose.yml down -v # remove the lab
