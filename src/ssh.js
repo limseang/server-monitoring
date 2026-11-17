@@ -173,7 +173,10 @@ export function exec(conn, command, { stdin, pipeTo, onStdout, onStderr, signal,
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('Cancelled'));
     // First line on stderr = the shell's PID, which is also its process-group id. Stripped from the output below.
-    const wrapped = `printf '\\036SBPGID %s\\n' "$$" >&2; ${command}`;
+    // Then the command runs in bash (or sh), NOT in the user's login shell: with zsh (oh-my-zsh) or fish,
+    // `docker inspect $ids` gets no word splitting, `set -o pipefail` differs, etc. `exec` keeps the same
+    // PID, and this line itself works in sh, bash, zsh and fish. The command is sent only once (size limits).
+    const wrapped = `printf '\\036SBPGID %s\\n' "$$" >&2; exec "$(command -v bash || echo sh)" -c ${shq(command)}`;
     conn.exec(wrapped, (err, stream) => {
       if (err) return reject(err);
       const out = [];

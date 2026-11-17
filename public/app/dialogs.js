@@ -287,6 +287,7 @@ export const DeploymentDialog = {
             </tr>
           </tbody></table>
         </div>
+        <div v-else-if="found && found.error" class="result err">Could not read the containers: {{ found.error }}</div>
         <div v-else-if="found" class="muted small">No running containers found.</div>
         <div v-else class="hint">Scan to auto-fill the fields below from the running Docker containers.</div>
         <template v-if="hostApps.length">
