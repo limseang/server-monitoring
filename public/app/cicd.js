@@ -1,5 +1,5 @@
 import { ref, reactive, computed, watch, onMounted } from '/vendor/vue.js';
-import { store, http, toast, closeDialog, go, showJob, runJob, confirmBox, openDialog, fmtDate } from './lib.js';
+import { store, http, toast, closeDialog, go, showJob, runJob, confirmBox, openDialog, fmtDate, isPrivateIp } from './lib.js';
 
 /* ------------------------------------------------------------------ Cloudflare zone picker */
 export const ZoneSelect = {
@@ -42,30 +42,67 @@ export const ZoneSelect = {
 
 /* ------------------------------------------------------------------ new project from a template */
 export const TemplateProjectDialog = {
+  props: { fromRepo: Boolean },
   components: { ZoneSelect },
-  setup() {
+  setup(props) {
     const info = ref(null);
     const servers = ref([]);
-    const f = reactive({ template: 'laravel', db: 'mysql', name: '', domain: '', www: true, zone: null, servers: [], code: 'new', repo: '', branch: 'main', privateRepo: true, takeoverDns: false });
+    const repos = ref(null);
+    const detected = ref(null);
+    const detecting = ref(false);
+    const f = reactive({ template: 'laravel', db: 'mysql', name: '', domain: '', www: true, zone: null, servers: [], code: props.fromRepo ? 'repo' : 'new', repo: '', branch: 'main', privateRepo: true, takeoverDns: false, app_port: '', health_path: '/', ci: 'pull' });
     const busy = ref(false);
+    let pickedTemplate = false;
     onMounted(async () => {
       [info.value, servers.value] = await Promise.all([http.get('/templates'), http.get('/servers')]);
       if (!info.value.github) f.code = 'none';
       if (servers.value.length === 1) f.servers = [servers.value[0].id];
+      if (info.value.github) repos.value = await http.get('/github/repos').catch(() => []);
     });
     const tpl = computed(() => info.value?.templates.find((t) => t.id === f.template));
-    watch(() => f.template, () => {
+    const chooseTemplate = (id) => {
+      pickedTemplate = true;
+      f.template = id;
+    };
+    watch(() => f.template, (t) => {
       if (tpl.value && !tpl.value.dbs.includes(f.db)) f.db = tpl.value.dbs[0];
+      if (t === 'compose' && f.code !== 'repo') f.code = 'repo';
     });
+    const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     watch(() => f.name, (n, old) => {
-      const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      if (f.code !== 'new') return;
       if (!f.repo || f.repo.endsWith(`/${slug(old || '')}`)) f.repo = f.repo.includes('/') ? `${f.repo.split('/')[0]}/${slug(n)}` : slug(n) ? `your-name/${slug(n)}` : '';
     });
+    // Existing repo picked → look at it: branches, type, port.
+    let timer = null;
+    async function detect() {
+      if (f.code !== 'repo' || !/^[\w.-]+\/[\w.-]+$/.test(f.repo)) return;
+      detecting.value = true;
+      try {
+        const d = await http.get(`/github/repo-info?repo=${encodeURIComponent(f.repo)}`);
+        detected.value = d;
+        f.branch = d.default_branch || 'main';
+        if (!pickedTemplate) f.template = d.suggest;
+        if (d.ports.length && !f.app_port) f.app_port = d.ports[0];
+        if (!f.name) f.name = d.repo.split('/')[1].replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      } catch (e) {
+        detected.value = { error: e.message };
+      } finally {
+        detecting.value = false;
+      }
+    }
+    watch(() => [f.repo, f.code], () => {
+      detected.value = null;
+      clearTimeout(timer);
+      timer = setTimeout(detect, 500);
+    });
+    const privateServer = computed(() => f.servers.map((id) => servers.value.find((x) => x.id === id)).filter(Boolean).some((x) => isPrivateIp(x.ip)));
     const toggle = (id) => (f.servers = f.servers.includes(id) ? f.servers.filter((x) => x !== id) : [...f.servers, id]);
+    const ready = computed(() => f.name && f.servers.length && (f.code === 'none' || f.repo) && (f.template !== 'compose' || f.app_port));
     async function create() {
       busy.value = true;
       try {
-        const r = await http.post('/projects/from-template', f);
+        const r = await http.post('/projects/from-template', { ...f, ci: f.code === 'none' ? '' : f.ci });
         closeDialog();
         store.live++;
         go(`/projects/${r.project.id}`);
@@ -76,60 +113,95 @@ export const TemplateProjectDialog = {
         busy.value = false;
       }
     }
-    return { info, servers, f, tpl, toggle, busy, create, closeDialog };
+    return { info, servers, repos, detected, detecting, f, tpl, chooseTemplate, toggle, privateServer, ready, busy, create, closeDialog };
   },
   template: `
-  <modal title="New project from a template" size="lg" @close="closeDialog">
+  <modal :title="fromRepo ? 'Deploy a repo from my GitHub' : 'New app'" size="lg" @close="closeDialog">
     <div v-if="!info" class="muted">Loading…</div>
     <div v-else class="form">
-      <p class="muted" style="margin:0">Switchboard sets up everything: Docker, the app and its database, a web proxy, the Cloudflare DNS record and (optionally) a new GitHub repository. Then turn on CI/CD in the project's <b>CI/CD</b> tab.</p>
+      <p class="muted" style="margin:0">Switchboard puts the app on your server(s): Docker, the containers, (optionally) a domain with HTTPS through Cloudflare — and deploys every new push.</p>
+
       <div class="fieldset">
-        <div class="fieldset-title">1. What kind of app?</div>
-        <div class="seg"><button v-for="t in info.templates" :key="t.id" type="button" :class="{ on: f.template === t.id }" @click="f.template = t.id">{{ t.label }}</button></div>
+        <div class="fieldset-title">1. Code</div>
+        <div class="seg" style="align-self:flex-start">
+          <button type="button" :class="{ on: f.code === 'repo' }" :disabled="!info.github" @click="f.code = 'repo'">My GitHub repository</button>
+          <button type="button" :class="{ on: f.code === 'new' }" :disabled="!info.github || f.template === 'compose'" @click="f.code = 'new'">New GitHub repository</button>
+          <button type="button" :class="{ on: f.code === 'none' }" :disabled="f.template === 'compose'" @click="f.code = 'none'">No repository (starter app)</button>
+        </div>
+        <div v-if="!info.github" class="hint text-amber">Add a GitHub token in Settings → GitHub to use your repositories and CI/CD.</div>
+        <template v-if="f.code === 'repo'">
+          <div class="form-row">
+            <div class="field"><label>Repository</label>
+              <input v-model.trim="f.repo" class="code" list="sb-my-repos" :placeholder="repos ? 'start typing… (' + repos.length + ' repos)' : 'owner/name'">
+              <datalist id="sb-my-repos"><option v-for="r in repos || []" :key="r.full_name" :value="r.full_name">{{ r.private ? 'private' : 'public' }}{{ r.description ? ' — ' + r.description : '' }}</option></datalist></div>
+            <div class="field"><label>Branch to deploy</label>
+              <select v-if="detected && detected.branches && detected.branches.length" v-model="f.branch"><option v-for="b in detected.branches" :key="b" :value="b">{{ b }}</option></select>
+              <input v-else v-model="f.branch" class="code" placeholder="main"></div>
+          </div>
+          <div v-if="detecting" class="hint"><span class="spinner"></span> Looking at the repository…</div>
+          <div v-else-if="detected && detected.error" class="hint text-red">{{ detected.error }}</div>
+          <div v-else-if="detected" class="detect-box"><icon name="check" />
+            <span><b>{{ detected.repo }}</b> · {{ detected.private ? 'private' : 'public' }} ·
+              <template v-if="detected.compose">has <code>{{ detected.compose }}</code>{{ detected.ports.length ? ' (ports ' + detected.ports.join(', ') + ')' : '' }}</template>
+              <template v-else-if="detected.suggest === 'laravel'">Laravel app</template><template v-else-if="detected.suggest === 'node'">Node.js app</template><template v-else>static files</template>
+              → <b>{{ (info.templates.find(t => t.id === detected.suggest) || {}).label }}</b></span></div>
+        </template>
+        <div class="form-row" v-if="f.code === 'new'">
+          <div class="field"><label>New repository (owner/name)</label><input v-model="f.repo" class="code" placeholder="acme/shop"></div>
+          <div class="field"><label>Branch</label><input v-model="f.branch" class="code" placeholder="main"></div>
+        </div>
+        <label v-if="f.code === 'new'" class="check"><input type="checkbox" v-model="f.privateRepo"><span class="check-text">Private repository</span></label>
+      </div>
+
+      <div class="fieldset">
+        <div class="fieldset-title">2. What kind of app?</div>
+        <div class="seg"><button v-for="t in info.templates" :key="t.id" type="button" :class="{ on: f.template === t.id }" @click="chooseTemplate(t.id)">{{ t.label }}</button></div>
         <div class="hint">{{ tpl && tpl.hint }}</div>
         <div v-if="tpl && tpl.dbs.length > 1" class="field"><label>Database</label>
           <div class="seg" style="align-self:flex-start"><button v-for="d in tpl.dbs" :key="d" type="button" :class="{ on: f.db === d }" @click="f.db = d">{{ info.dbs[d] }}</button></div></div>
-      </div>
-      <div class="fieldset">
-        <div class="fieldset-title">2. Name and address</div>
-        <div class="form-row">
-          <div class="field"><label>Project name</label><input v-model="f.name" placeholder="Home Electric Shop"></div>
-          <div class="field"><label>Domain</label><input v-model="f.domain" class="code" placeholder="shop.example.com"></div>
+        <div v-if="f.template === 'compose'" class="form-row">
+          <div class="field"><label>Port the app listens on</label><input v-model.number="f.app_port" class="code" placeholder="8080"><span class="hint">The left side of <code>ports: ["8080:8080"]</code> in its compose file.</span></div>
+          <div class="field"><label>Health check page</label><input v-model="f.health_path" class="code" placeholder="/"><span class="hint">A page that answers 200 when the app works.</span></div>
         </div>
+      </div>
+
+      <div class="fieldset">
+        <div class="fieldset-title">3. Name and address</div>
+        <div class="form-row">
+          <div class="field"><label>Project name</label><input v-model="f.name" placeholder="My App"></div>
+          <div class="field"><label>Domain <span class="muted">(optional)</span></label><input v-model="f.domain" class="code" placeholder="app.example.com"></div>
+        </div>
+        <div v-if="privateServer" class="hint text-amber">A chosen server is on a private network (e.g. your home): no domain needed — open the app at <code>http://SERVER-IP:{{ f.app_port || 'PORT' }}</code> on your network. Deploys still work: Switchboard reaches the server, nothing has to reach it from outside.</div>
         <div class="form-row" v-if="f.domain">
           <div class="field"><label>Cloudflare zone (creates the DNS record)</label><zone-select v-model="f.zone" :domain="f.domain" optional /></div>
           <div class="field"><label>&nbsp;</label>
             <label class="check"><input type="checkbox" v-model="f.www"><span class="check-text">Also <code>www.{{ f.domain }}</code></span></label>
-            <label class="check"><input type="checkbox" v-model="f.takeoverDns"><span class="check-text">If the record already exists, point it to the new server<span class="hint">Off = the existing record is linked but not changed (switch later).</span></span></label></div>
+            <label class="check"><input type="checkbox" v-model="f.takeoverDns"><span class="check-text">If the record already exists, point it to the new server</span></label></div>
         </div>
       </div>
-      <div class="fieldset">
-        <div class="fieldset-title">3. Code</div>
-        <div class="seg" style="align-self:flex-start">
-          <button type="button" :class="{ on: f.code === 'new' }" :disabled="!info.github" @click="f.code = 'new'">New GitHub repository</button>
-          <button type="button" :class="{ on: f.code === 'repo' }" :disabled="!info.github" @click="f.code = 'repo'">My existing GitHub repository</button>
-          <button type="button" :class="{ on: f.code === 'none' }" @click="f.code = 'none'">No repository (starter app)</button>
-        </div>
-        <div v-if="!info.github" class="hint text-amber">Add a GitHub token in Settings → GitHub to use repositories and CI/CD.</div>
-        <div class="form-row" v-if="f.code !== 'none'">
-          <div class="field"><label>Repository (owner/name)</label><input v-model="f.repo" class="code" placeholder="acme/shop"></div>
-          <div class="field"><label>Branch</label><input v-model="f.branch" class="code" placeholder="main"></div>
-        </div>
-        <label v-if="f.code === 'new'" class="check"><input type="checkbox" v-model="f.privateRepo"><span class="check-text">Private repository</span></label>
-        <div class="hint" v-if="f.code === 'new'">Switchboard creates the repository, starts a fresh {{ tpl && tpl.label }} app in it and pushes the first commit.</div>
-        <div class="hint" v-else-if="f.code === 'repo'">Each server gets its own read-only deploy key. If the repo has no <code>compose.switchboard.yml</code>, the template's Docker files are added on the server only (not committed).</div>
-        <div class="hint" v-else>A small starter app is created on the server. You can connect a repository later.</div>
-      </div>
+
       <div class="fieldset">
         <div class="fieldset-title">4. Servers</div>
         <div v-if="!servers.length" class="hint">Add a server first (Servers → Add server).</div>
         <div class="chips"><button v-for="s in servers" :key="s.id" type="button" class="chip" :class="{ on: f.servers.includes(s.id) }" @click="toggle(s.id)">{{ s.name }} <span class="muted mono">{{ s.ip }}</span></button></div>
-        <div class="hint">The first one becomes the live server, the others are standbys. Docker is installed if missing. The app goes in <code>/srv/&lt;project&gt;</code>; ports 80/443 are served by the server's nginx, or a small nginx container if there is none.</div>
+        <div class="hint">The first one becomes the live server. Docker is installed if missing; the app goes in <code>/srv/&lt;project&gt;</code>.</div>
+      </div>
+
+      <div class="fieldset" v-if="f.code !== 'none'">
+        <div class="fieldset-title">5. Deploy on every push</div>
+        <div class="seg" style="align-self:flex-start">
+          <button type="button" :class="{ on: f.ci === 'pull' }" @click="f.ci = 'pull'">Switchboard deploys (recommended)</button>
+          <button type="button" :class="{ on: f.ci === 'runner' }" @click="f.ci = 'runner'">GitHub runner on the server</button>
+          <button type="button" :class="{ on: f.ci === '' }" @click="f.ci = ''">Not now</button>
+        </div>
+        <div class="hint" v-if="f.ci === 'pull'">Switchboard checks GitHub every minute and deploys each new commit on <code>{{ f.branch }}</code> to your servers. Nothing to install on the servers; works for home servers and public repos.</div>
+        <div class="hint" v-else-if="f.ci === 'runner'">A GitHub Actions runner on each server deploys right after the tests. <span v-if="detected && !detected.private" class="text-amber">This repo is public — strangers' pull requests could target a self-hosted runner. Prefer "Switchboard deploys".</span></div>
+        <div class="hint" v-else>You can turn it on later in the project's CI/CD tab.</div>
       </div>
     </div>
     <template #footer>
       <button class="btn btn-ghost" @click="closeDialog">Cancel</button>
-      <button class="btn btn-primary" @click="create" :disabled="busy || !f.name || !f.servers.length || (f.code !== 'none' && !f.repo)">Create and set up</button>
+      <button class="btn btn-primary" @click="create" :disabled="busy || !ready">Create and deploy</button>
     </template>
   </modal>`,
 };
@@ -198,7 +270,7 @@ export const CicdTab = {
   components: { ZoneSelect },
   setup(props) {
     const c = ref(null);
-    const f = reactive({ git_repo: '', git_branch: 'main', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
+    const f = reactive({ git_repo: '', git_branch: 'main', ci_mode: 'runner', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
     const showYaml = ref(false);
     const busy = ref({});
     const runBranch = ref('');
@@ -209,6 +281,7 @@ export const CicdTab = {
         Object.assign(f, {
           git_repo: c.value.repo || '',
           git_branch: c.value.branch || 'main',
+          ci_mode: c.value.mode || 'runner',
           ci_test_on: c.value.test_on,
           ci_test_cmd: c.value.test_cmd || c.value.default_tests,
           preview_server_id: c.value.preview.server_id || '',
@@ -268,7 +341,11 @@ export const CicdTab = {
     <div class="card card-body form" v-if="c.is_root">
       <div class="row between wrap gap-8"><h3>GitHub CI/CD</h3>
         <span v-if="c.enabled" class="badge badge-green">ON</span><span v-else class="badge badge-gray">not set up</span></div>
-      <p class="hint" style="margin:0">On every push: tests run on GitHub's machines, then a <b>self-hosted runner</b> on each of your servers deploys the exact commit — standby servers first, the live one last, one at a time, stopping at the first failure. The runner can only run Switchboard's deploy/preview commands. Switchboard reads the results from GitHub (your servers and Switchboard need no open ports).</p>
+      <div class="field"><label>How new commits get to your servers</label>
+        <div class="seg" style="align-self:flex-start"><button type="button" :class="{ on: f.ci_mode === 'pull' }" @click="f.ci_mode = 'pull'" :disabled="!isAdmin">Switchboard deploys</button><button type="button" :class="{ on: f.ci_mode === 'runner' }" @click="f.ci_mode = 'runner'" :disabled="!isAdmin">GitHub runner on each server</button></div>
+        <span class="hint" v-if="f.ci_mode === 'pull'">Every minute Switchboard checks the branch; a new commit is deployed over SSH (after its tests pass on GitHub, if you have tests) — standby servers first, the live one last. Nothing is installed on the servers and nothing has to reach them: ideal for <b>home servers</b> and <b>public repos</b>.</span>
+        <span class="hint" v-else>Tests run on GitHub's machines, then a <b>self-hosted runner</b> on each server deploys the exact commit right away — standby first, live last. The runner may only run Switchboard's deploy/preview commands. Pull-request previews need this mode.</span></div>
+      <div v-if="f.ci_mode === 'runner' && c.repo_private === false" class="alert alert-warn"><span class="alert-icon">⚠</span><span><b>Public repository + self-hosted runner:</b> a stranger's pull request can try to run code on your server. Use "Switchboard deploys", or in GitHub → Settings → Actions → General choose <i>Require approval for all outside collaborators</i>.</span></div>
       <div class="form-row">
         <div class="field"><label>Repository</label><input v-model="f.git_repo" class="code" placeholder="acme/shop" :disabled="!isAdmin"></div>
         <div class="field"><label>Live branch</label><input v-model="f.git_branch" class="code" placeholder="main" :disabled="!isAdmin"></div>
@@ -280,7 +357,8 @@ export const CicdTab = {
       <div class="row gap-8 wrap admin-only">
         <button class="btn" @click="save" :disabled="busy.save">Save</button>
         <button class="btn btn-primary" @click="setup" :disabled="!f.git_repo || !c.token">{{ c.enabled ? 'Set up again (runners + workflow)' : 'Set up CI/CD' }}</button>
-        <span class="hint">Installs the runner on {{ c.servers.map(s => s.name).join(', ') || 'the servers' }} and commits <code>{{ c.workflow_path }}</code>.</span>
+        <span class="hint" v-if="f.ci_mode === 'pull'">Gives each server read access to the repo{{ f.ci_test_on !== 'none' && f.ci_test_cmd ? ' and commits a tests-only workflow' : '' }}. Last deployed: <template v-for="(sha, slug) in c.deployed" :key="slug"><code>{{ slug }}@{{ (sha || '').slice(0, 7) }}</code> </template></span>
+        <span class="hint" v-else>Installs the runner on {{ c.servers.map(s => s.name).join(', ') || 'the servers' }} and commits <code>{{ c.workflow_path }}</code>.</span>
       </div>
     </div>
 
@@ -372,3 +450,4 @@ export const CicdTab = {
     </div>
   </div>`,
 };
+

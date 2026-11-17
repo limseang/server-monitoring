@@ -104,6 +104,8 @@ await step('Clean up, log in, settings, add vps-ci', async () => {
   await api('POST', '/auth/login', { username: 'admin', password: 'admin-password-123' });
   for (const p of await api('GET', '/projects')) if (p.slug.startsWith('ci-lab') && !p.parent_id) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
   for (const p of await api('GET', '/projects')) if (p.slug.startsWith('ci-lab')) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
+  // Projects that use vps-ci (left by other tests) go first, then the server itself.
+  for (const p of await api('GET', '/projects')) if (!p.parent_id && p.deployments?.some((d) => d.server_name === 'vps-ci')) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
   for (const s of await api('GET', '/servers')) if (s.name === 'vps-ci') await api('DELETE', `/servers/${s.id}`);
   const { users } = await api('GET', '/users');
   for (const u of users) if (['dev-lab', 'view-lab'].includes(u.username)) await api('DELETE', `/users/${u.id}`);

@@ -1417,6 +1417,19 @@ api.get('/templates', (req, res) => {
   });
 });
 
+api.get('/github/repos', async (req, res) => {
+  if (!gh.hasToken()) throw bad('Add a GitHub token first (Settings → GitHub)');
+  res.json(await gh.listMyRepos());
+});
+
+api.get('/github/repo-info', async (req, res) => {
+  const repo = repoInput(req.query.repo);
+  if (!repo) throw bad('Choose a repository');
+  const branch = req.query.branch ? branchInput(req.query.branch) : null;
+  const [info, branches] = await Promise.all([gh.detectRepo(repo, branch), gh.listBranches(repo).catch(() => [])]);
+  res.json({ ...info, branches });
+});
+
 api.post('/projects/from-template', (req, res) => {
   const b = req.body || {};
   const template = str(b.template, 20);
@@ -1435,13 +1448,18 @@ api.post('/projects/from-template', (req, res) => {
   if (repo && !gh.hasToken()) throw bad('Add a GitHub token first (Settings → GitHub)');
   const branch = branchInput(b.branch);
   const extraHosts = domain && bool(b.www) && !domain.startsWith('www.') ? [`www.${domain}`] : [];
-  const row = templateProjectRow({ name, template, db, domain, repo, branch, extraHosts });
+  if (template === 'compose' && code !== 'repo') throw bad('A Docker Compose project uses your existing GitHub repository');
+  const appPort = template === 'compose' ? int(b.app_port, 0, 1, 65535) || null : null;
+  if (template === 'compose' && !appPort) throw bad('Enter the port the app listens on (from its docker-compose.yml, e.g. 8080)');
+  let healthPath = str(b.health_path, 200) || '/';
+  if (!healthPath.startsWith('/')) healthPath = `/${healthPath}`;
+  const row = templateProjectRow({ name, template, db, domain, repo, branch, extraHosts, appPort, healthPath });
   const id = insert('projects', { ...row, slug: uniqueSlug(name), created_at: now() });
   const job = enqueue({
     type: 'provision',
     title: `Set up ${name} (${t.label})`,
     projectId: id,
-    params: { servers, createRepo: code === 'new', privateRepo: b.privateRepo !== false, zone, takeoverDns: bool(b.takeoverDns) },
+    params: { servers, createRepo: code === 'new', privateRepo: b.privateRepo !== false, zone, takeoverDns: bool(b.takeoverDns), ci: repo && ['pull', 'runner'].includes(b.ci) ? b.ci : null },
     user: who(req),
   });
   audit(req, 'info', `Project ${name} created from the ${t.label} template`, { projectId: id, jobId: job.id });
@@ -1479,6 +1497,9 @@ api.get('/projects/:id/ci', async (req, res) => {
     repo_url: root.git_repo ? gh.webUrl(root.git_repo) : null,
     branch: root.git_branch,
     enabled: !!root.ci_enabled,
+    mode: root.ci_mode || 'runner',
+    repo_private: st.repo_private ?? null,
+    deployed: st.deployed || {},
     test_on: root.ci_test_on,
     test_cmd: root.ci_test_cmd || '',
     default_tests: root.template ? TEMPLATES[root.template].tests : '',
@@ -1509,6 +1530,7 @@ api.put('/projects/:id/ci', (req, res) => {
   if (b.git_repo !== undefined) row.git_repo = repoInput(b.git_repo);
   if (b.git_branch !== undefined) row.git_branch = branchInput(b.git_branch);
   if (b.ci_test_on !== undefined) row.ci_test_on = b.ci_test_on === 'none' ? 'none' : 'github';
+  if (b.ci_mode !== undefined) row.ci_mode = b.ci_mode === 'pull' ? 'pull' : 'runner';
   if (b.ci_test_cmd !== undefined) row.ci_test_cmd = str(b.ci_test_cmd, 5000) || null;
   if (b.preview_server_id !== undefined) {
     row.preview_server_id = b.preview_server_id ? mustServer(b.preview_server_id).id : null;

@@ -58,7 +58,7 @@ export function workflowYaml(root) {
   const tests = String(root.ci_test_cmd || '').trim();
   const testJob = root.ci_test_on !== 'none' && tests;
   const zone = parseJSON(root.preview_zone);
-  const previewServer = root.preview_server_id && root.template && zone?.zone_name ? getServer(root.preview_server_id) : null;
+  const previewServer = root.ci_mode !== 'pull' && root.preview_server_id && root.template && zone?.zone_name ? getServer(root.preview_server_id) : null;
   const branches = [...new Set(projects.map((p) => p.git_branch || 'main'))];
   const needs = testJob ? '    needs: test\n' : '';
   const L = [];
@@ -93,7 +93,7 @@ export function workflowYaml(root) {
     L.push('        run: |');
     L.push(indent(tests, 10));
   }
-  for (const p of projects) {
+  for (const p of root.ci_mode === 'pull' ? [] : projects) {
     // Standby servers first, the live server last; one at a time, stop at the first failure.
     const deps = deploymentsOf(p.id).sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
     const labels = deps.map((d) => runnerLabel(getServer(d.server_id)));
@@ -115,7 +115,7 @@ export function workflowYaml(root) {
     L.push('      - name: Deploy');
     L.push(`        run: sudo -n /usr/local/bin/switchboard-helper deploy ${p.slug} "$GITHUB_SHA"`);
   }
-  if (previewServer) {
+  if (previewServer && root.ci_mode !== 'pull') {
     const label = q(runnerLabel(previewServer));
     const sameRepo = 'github.event.pull_request.head.repo.full_name == github.repository';
     L.push('  preview:');
@@ -134,7 +134,7 @@ export function workflowYaml(root) {
     L.push('      - name: Remove preview');
     L.push(`        run: sudo -n /usr/local/bin/switchboard-helper preview-down ${root.slug} "\${{ github.event.number }}"`);
   }
-  if (!projects.length && !previewServer && !testJob) {
+  if ((!projects.length || root.ci_mode === 'pull') && !previewServer && !testJob) {
     L.push('  nothing:');
     L.push('    runs-on: ubuntu-latest');
     L.push('    steps: [{ run: "echo No servers in this project yet" }]');
@@ -253,13 +253,24 @@ defineJob('ci-setup', async (ctx, p) => {
     for (const c of ciProjects(root).slice(1)) {
       if (await gh.ensureBranch(root.git_repo, c.git_branch, root.git_branch)) ctx.log(`Created branch ${c.git_branch} for ${c.name}`);
     }
-    await setupServers(ctx, root, { runners: true });
-    if (p.commit !== false) {
-      ctx.step('Commit the workflow file');
+    const pull = root.ci_mode === 'pull';
+    saveCi(root.id, { repo_private: !!r.private });
+    if (!pull && !r.private) ctx.warn('This repository is PUBLIC: a self-hosted runner can be targeted by pull requests from strangers. Prefer the "Switchboard pulls" mode, or require approval for outside contributors in GitHub → Settings → Actions.');
+    await setupServers(ctx, root, { runners: !pull });
+    const tests = root.ci_test_on !== 'none' && String(root.ci_test_cmd || '').trim();
+    if (p.commit !== false && (!pull || tests)) {
+      ctx.step(pull ? 'Commit the workflow file (tests only — Switchboard deploys)' : 'Commit the workflow file');
       await commitWorkflow(ctx, root);
     }
+    if (pull) {
+      // Start from what is on the branch now; every newer commit gets deployed.
+      const deployed = { ...(ci(getProject(root.id)).deployed || {}) };
+      for (const x of ciProjects(root)) deployed[x.slug] = await gh.branchSha(root.git_repo, x.git_branch || 'main');
+      saveCi(root.id, { deployed });
+      ctx.log(`Switchboard checks ${root.git_repo} every minute and deploys new commits${tests ? ' after the tests on GitHub pass' : ''} — no runner on your servers, nothing has to reach them from outside`);
+    }
     update('projects', root.id, { ci_enabled: 1 });
-    logEvent('success', `${root.name}: CI/CD set up (runners on ${ciServers(root).map((s) => s.name).join(', ')})`, { projectId: root.id, jobId: ctx.id, user: ctx.user });
+    logEvent('success', `${root.name}: CI/CD set up (${pull ? 'Switchboard deploys new commits' : `runners on ${ciServers(root).map((s) => s.name).join(', ')}`})`, { projectId: root.id, jobId: ctx.id, user: ctx.user });
     pollProject(root.id).catch(() => {});
   } catch (e) {
     alert('error', `${root.name}: CI/CD setup FAILED — ${e.message}`, { projectId: root.id, jobId: ctx.id, link: `#/projects/${root.id}` });
@@ -394,12 +405,38 @@ export async function removePreview(root, row, why, user = 'system') {
   logEvent('info', `${root.name}: preview of pull request #${row.pr} removed (${why})`, { projectId: root.id, user });
 }
 
+/** Pull mode: deploy the newest commit of each branch (after its tests passed, when there are tests). */
+async function autoDeploy(root, runs) {
+  const tests = root.ci_test_on !== 'none' && String(root.ci_test_cmd || '').trim();
+  const deployed = { ...(ci(root).deployed || {}) };
+  for (const p of ciProjects(root)) {
+    if (!deploymentsOf(p.id).length || !String(p.deploy_script || '').trim()) continue;
+    const sha = await gh.branchSha(root.git_repo, p.git_branch || 'main');
+    if (!sha || sha === deployed[p.slug]) continue;
+    if (get("SELECT 1 AS x FROM jobs WHERE project_id = ? AND status IN ('queued', 'running') LIMIT 1", p.id)) continue;
+    if (tests) {
+      const run = runs.filter((r) => r.head_sha === sha && r.event !== 'pull_request').sort((a, b) => b.id - a.id)[0];
+      if (!run || run.status !== 'completed') continue; // wait for the tests
+      if (run.conclusion !== 'success') {
+        deployed[p.slug] = sha;
+        alert('error', `${p.name}: commit ${sha.slice(0, 7)} was NOT deployed — its tests ${run.conclusion} (${run.html_url})`, { projectId: p.id, link: run.html_url });
+        continue;
+      }
+    }
+    deployed[p.slug] = sha;
+    enqueue({ type: 'deploy', title: `Deploy ${p.name} @ ${sha.slice(0, 7)} (new commit on ${p.git_branch})`, projectId: p.id, params: { all: true, commit: sha }, user: 'github' });
+    logEvent('info', `${p.name}: new commit ${sha.slice(0, 7)} on ${p.git_branch} — deploying`, { projectId: p.id });
+  }
+  saveCi(root.id, { deployed });
+}
+
 export async function pollProject(id) {
   const root = rootOf(getProject(id));
   if (!root?.git_repo || !gh.hasToken()) return;
   try {
     const runs = await pollRuns(root);
-    if (root.preview_server_id) await syncPreviews(root, runs);
+    if (root.ci_mode === 'pull') await autoDeploy(root, runs);
+    else if (root.preview_server_id) await syncPreviews(root, runs);
     saveCi(root.id, { polled_at: now(), error: null });
   } catch (e) {
     saveCi(root.id, { polled_at: now(), error: e.message });

@@ -634,3 +634,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .toprow > i { position: absolute; left: 0; top: 2px; bottom: 2px; background: var(--accent-bg); border-radius: 8px; z-index: 0; }
 .toprow:hover { background: var(--hover); }
 .logs-bar select, .logs-bar input { height: 34px; }
+
+.detect-box { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--green-bg); border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); font-size: 13px; }
+.detect-box .ico { color: var(--green); margin-top: 2px; }
