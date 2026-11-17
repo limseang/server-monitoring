@@ -1,0 +1,23 @@
+{
+  "name": "switchboard",
+  "version": "1.0.0",
+  "description": "Self-hosted dashboard: switch traffic between servers via Cloudflare DNS, sync Docker databases, backups, health checks, auto-failover and deploys.",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "cli": "node src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "croner": "^11.0.1",
+    "express": "^5.3.0",
+    "qrcode": "^1.5.4",
+    "ssh2": "^1.17.0",
+    "vue": "^3.5.45"
+  }
+}

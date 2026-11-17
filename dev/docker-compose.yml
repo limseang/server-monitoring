@@ -1,0 +1,191 @@
+# Local test lab — try Switchboard without touching real servers.
+#   ./dev/setup.sh            start everything + seed sample data
+#   open http://localhost:8090  (admin / admin-password-123)
+#   docker compose -f dev/docker-compose.yml down -v   remove the lab
+#
+# "srv-a" and "srv-b" pretend to be two VPSs (SSH + Docker). Each has its own MySQL
+# (a-db / b-db) and a fake Laravel app container (a-app / b-app). cf-mock pretends to be Cloudflare.
+name: switchboard-dev
+
+networks:
+  lab:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          ip_range: 172.30.0.128/25 # automatic IPs from .128 up, so fixed ones (.5, .11, .21…) never clash
+
+volumes:
+  a-shared: {}
+  b-shared: {}
+  a-storage: {}
+  b-storage: {}
+  a-mysql: {}
+  b-mysql: {}
+  vps-src-docker: {}
+  vps-new-docker: {}
+  vps-db-docker: {}
+  vps-ci-docker: {}
+
+x-fake-app: &fake-app
+  image: alpine:3.22
+  command: ["sleep", "infinity"]
+  init: true
+
+services:
+  srv-a:
+    build: ./fake-server
+    environment: { SERVER_NAME: server-a }
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.keys:/keys:ro
+      - a-shared:/shared
+    networks: { lab: { ipv4_address: 172.30.0.11 } }
+
+  srv-b:
+    build: ./fake-server
+    environment: { SERVER_NAME: server-b }
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.keys:/keys:ro
+      - b-shared:/shared
+    networks: { lab: { ipv4_address: 172.30.0.12 } }
+
+  a-db:
+    image: mysql:8.4
+    container_name: a-db
+    environment: { MYSQL_ROOT_PASSWORD: rootpass-a, MYSQL_DATABASE: shop, MYSQL_USER: shop, MYSQL_PASSWORD: shoppass-a }
+    volumes: [a-mysql:/var/lib/mysql]
+    networks: [lab]
+
+  b-db:
+    image: mysql:8.4
+    container_name: b-db
+    environment: { MYSQL_ROOT_PASSWORD: rootpass-b, MYSQL_DATABASE: shop, MYSQL_USER: shop, MYSQL_PASSWORD: shoppass-b }
+    volumes: [b-mysql:/var/lib/mysql]
+    networks: [lab]
+
+  a-app:
+    <<: *fake-app
+    container_name: a-app
+    volumes: [./fake-app/php:/usr/local/bin/php:ro, a-shared:/shared, a-storage:/var/www/html/storage/app/public]
+    networks: [lab]
+
+  b-app:
+    <<: *fake-app
+    container_name: b-app
+    volumes: [./fake-app/php:/usr/local/bin/php:ro, b-shared:/shared, b-storage:/var/www/html/storage/app/public]
+    networks: [lab]
+
+  # Optional extra databases (start with: docker compose -f dev/docker-compose.yml --profile extra up -d)
+  pa-db:
+    image: postgres:17-alpine
+    container_name: pa-db
+    profiles: [extra]
+    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: pgpass-a, POSTGRES_DB: shop }
+    networks: [lab]
+  pb-db:
+    image: postgres:17-alpine
+    container_name: pb-db
+    profiles: [extra]
+    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: pgpass-b, POSTGRES_DB: shop }
+    networks: [lab]
+  ma-db:
+    image: mariadb:11
+    container_name: ma-db
+    profiles: [extra]
+    environment: { MARIADB_ROOT_PASSWORD: mariapass-a, MARIADB_DATABASE: shop }
+    networks: [lab]
+  mb-db:
+    image: mariadb:11
+    container_name: mb-db
+    profiles: [extra]
+    environment: { MARIADB_ROOT_PASSWORD: mariapass-b, MARIADB_DATABASE: shop }
+    networks: [lab]
+
+  # "Clone server" test pair (start with: ./dev/clone-setup.sh). Each runs its OWN Docker daemon.
+  vps-src:
+    build: { context: ./clone-vps, args: { INSTALL_DOCKER: "1" } }
+    image: switchboard-dev-vps:docker
+    container_name: vps-src
+    hostname: vps-src
+    profiles: [clone]
+    privileged: true
+    volumes: [./.keys:/keys:ro, vps-src-docker:/var/lib/docker]
+    networks: { lab: { ipv4_address: 172.30.0.21 } }
+  vps-new:
+    build: { context: ./clone-vps, args: { INSTALL_DOCKER: "0" } }
+    image: switchboard-dev-vps:fresh
+    container_name: vps-new
+    hostname: vps-new
+    profiles: [clone]
+    privileged: true
+    volumes: [./.keys:/keys:ro, vps-new-docker:/var/lib/docker]
+    networks: { lab: { ipv4_address: 172.30.0.22 } }
+  # Load balancer test (./dev/clone-setup.sh): a database server (Docker preinstalled) and a blank LB server.
+  vps-db:
+    image: switchboard-dev-vps:docker
+    container_name: vps-db
+    hostname: vps-db
+    profiles: [clone]
+    privileged: true
+    volumes: [./.keys:/keys:ro, vps-db-docker:/var/lib/docker]
+    networks: { lab: { ipv4_address: 172.30.0.23 } }
+  vps-lb:
+    image: switchboard-dev-vps:fresh
+    container_name: vps-lb
+    hostname: vps-lb
+    profiles: [clone]
+    privileged: true
+    volumes: [./.keys:/keys:ro]
+    networks: { lab: { ipv4_address: 172.30.0.24 } }
+
+  # CI/CD test (./dev/ci-setup.sh): a server with its own Docker for templates, runners and previews.
+  vps-ci:
+    image: switchboard-dev-vps:docker
+    container_name: vps-ci
+    hostname: vps-ci
+    profiles: [ci]
+    privileged: true
+    volumes: [./.keys:/keys:ro, vps-ci-docker:/var/lib/docker]
+    networks: { lab: { ipv4_address: 172.30.0.25 } }
+
+  # S3 test server (SeaweedFS, checks signatures with the key in s3/s3.json). Lab only.
+  s3:
+    image: chrislusf/seaweedfs:3.80
+    container_name: lab-s3
+    profiles: [s3]
+    command: ["server", "-s3", "-s3.config=/etc/s3.json", "-dir=/data", "-volume.max=50", "-master.volumeSizeLimitMB=64"]
+    volumes: [./s3/s3.json:/etc/s3.json:ro]
+    ports: ["127.0.0.1:8333:8333"]
+    networks: { lab: { ipv4_address: 172.30.0.7 } }
+
+  # Fake GitHub: REST API + git server (git://172.30.0.6/owner/repo.git) + stand-in runner download.
+  gh-mock:
+    build: ./gh-mock
+    container_name: gh-mock
+    ports: ["127.0.0.1:8788:8788"]
+    networks: { lab: { ipv4_address: 172.30.0.6 } }
+
+  cf-mock:
+    image: node:24-alpine
+    command: ["node", "/srv/server.mjs"]
+    volumes: [./cf-mock/server.js:/srv/server.mjs:ro]
+    environment: { INITIAL_IP: 172.30.0.11, CF_TOKEN: test-token }
+    ports: ["127.0.0.1:8787:8787"]
+    networks: { lab: { ipv4_address: 172.30.0.5 } }
+
+  switchboard:
+    build: ..
+    environment:
+      CF_API_BASE: http://cf-mock:8787/client/v4
+      TELEGRAM_API_BASE: http://cf-mock:8787
+      GITHUB_API_BASE: http://gh-mock:8788
+      ALLOW_PRIVATE_DNS: "true" # the lab's fake servers have private IPs
+      GITHUB_WEB_BASE: http://172.30.0.6:8788
+      GITHUB_GIT_URL: git://172.30.0.6/{repo}.git
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: admin-password-123
+      TZ: UTC
+    volumes: [./data:/data]
+    ports: ["127.0.0.1:8090:8080"]
+    networks: [lab]

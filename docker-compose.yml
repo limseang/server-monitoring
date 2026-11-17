@@ -1,0 +1,22 @@
+# Run:   docker compose up -d --build
+# Then:  docker logs switchboard     (shows the one-time setup code)
+# Open:  http://<this-machine>:8080
+#
+# Run this on a machine that is NOT one of the servers it manages
+# (a small extra VPS, or a home server) — otherwise it goes down together with them.
+services:
+  switchboard:
+    build: .
+    image: switchboard:latest
+    container_name: switchboard
+    restart: unless-stopped
+    ports:
+      # Behind a reverse proxy / Cloudflare Tunnel? Use "127.0.0.1:8080:8080" instead.
+      - "8080:8080"
+    environment:
+      TZ: ${TZ:-UTC}
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/data # database, encryption key and backups live here — back this folder up

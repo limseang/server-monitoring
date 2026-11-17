@@ -1,0 +1,11 @@
+#!/bin/sh
+# Pretend `php artisan …` for the test lab. down/up toggle the maintenance flag the fake web server reads.
+if [ "$1" = "artisan" ]; then
+  case "$2" in
+    down) touch /shared/down; echo "   INFO  Application is now in maintenance mode." ;;
+    up) rm -f /shared/down; echo "   INFO  Application is now live." ;;
+    *) echo "   INFO  (fake) php artisan ${*#artisan }" ;;
+  esac
+else
+  echo "PHP 8.4.0 (fake)"
+fi

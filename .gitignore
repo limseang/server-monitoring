@@ -1,0 +1,26 @@
+# ---- Never commit: data, secrets, backups ----
+data/
+data-*/
+data-backup-*/
+*.db
+*.db-shm
+*.db-wal
+*.sql
+*.sql.gz
+app.key
+.env
+.env.*
+!.env.example
+
+# ---- Test lab: generated keys and data ----
+dev/.keys/
+dev/data/
+
+# ---- Local tools / editors (contain paths of your machine) ----
+node_modules/
+.idea/
+.vscode/
+.claude/
+graphify-out/
+.DS_Store
+*.log
