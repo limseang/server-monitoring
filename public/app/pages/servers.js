@@ -4,6 +4,7 @@ import { MeterBar, MenuBtn, JobsTable, Ago, HealthPill } from '../components.js'
 import { PortsTab, PowerTab } from '../serverctl.js';
 import { TrafficTab, LogsTab } from '../trafficview.js';
 import { ServerCard } from './overview.js';
+import { BillingCard } from '../billing.js';
 
 export const ServersPage = {
   components: { ServerCard },
@@ -25,7 +26,7 @@ export const ServersPage = {
 
 export const ServerPage = {
   props: { id: Number },
-  components: { MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab },
+  components: { BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab },
   setup(props) {
     const s = ref(null);
     const tab = ref('overview');
@@ -243,6 +244,8 @@ export const ServerPage = {
         </tr>
       </tbody></table></div>
     </section>
+
+    <billing-card :server="s" :key="'b' + s.id" />
 
     <section class="section" v-if="s.notes"><div class="section-head"><h2>Notes</h2></div><div class="card card-body" style="white-space:pre-wrap">{{ s.notes }}</div></section>
     </template>

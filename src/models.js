@@ -54,5 +54,6 @@ export function projectPublic(p) {
     lb_config: parseJSON(p.lb_config, {}),
     lb_state: parseJSON(p.lb_state, {}),
     shared_db: shared,
+    db_access: parseJSON(p.db_access, null),
   };
 }

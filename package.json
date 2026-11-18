@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "cli": "node src/cli.js"
+    "cli": "node src/cli.js",
+    "test": "node --test test/"
   },
   "engines": {
     "node": ">=22.13"

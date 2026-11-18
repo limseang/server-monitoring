@@ -185,6 +185,7 @@ const ROUTES = [
   [/^\/jobs\/(\d+)$/, 'job', ['id']],
   [/^\/activity$/, 'activity'],
   [/^\/settings$/, 'settings'],
+  [/^\/billing$/, 'billing'],
 ];
 
 export function parseRoute() {

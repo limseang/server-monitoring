@@ -10,6 +10,7 @@ import './ops/provision.js';
 import './ops/ci.js';
 import './ops/serverctl.js';
 import './ops/backupstore.js';
+import './ops/dbaccess.js';
 import { api } from './api.js';
 import { startMonitor, stopMonitor } from './monitor.js';
 

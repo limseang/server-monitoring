@@ -19,6 +19,7 @@ import { isLb, addMember, drainMember, moveTraffic, whileDrained, enableLb, disa
 import { setupDbServer, moveDatabase, sharedDbDep, refreshDbFirewall } from './dbserver.js';
 import { ensureLocal } from './backupstore.js';
 import { runOsUpgrade } from './osupgrade.js';
+import { closeForSwitch, openForSwitch, dbAccessOn } from './dbaccess.js';
 
 function mustProject(id) {
   const p = getProject(id);
@@ -84,6 +85,7 @@ defineJob('switch', async (ctx, p) => {
   let srcConn = null;
   let dstConn = null;
   let srcMaint = false;
+  let srcClosed = false;
   let dnsDone = false;
   try {
     if (source && (wantSync || p.maintenance)) srcConn = await connectTo(ctx, getServer(source.server_id), { required: wantSync });
@@ -93,6 +95,8 @@ defineJob('switch', async (ctx, p) => {
       ctx.step(`Maintenance mode ON at ${source.server_name} (no new writes while copying)`);
       srcMaint = await setMaintenance(ctx, srcConn, project, source, true);
     }
+    // Outside database access (another service writing directly into the DB): pause it before copying
+    if (wantDb) srcClosed = await closeForSwitch(ctx, srcConn, project, source, 'nothing is written from outside while copying');
     if (wantDb) await syncDatabase(ctx, { project, source, target, srcConn, dstConn, backupTarget: p.backupTarget !== false, sourceLive: true });
     if (wantFiles) await syncFiles(ctx, { project, source, target, srcConn, dstConn });
 
@@ -130,6 +134,14 @@ defineJob('switch', async (ctx, p) => {
       update('deployments', target.id, { data_at: null, data_note: null });
     });
     await refreshDnsState(project.id).catch(() => {});
+    // Outside database access follows the live server: open the new one, close the old one
+    await openForSwitch(ctx, dstConn, project, target);
+    if (source && !srcClosed) {
+      const c = srcConn || (await connectTo(ctx, getServer(source.server_id), { required: false }));
+      if (c) await closeForSwitch(ctx, c, project, source, 'it is a standby now');
+      else if (dbAccessOn(project)) ctx.warn(`Could not reach ${source.server_name} to close outside database access — press Apply in the Database access tab when it is back`);
+      if (c && c !== srcConn) c.end();
+    }
 
     if (p.purgeCache) {
       ctx.step('Purge Cloudflare cache');
@@ -156,6 +168,7 @@ defineJob('switch', async (ctx, p) => {
       { projectId: project.id, jobId: ctx.id, user: ctx.user, link },
     );
   } catch (e) {
+    if (srcClosed && !dnsDone && srcConn) await openForSwitch(ctx, srcConn, project, source).catch(() => {});
     if (srcMaint && !dnsDone && srcConn) {
       ctx.step(`Rollback: maintenance OFF at ${source.server_name}`);
       try {
