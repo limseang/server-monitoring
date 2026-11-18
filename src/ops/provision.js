@@ -165,9 +165,15 @@ defineJob('provision', async (ctx, p) => {
       try {
         conn = await ensureDocker(ctx, conn, server, await quickScan(conn, server));
         await installHelper(ctx, conn, server);
-        const appDir = `${p.baseDir || '/srv'}/${project.slug}`.replace(/\/+/g, '/');
+        // The folder picked in "New app"; when adding servers later, the folder the project already uses
+        const sameFolder = get("SELECT app_dir FROM deployments WHERE project_id = ? AND app_dir LIKE '/%' ORDER BY priority LIMIT 1", project.id)?.app_dir;
+        const appDir = (p.appDir || sameFolder || `${p.baseDir || '/srv'}/${project.slug}`).replace(/\/+/g, '/');
         let dep = get('SELECT * FROM deployments WHERE project_id = ? AND server_id = ?', project.id, server.id);
         if (!dep) {
+          // Never move into a folder that already holds something else (another app, someone's files)
+          const busy = (await exec(conn, asRoot(server, `[ -d ${shq(appDir)} ] && [ -n "$(ls -A ${shq(appDir)} 2>/dev/null)" ] && echo yes || echo no`))).stdout.trim() === 'yes';
+          if (busy) throw new Error(`${appDir} on ${server.name} already has files — pick an empty or new folder for ${project.name}`);
+          ctx.log(`App folder: ${appDir}`);
           const id = insert('deployments', {
             project_id: project.id,
             server_id: server.id,

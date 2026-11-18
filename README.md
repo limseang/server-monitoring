@@ -158,7 +158,7 @@ Every backup is uploaded right after it's made; the local copy is removed about 
 - Your servers only need **outgoing** access to GitHub; nothing has to reach them or Switchboard from outside.
 - **Staging**: CI/CD tab → *+ Add staging* (own branch, address and database; "Copy live data" anytime).
 - **Pull request previews**: choose a preview server and domain; every PR gets `pr-<number>-<project>.<domain>`, removed when the PR closes.
-- Files Switchboard puts on a server: `/usr/local/bin/switchboard-helper`, `/etc/switchboard/`, `/opt/switchboard-runner/`, `/etc/sudoers.d/switchboard-runner`; template apps in `/srv/<project>`.
+- Files Switchboard puts on a server: `/usr/local/bin/switchboard-helper`, `/etc/switchboard/`, `/opt/switchboard-runner/`, `/etc/sudoers.d/switchboard-runner`; template apps in `/srv/<project>` by default — or any folder you pick (or create) with **Browse…** in the New app dialog.
 </details>
 
 <details>

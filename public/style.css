@@ -637,3 +637,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 
 .detect-box { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--green-bg); border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); font-size: 13px; }
 .detect-box .ico { color: var(--green); margin-top: 2px; }
+
+/* folder picker (New app → Folder on the server) */
+.folder-picker { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
+.folder-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
+.folder-go { display: flex; gap: 6px; align-items: center; }
+.folder-go input { flex: 1; min-width: 0; }
+.folder-list { display: flex; flex-direction: column; max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.folder-list.dim { opacity: .55; }
+.folder-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.folder-row:last-child { border-bottom: 0; }
+.folder-row:hover { background: var(--accent-bg); }
+.folder-list > .hint { padding: 8px 10px; }
+.folder-actions { display: flex; flex-wrap: wrap; gap: 6px; }

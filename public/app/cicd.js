@@ -40,18 +40,103 @@ export const ZoneSelect = {
     </div>`,
 };
 
+/* ------------------------------------------------------------------ folder picker (where on the server) */
+export const FolderPicker = {
+  props: { server: Object, start: String, appName: String },
+  emits: ['pick', 'close'],
+  setup(props, { emit }) {
+    const view = ref(null);
+    const error = ref('');
+    const loading = ref(false);
+    const typed = ref('');
+    const newName = ref('');
+    const creating = ref(false);
+    async function open(path) {
+      loading.value = true;
+      error.value = '';
+      try {
+        view.value = await http.get(`/servers/${props.server.id}/folders?path=${encodeURIComponent(path || '/srv')}`);
+        typed.value = view.value.path;
+      } catch (e) {
+        error.value = e.message;
+      } finally {
+        loading.value = false;
+      }
+    }
+    const join = (a, b) => `${a.replace(/\/+$/, '')}/${b}`;
+    async function create() {
+      const name = newName.value.trim();
+      if (!/^[A-Za-z0-9._-]+$/.test(name) || /^\.+$/.test(name)) return toast('Use letters, numbers, dot, dash or underscore for the folder name', 'error');
+      creating.value = true;
+      try {
+        const r = await http.post(`/servers/${props.server.id}/folders`, { path: join(view.value.path, name) });
+        newName.value = '';
+        toast(`Created ${r.path} on ${props.server.name}`);
+        await open(r.path);
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        creating.value = false;
+      }
+    }
+    // Start from the parent of the current choice (e.g. /srv for /srv/shop)
+    onMounted(() => open((props.start || '/srv/x').replace(/\/[^/]*$/, '') || '/'));
+    watch(() => props.server?.id, () => view.value && open(view.value.path));
+    return { view, error, loading, typed, newName, creating, open, create, join, emit };
+  },
+  template: `
+  <div class="folder-picker">
+    <div class="folder-head">
+      <span class="muted">On <b>{{ server.name }}</b></span>
+      <span class="chips" v-if="view"><button v-for="p in view.places" :key="p" type="button" class="chip" :class="{ on: view.path === p }" @click="open(p)">{{ p }}</button></span>
+    </div>
+    <form class="folder-go" @submit.prevent="open(typed)"><input v-model.trim="typed" class="code" placeholder="/srv"><button class="btn btn-sm" type="submit">Go</button></form>
+    <div v-if="error" class="hint text-red">{{ error }}</div>
+    <div v-if="loading && !view" class="muted"><span class="spinner"></span> Looking at the server…</div>
+    <template v-if="view">
+      <div class="folder-list" :class="{ dim: loading }">
+        <button v-if="view.parent" type="button" class="folder-row" @click="open(view.parent)"><span class="folder-ico">↩</span> .. <span class="muted">(up to {{ view.parent }})</span></button>
+        <div v-if="!view.exists" class="hint text-amber">{{ view.path }} does not exist yet — it will be created.</div>
+        <div v-else-if="!view.dirs.length" class="hint">No folders in here{{ view.empty ? ' (empty)' : '' }}.</div>
+        <button v-for="d in view.dirs" :key="d" type="button" class="folder-row" @click="open(join(view.path, d))"><span class="folder-ico">📁</span> {{ d }}</button>
+      </div>
+      <form class="folder-go" @submit.prevent="create"><input v-model.trim="newName" class="code" placeholder="new-folder-name"><button class="btn btn-sm" type="submit" :disabled="creating || !newName || !view.exists">{{ creating ? 'Creating…' : 'New folder here' }}</button></form>
+      <div class="folder-actions">
+        <button type="button" class="btn btn-sm btn-primary" @click="emit('pick', join(view.path, appName))">Put the app in {{ join(view.path, appName) }}</button>
+        <button v-if="view.path.split('/').filter(Boolean).length >= 2" type="button" class="btn btn-sm" :disabled="view.exists && !view.empty" :title="view.exists && !view.empty ? 'This folder already has files — the app needs an empty folder' : ''" @click="emit('pick', view.path)">Use {{ view.path }} itself</button>
+        <button type="button" class="btn btn-sm btn-ghost" @click="emit('close')">Close</button>
+      </div>
+    </template>
+  </div>`,
+};
+
 /* ------------------------------------------------------------------ new project from a template */
 export const TemplateProjectDialog = {
   props: { fromRepo: Boolean },
-  components: { ZoneSelect },
+  components: { ZoneSelect, FolderPicker },
   setup(props) {
     const info = ref(null);
     const servers = ref([]);
     const repos = ref(null);
     const detected = ref(null);
     const detecting = ref(false);
-    const f = reactive({ template: 'laravel', db: 'mysql', name: '', domain: '', www: true, zone: null, servers: [], code: props.fromRepo ? 'repo' : 'new', repo: '', branch: 'main', privateRepo: true, takeoverDns: false, app_port: '', health_path: '/', ci: 'pull' });
+    const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const f = reactive({ template: 'laravel', db: 'mysql', name: '', domain: '', www: true, zone: null, servers: [], code: props.fromRepo ? 'repo' : 'new', repo: '', branch: 'main', privateRepo: true, takeoverDns: false, app_port: '', health_path: '/', ci: 'pull', folder: '/srv/' });
     const busy = ref(false);
+    // Where the app goes on the server(s): /srv/<name> until the user picks or types another folder
+    const folderTouched = ref(false);
+    const browsing = ref(false);
+    const slugName = computed(() => slug(f.name) || 'app');
+    watch(slugName, (n) => {
+      if (!folderTouched.value) f.folder = `/srv/${n}`;
+    }, { immediate: true });
+    const pickFolder = (p) => {
+      f.folder = p;
+      folderTouched.value = true;
+      browsing.value = false;
+    };
+    const browseServer = computed(() => servers.value.find((x) => x.id === f.servers[0]));
+    const folderOk = computed(() => /^\/[^/\0]+\/[^\0]*[^/]$/.test(f.folder) && !/(^|\/)\.\.?(\/|$)/.test(f.folder));
     let pickedTemplate = false;
     onMounted(async () => {
       [info.value, servers.value] = await Promise.all([http.get('/templates'), http.get('/servers')]);
@@ -68,7 +153,6 @@ export const TemplateProjectDialog = {
       if (tpl.value && !tpl.value.dbs.includes(f.db)) f.db = tpl.value.dbs[0];
       if (t === 'compose' && f.code !== 'repo') f.code = 'repo';
     });
-    const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     watch(() => f.name, (n, old) => {
       if (f.code !== 'new') return;
       if (!f.repo || f.repo.endsWith(`/${slug(old || '')}`)) f.repo = f.repo.includes('/') ? `${f.repo.split('/')[0]}/${slug(n)}` : slug(n) ? `your-name/${slug(n)}` : '';
@@ -98,7 +182,7 @@ export const TemplateProjectDialog = {
     });
     const privateServer = computed(() => f.servers.map((id) => servers.value.find((x) => x.id === id)).filter(Boolean).some((x) => isPrivateIp(x.ip)));
     const toggle = (id) => (f.servers = f.servers.includes(id) ? f.servers.filter((x) => x !== id) : [...f.servers, id]);
-    const ready = computed(() => f.name && f.servers.length && (f.code === 'none' || f.repo) && (f.template !== 'compose' || f.app_port));
+    const ready = computed(() => f.name && f.servers.length && folderOk.value && (f.code === 'none' || f.repo) && (f.template !== 'compose' || f.app_port));
     async function create() {
       busy.value = true;
       try {
@@ -113,7 +197,7 @@ export const TemplateProjectDialog = {
         busy.value = false;
       }
     }
-    return { info, servers, repos, detected, detecting, f, tpl, chooseTemplate, toggle, privateServer, ready, busy, create, closeDialog };
+    return { info, servers, repos, detected, detecting, f, tpl, chooseTemplate, toggle, privateServer, ready, busy, create, closeDialog, folderTouched, browsing, slugName, pickFolder, browseServer, folderOk };
   },
   template: `
   <modal :title="fromRepo ? 'Deploy a repo from my GitHub' : 'New app'" size="lg" @close="closeDialog">
@@ -184,7 +268,16 @@ export const TemplateProjectDialog = {
         <div class="fieldset-title">4. Servers</div>
         <div v-if="!servers.length" class="hint">Add a server first (Servers → Add server).</div>
         <div class="chips"><button v-for="s in servers" :key="s.id" type="button" class="chip" :class="{ on: f.servers.includes(s.id) }" @click="toggle(s.id)">{{ s.name }} <span class="muted mono">{{ s.ip }}</span></button></div>
-        <div class="hint">The first one becomes the live server. Docker is installed if missing; the app goes in <code>/srv/&lt;project&gt;</code>.</div>
+        <div class="hint">The first one becomes the live server. Docker is installed if missing.</div>
+        <div class="field"><label>Folder on the server</label>
+          <div class="folder-go">
+            <input v-model.trim="f.folder" class="code" placeholder="/srv/my-app" @input="folderTouched = true">
+            <button type="button" class="btn btn-sm" :disabled="!browseServer" :title="browseServer ? '' : 'Choose a server first'" @click="browsing = !browsing">{{ browsing ? 'Hide' : 'Browse…' }}</button>
+          </div>
+          <span v-if="f.folder && !folderOk" class="hint text-red">Use a full path at least two levels deep, like /srv/shop or /home/deploy/shop.</span>
+          <span v-else class="hint">The app goes in <code>{{ f.folder }}</code>{{ f.servers.length > 1 ? ' on every chosen server' : '' }}. It is created if missing; it must be empty.</span>
+        </div>
+        <folder-picker v-if="browsing && browseServer" :server="browseServer" :start="f.folder" :app-name="slugName" @pick="pickFolder" @close="browsing = false" />
       </div>
 
       <div class="fieldset" v-if="f.code !== 'none'">
