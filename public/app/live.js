@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from '/vendor/vue.js';
+import { ref, computed, watch, onUnmounted } from '/vendor/vue.js';
 import { store } from './lib.js';
 
 /**
@@ -128,4 +128,61 @@ export const LivePill = {
     },
   },
   template: `<span class="live-pill" :class="'live-' + state" :title="tip" role="status"><i aria-hidden="true"></i>{{ label }}</span>`,
+};
+
+/* ------------------------------------------------------------------ smooth numbers */
+export const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * A number that glides to each new value (ease-out) instead of jumping.
+ * getter() is watched; null/undefined pass straight through.
+ */
+export function useTween(getter, { duration = 800 } = {}) {
+  const out = ref(getter() ?? null);
+  let raf = 0;
+  watch(getter, (to) => {
+    cancelAnimationFrame(raf);
+    const from = out.value;
+    if (to == null || from == null || !Number.isFinite(from) || reducedMotion() || document.hidden) {
+      out.value = to ?? null;
+      return;
+    }
+    const t0 = performance.now();
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / duration);
+      out.value = from + (to - from) * (1 - (1 - k) ** 3);
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  });
+  onUnmounted(() => cancelAnimationFrame(raf));
+  return out;
+}
+
+/** <live-num :value="cpu" /> — the number counts to each new value. fmt(v) formats it; digits = decimals. */
+export const LiveNum = {
+  props: { value: Number, fmt: Function, digits: { type: Number, default: 1 } },
+  setup(props) {
+    const v = useTween(() => props.value);
+    const up = ref(null); // flash direction for a moment after a change
+    let t = null;
+    watch(
+      () => props.value,
+      (a, b) => {
+        if (a == null || b == null || a === b || reducedMotion()) return;
+        up.value = a > b ? 'up' : 'down';
+        clearTimeout(t);
+        t = setTimeout(() => (up.value = null), 900);
+      },
+    );
+    onUnmounted(() => clearTimeout(t));
+    const text = computed(() => {
+      if (v.value == null) return '—';
+      if (props.fmt) return props.fmt(v.value);
+      const p = 10 ** props.digits;
+      return String(Math.round(v.value * p) / p);
+    });
+    return { text, up };
+  },
+  template: `<span class="live-num" :class="up && 'live-' + up">{{ text }}</span>`,
 };

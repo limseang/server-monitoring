@@ -1,6 +1,6 @@
-import { ref, computed, watch, onMounted } from '/vendor/vue.js';
+import { ref, computed, watch, onMounted, nextTick } from '/vendor/vue.js';
 import { store, http, toast, bytes, fmtDate } from './lib.js';
-import { useLive, LivePill } from './live.js';
+import { useLive, LivePill, LiveNum, reducedMotion, useTween } from './live.js';
 
 /* ------------------------------------------------------------------ line chart (crosshair + tooltip) */
 const niceMax = (v) => {
@@ -12,6 +12,8 @@ const timeLabel = (t, spanMin) =>
   spanMin <= 15
     ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : spanMin > 1440 ? new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }) : new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+let clipSeq = 0;
 
 export const LineChart = {
   props: {
@@ -25,6 +27,10 @@ export const LineChart = {
     perPoint: Number,
     label: String,
     xTicks: { type: Number, default: 6 },
+    // live mode: a fixed window of `capacity` readings that scrolls left by itself, curved lines
+    capacity: Number,
+    every: { type: Number, default: 2 }, // seconds between live readings (scroll speed)
+    smooth: Boolean,
   },
   setup(props) {
     const W = 900;
@@ -32,20 +38,44 @@ export const LineChart = {
     const PAD = { l: 52, r: 8, t: 10, b: 24 };
     const hover = ref(null);
     const n = computed(() => props.series?.length || 0);
-    const max = computed(() => props.fixedMax || niceMax(Math.max(1, ...(props.series || []).flatMap((p) => props.lines.map((l) => p[l.k] ?? 0)))));
-    const x = (i) => PAD.l + (n.value <= 1 ? 0 : (i / (n.value - 1)) * (W - PAD.l - PAD.r));
+    const rawMax = computed(() => props.fixedMax || niceMax(Math.max(1, ...(props.series || []).flatMap((p) => props.lines.map((l) => p[l.k] ?? 0)))));
+    // live: when the scale changes (e.g. a network burst) it stretches smoothly instead of jumping
+    const maxTw = props.capacity ? useTween(() => rawMax.value, { duration: 700 }) : null;
+    const max = computed(() => (maxTw ? maxTw.value : rawMax.value));
+    const stepC = computed(() => (W - PAD.l - PAD.r) / Math.max(1, (props.capacity || 2) - 1));
+    // live: newest reading at the right edge, older ones one fixed step further left each
+    const x = (i) => (props.capacity ? W - PAD.r - (n.value - 1 - i) * stepC.value : PAD.l + (n.value <= 1 ? 0 : (i / (n.value - 1)) * (W - PAD.l - PAD.r)));
     const y = (v) => PAD.t + (H - PAD.t - PAD.b) * (1 - Math.min(v, max.value) / max.value);
+    const f = (v) => v.toFixed(1);
+    const clampY = (v) => Math.min(H - PAD.b, Math.max(PAD.t, v));
+    // Catmull-Rom → cubic Bézier: a soft curve through every reading
+    function seg(pts) {
+      if (!props.smooth || pts.length < 3) return pts.map((p, j) => `${j ? 'L' : 'M'}${f(p[0])},${f(p[1])}`).join('');
+      let d = `M${f(pts[0][0])},${f(pts[0][1])}`;
+      for (let j = 0; j < pts.length - 1; j++) {
+        const p0 = pts[j - 1] || pts[j];
+        const p1 = pts[j];
+        const p2 = pts[j + 1];
+        const p3 = pts[j + 2] || p2;
+        d += `C${f(p1[0] + (p2[0] - p0[0]) / 6)},${f(clampY(p1[1] + (p2[1] - p0[1]) / 6))} ${f(p2[0] - (p3[0] - p1[0]) / 6)},${f(clampY(p2[1] - (p3[1] - p1[1]) / 6))} ${f(p2[0])},${f(p2[1])}`;
+      }
+      return d;
+    }
     // gaps (no samples) break the line instead of drawing to zero
     const paths = computed(() =>
       props.lines.map((l) => {
         let d = '';
-        let pen = false;
+        let pts = [];
         (props.series || []).forEach((p, i) => {
           const v = p[l.k];
-          if (v == null) return (pen = false);
-          d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
-          pen = true;
+          if (v == null) {
+            if (pts.length) d += seg(pts);
+            pts = [];
+            return;
+          }
+          pts.push([x(i), y(v)]);
         });
+        if (pts.length) d += seg(pts);
         const dots = (props.series || []).map((p, i) => ({ i, v: p[l.k] })).filter((p, j, a) => p.v != null && (a[j - 1]?.v == null) && (a[j + 1]?.v == null));
         return { ...l, d, dots };
       }),
@@ -65,31 +95,62 @@ export const LineChart = {
     const ticks = computed(() => [0, 0.5, 1].map((f) => ({ v: max.value * f, y: y(max.value * f) })));
     const xlabels = computed(() => {
       const s = props.series || [];
+      if (props.capacity) {
+        // live: labels stick to their reading (by sequence number) and slide left with it
+        const step = Math.max(1, Math.floor(props.capacity / props.xTicks));
+        return s
+          .map((p, i) => ({ i, p }))
+          .filter((q) => q.p.seq != null && q.p.seq % step === 0 && x(q.i) > PAD.l + 30)
+          .map((q) => ({ key: q.p.seq, x: x(q.i), t: timeLabel(q.p.t, props.spanMin) }));
+      }
       const step = Math.max(1, Math.floor(s.length / props.xTicks));
-      return s.map((p, i) => ({ i, p })).filter((q) => q.i % step === 0).map((q) => ({ x: x(q.i), t: timeLabel(q.p.t, props.spanMin) }));
+      return s.map((p, i) => ({ i, p })).filter((q) => q.i % step === 0).map((q) => ({ key: q.i, x: x(q.i), t: timeLabel(q.p.t, props.spanMin) }));
+    });
+    // live: each new reading slides the lines one step left over the time until the next one
+    const shift = ref(0);
+    const gliding = ref(false);
+    watch(
+      () => props.series?.[n.value - 1]?.t,
+      (t, old) => {
+        if (!props.capacity || !old || !t || reducedMotion() || document.hidden) return;
+        gliding.value = false;
+        shift.value = stepC.value;
+        nextTick(() => requestAnimationFrame(() => requestAnimationFrame(() => ((gliding.value = true), (shift.value = 0)))));
+      },
+    );
+    const scrollStyle = computed(() => ({ transform: `translateX(${shift.value}px)`, transition: gliding.value ? `transform ${props.every}s linear` : 'none' }));
+    const clipId = `lc${++clipSeq}`;
+    const heads = computed(() => {
+      if (!props.capacity || !n.value) return [];
+      const last = props.series[n.value - 1];
+      return props.lines.filter((l) => last[l.k] != null).map((l) => ({ k: l.k, color: l.color, left: (x(n.value - 1) / W) * 100, top: (y(last[l.k]) / H) * 220 }));
     });
     function move(ev) {
       const r = ev.currentTarget.getBoundingClientRect();
       const px = ((ev.clientX - r.left) / r.width) * W;
-      const i = Math.round(((px - PAD.l) / (W - PAD.l - PAD.r)) * (n.value - 1));
+      const i = props.capacity ? n.value - 1 - Math.round((W - PAD.r - px) / stepC.value) : Math.round(((px - PAD.l) / (W - PAD.l - PAD.r)) * (n.value - 1));
       hover.value = i >= 0 && i < n.value ? { i, p: props.series[i], x: x(i) } : null;
     }
     const per = computed(() => (props.perPoint === 0 ? 'live reading' : props.perPoint > 1 ? `avg of ${props.perPoint >= 60 ? props.perPoint / 60 + ' h' : props.perPoint + ' min'}` : 'per minute'));
-    return { W, H, PAD, hover, paths, ticks, xlabels, bandRects, y, move, per };
+    return { W, H, PAD, hover, paths, ticks, xlabels, bandRects, y, move, per, scrollStyle, clipId, heads };
   },
   template: `
-  <div class="tchart">
+  <div class="tchart" :class="{ 'tchart-live': capacity }" :style="capacity ? { '--live-every': every + 's' } : null">
     <div class="tchart-legend" v-if="lines.length > 1"><span v-for="l in lines" :key="l.k"><i :style="{ background: l.color }"></i>{{ l.label }}</span><span v-if="bands.length"><i class="uchart-band-key"></i>busy</span></div>
     <div class="tchart-wrap" @mouseleave="hover = null">
       <svg :viewBox="'0 0 ' + W + ' ' + H" preserveAspectRatio="none" class="tchart-svg" role="img" :aria-label="label" @mousemove="move">
         <rect v-for="(b, i) in bandRects" :key="'b' + i" :x="b.x" :y="PAD.t" :width="b.w" :height="H - PAD.t - PAD.b" class="uchart-band" />
-        <line v-for="t in ticks" :key="t.v" :x1="PAD.l" :x2="W - PAD.r" :y1="t.y" :y2="t.y" class="tchart-grid" />
+        <line v-for="(t, ti) in ticks" :key="ti" :x1="PAD.l" :x2="W - PAD.r" :y1="t.y" :y2="t.y" class="tchart-grid" />
         <line v-for="l in limits" :key="'l' + l.v + l.label" :x1="PAD.l" :x2="W - PAD.r" :y1="y(l.v)" :y2="y(l.v)" class="uchart-limit" />
-        <path v-for="p in paths" :key="p.k" :d="p.d" fill="none" :stroke="p.color" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+        <defs v-if="capacity"><clipPath :id="clipId"><rect :x="PAD.l" :y="0" :width="W - PAD.l - PAD.r" :height="H" /></clipPath></defs>
+        <g :clip-path="capacity ? 'url(#' + clipId + ')' : null"><g :style="capacity ? scrollStyle : null">
+          <path v-for="p in paths" :key="p.k" :d="p.d" fill="none" :stroke="p.color" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+        </g></g>
         <line v-if="hover" :x1="hover.x" :x2="hover.x" :y1="PAD.t" :y2="H - PAD.b" class="uchart-cross" />
       </svg>
-      <div class="tchart-y"><span v-for="t in ticks" :key="t.v" :style="{ top: (t.y / H * 100) + '%' }">{{ fmt(t.v) }}</span></div>
-      <div class="tchart-x"><span v-for="l in xlabels" :key="l.x" :style="{ left: (l.x / W * 100) + '%' }">{{ l.t }}</span></div>
+      <div class="tchart-y"><span v-for="(t, ti) in ticks" :key="ti" :style="{ top: (t.y / H * 100) + '%' }">{{ fmt(t.v) }}</span></div>
+ <span v-for="h in heads" :key="'h' + h.k" class="live-head" :style="{ left: h.left + '%', top: h.top + 'px', '--c': h.color }"></span>
+      <div class="tchart-x"><span v-for="l in xlabels" :key="l.key" :style="{ left: (l.x / W * 100) + '%' }">{{ l.t }}</span></div>
       <template v-if="hover"><span v-for="p in paths" :key="'d' + p.k" v-show="hover.p[p.k] != null" class="uchart-dot" :style="{ left: (hover.x / W * 100) + '%', top: (y(hover.p[p.k] ?? 0) / H * 220) + 'px', background: p.color }"></span></template>
       <div v-if="hover" class="tchart-tip" :style="{ left: Math.min(85, Math.max(12, (hover.x / W) * 100)) + '%' }">
         <b>{{ new Date(hover.p.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: perPoint === 0 ? '2-digit' : undefined }) }}</b> · {{ per }}
@@ -109,20 +170,21 @@ const CAUSE = {
 /** Live now: a reading every 2 seconds while this tab is open (not stored). */
 export const LiveUsage = {
   props: { server: Object },
-  components: { LineChart, LivePill },
+  components: { LineChart, LivePill, LiveNum },
   setup(props) {
     const samples = ref([]);
+    let seq = 0; // numbers each reading, so chart labels can travel with it
     const every = ref(2);
     const error = ref('');
     const live = useLive(() => `/servers/${props.server.id}/live?metrics=1`, {
       init(d) {
         every.value = d.every || 2;
-        samples.value = d.samples || [];
+        samples.value = (d.samples || []).map((x) => ({ ...x, seq: seq++ }));
         error.value = d.error || '';
       },
       sample(s) {
         error.value = '';
-        samples.value = [...samples.value.slice(-149), s];
+        samples.value = [...samples.value.slice(-149), { ...s, seq: seq++ }];
       },
       status(d) {
         error.value = d.ok ? '' : d.error;
@@ -155,14 +217,14 @@ export const LiveUsage = {
     </div>
     <div v-if="error" class="alert alert-warn mb-12"><span class="alert-icon">⚠</span><span>{{ error }}</span></div>
     <div class="tiles live-tiles">
-      <div class="tile"><div class="tile-label">CPU</div><div class="tile-value live-num">{{ last?.cpu ?? '—' }}<span class="muted">%</span></div><div class="tile-sub">load {{ (last?.load || []).join(' · ') || '—' }}</div></div>
-      <div class="tile"><div class="tile-label">Memory</div><div class="tile-value live-num">{{ last?.mem ?? '—' }}<span class="muted">%</span></div><div class="tile-sub">{{ last ? bytes(last.mem_used) + ' of ' + bytes(last.mem_total) : '—' }}</div></div>
-      <div class="tile" v-if="hasGpu"><div class="tile-label">GPU</div><div class="tile-value live-num">{{ last?.gpu ?? '—' }}<span class="muted">%</span></div><div class="tile-sub">NVIDIA</div></div>
-      <div class="tile"><div class="tile-label">Network</div><div class="tile-value live-num small-value">↓ {{ last?.net_rx != null ? bytes(last.net_rx) + '/s' : '—' }}</div><div class="tile-sub">↑ {{ last?.net_tx != null ? bytes(last.net_tx) + '/s' : '—' }} out</div></div>
+      <div class="tile"><div class="tile-label">CPU</div><div class="tile-value"><live-num :value="last?.cpu" /><span class="muted">%</span></div><div class="tile-sub">load {{ (last?.load || []).join(' · ') || '—' }}</div></div>
+      <div class="tile"><div class="tile-label">Memory</div><div class="tile-value"><live-num :value="last?.mem" /><span class="muted">%</span></div><div class="tile-sub">{{ last ? bytes(last.mem_used) + ' of ' + bytes(last.mem_total) : '—' }}</div></div>
+      <div class="tile" v-if="hasGpu"><div class="tile-label">GPU</div><div class="tile-value"><live-num :value="last?.gpu" /><span class="muted">%</span></div><div class="tile-sub">NVIDIA</div></div>
+      <div class="tile"><div class="tile-label">Network</div><div class="tile-value small-value">↓ <live-num :value="last?.net_rx" :fmt="rateFmt" /></div><div class="tile-sub">↑ <live-num :value="last?.net_tx" :fmt="rateFmt" /> out</div></div>
     </div>
     <div v-if="samples.length > 1" class="grid grid-2 mt-8">
-      <line-chart :series="samples" :lines="resLines" :fixed-max="100" :fmt="pctFmt" :span-min="5" :per-point="0" :x-ticks="4" label="Live CPU and memory use in percent" />
-      <line-chart :series="samples" :lines="netLines" :fmt="rateFmt" :span-min="5" :per-point="0" :x-ticks="4" label="Live network bytes per second" />
+      <line-chart :series="samples" :lines="resLines" :fixed-max="100" :fmt="pctFmt" :span-min="5" :per-point="0" :x-ticks="4" :capacity="150" :every="every" smooth label="Live CPU and memory use in percent" />
+      <line-chart :series="samples" :lines="netLines" :fmt="rateFmt" :span-min="5" :per-point="0" :x-ticks="4" :capacity="150" :every="every" smooth label="Live network bytes per second" />
     </div>
     <div v-else-if="live.state.value !== 'paused'" class="muted small mt-8">Waiting for the first readings…</div>
   </div>`,

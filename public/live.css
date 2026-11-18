@@ -36,3 +36,55 @@
 @media (prefers-reduced-motion: reduce) {
   .live-pill i, .log-jump { animation: none !important; }
 }
+
+/* ---------- smooth motion for live data ---------- */
+/* numbers count to each new value; a soft tint shows which way they moved */
+.live-num { display: inline-block; font-variant-numeric: tabular-nums; transition: color 0.9s ease, text-shadow 0.9s ease; }
+.live-num.live-up { color: var(--amber); }
+.live-num.live-down { color: var(--green); }
+.tile-sub .live-num.live-up, .tile-sub .live-num.live-down { color: inherit; }
+
+/* meters: a longer, eased fill, and a light sheen moving across while live */
+.tiles-live .meter-fill { transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.6s ease; position: relative; overflow: hidden; }
+.tiles-live .meter-fill::after {
+  content: ''; position: absolute; inset: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: sb-live-sheen 2.4s ease-in-out infinite;
+}
+@keyframes sb-live-sheen { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+
+/* live line charts: time labels travel with the lines; a glowing dot marks the newest reading */
+.tchart-live .tchart-x span { transition: left var(--live-every, 2s) linear; }
+.tchart-live .tchart-y span { transition: top 0.7s ease; }
+.live-head {
+  position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%;
+  background: var(--c); pointer-events: none; z-index: 1;
+  box-shadow: 0 0 0 2px var(--panel, #fff);
+  transition: top 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.live-head::after {
+  content: ''; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--c);
+  animation: sb-live-ring 2s ease-out infinite;
+}
+@keyframes sb-live-ring { from { transform: scale(0.6); opacity: 0.9; } to { transform: scale(2.6); opacity: 0; } }
+
+/* traffic bars: grow to their new height, slide left when a minute passes, new bars rise from the bottom */
+.tchart-bars rect.tbar {
+  transition: x 0.8s ease, y 0.8s cubic-bezier(0.22, 1, 0.36, 1), height 0.8s cubic-bezier(0.22, 1, 0.36, 1), width 0.8s ease, opacity 0.2s;
+  transform-box: fill-box; transform-origin: 50% 100%;
+  animation: sb-live-grow 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes sb-live-grow { from { transform: scaleY(0); } }
+
+/* log lines that just arrived fade and slide in, with a short highlight */
+.log .l-new { animation: sb-live-line 1.4s ease-out; }
+@keyframes sb-live-line {
+  0% { opacity: 0; transform: translateY(4px); background: rgba(124, 140, 255, 0.22); }
+  25% { opacity: 1; transform: none; }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-num, .tiles-live .meter-fill, .tchart-live .tchart-x span, .tchart-live .tchart-y span, .live-head, .tchart-bars rect.tbar { transition: none !important; }
+  .tiles-live .meter-fill::after, .live-head::after, .tchart-bars rect.tbar, .log .l-new { animation: none !important; }
+}
