@@ -157,6 +157,7 @@ Every backup is uploaded right after it's made; the local copy is removed about 
 3. Push to the live branch: the commit is deployed to each server — standby servers first, the live one last, with a health check after each. A commit that is not on the branch (e.g. from a pull request) is always refused.
 
 - The runner runs as user `sb-runner` and may only run Switchboard's deploy/preview commands.
+- **A server that can't pull from GitHub** (e.g. a backup server added later, or one copied without its `.git` folder): CI/CD tab → **Servers and Git** → **Connect to Git** (or **+ Connect a server** for one not in the project yet). The server gets its own read-only deploy key, and its app folder becomes a Git checkout of the branch: an empty folder is cloned, a folder that already has files is connected **without changing any file**, a checkout that already works is left alone. In runner mode it also gets a runner and the workflow is committed again. Tick *deploy the newest commit* to bring it up to date right away. **Check servers** shows each server's branch, commit, how far behind it is and local edits.
 - Your servers only need **outgoing** access to GitHub; nothing has to reach them or Switchboard from outside.
 - **Staging**: CI/CD tab → *+ Add staging* (own branch, address and database; "Copy live data" anytime).
 - **Pull request previews**: choose a preview server and domain; every PR gets `pr-<number>-<project>.<domain>`, removed when the PR closes.
@@ -318,6 +319,7 @@ node dev/e2e.mjs                     # switch, copy, backup/restore, failover, a
 node dev/e2e-extra.mjs               # PostgreSQL, MariaDB, failed import rollback
 ./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-clone-pick.mjs, e2e-copy-project.mjs, e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs, e2e-cleanup.mjs)
 ./dev/ci-setup.sh && node dev/e2e-ci.mjs         # templates, CI/CD, staging, previews (also e2e-server.mjs, e2e-traffic.mjs)
+./dev/ci-setup.sh && node dev/e2e-git-connect.mjs # Connect a (backup) server to Git: clone / attach / fix origin
 docker compose -f dev/docker-compose.yml --profile s3 up -d s3 && node dev/e2e-s3.mjs   # S3 backups
 docker compose -f dev/docker-compose.yml down -v # remove the lab
 ```

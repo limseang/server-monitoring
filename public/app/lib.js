@@ -173,6 +173,7 @@ export const JOB_TYPES = {
   'staging-data': 'Copy to staging',
   'ci-setup': 'CI/CD setup',
   'ci-servers': 'Update servers',
+  'ci-connect': 'Connect to Git',
   'runner-remove': 'Remove runner',
   'preview-down': 'Remove preview',
   'project-copy': 'Copy project',

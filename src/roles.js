@@ -31,7 +31,7 @@ const DEVELOPER = [
   ['POST', /^\/projects\/\d+\/(check|dns\/refresh)$/],
   ['POST', /^\/servers\/\d+\/traffic\/collect$/],
   ['POST', /^\/jobs\/(\d+)\/cancel$/, ownJob],
-  ['POST', /^\/projects\/\d+\/ci\/(refresh|run)$/],
+  ['POST', /^\/projects\/\d+\/ci\/(refresh|run|git-check)$/],
   ['POST', /^\/projects\/\d+\/staging\/\d+\/data$/],
   ['POST', /^\/projects\/\d+\/previews\/sync$/],
   ['DELETE', /^\/projects\/\d+\/previews\/\d+$/],

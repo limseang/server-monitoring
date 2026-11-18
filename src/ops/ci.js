@@ -8,8 +8,8 @@ import * as cf from '../cloudflare.js';
 import * as gh from '../github.js';
 import { exec } from '../ssh.js';
 import { slugify } from '../util.js';
-import { connectTo, runRemote, asRoot, shq } from './remote.js';
-import { TEMPLATES, installHelper, pushProjectConf, ensureRepoAccess, helper } from './stack.js';
+import { connectTo, runRemote, asRoot, shq, shellScript } from './remote.js';
+import { TEMPLATES, installHelper, pushProjectConf, ensureRepoAccess, helper, gitSshCommand, appUser } from './stack.js';
 
 /**
  * GitHub CI/CD with self-hosted runners.
@@ -216,31 +216,267 @@ async function installRunner(ctx, conn, server, repo) {
   else insert('runners', row);
 }
 
-/** Helper + project settings on every server; runners too when `runners` is set. */
-async function setupServers(ctx, root, { runners }) {
-  const projects = ciProjects(root);
+/** Helper + project settings on every server; runners too when `runners` is set, Git checkouts when `git` is set. */
+async function setupServers(ctx, root, { runners, git = false, only = null }) {
   for (const server of ciServers(root)) {
+    if (only && server.id !== only) continue;
     ctx.step(`${runners ? 'Runner and settings' : 'Settings'} on ${server.name}`);
     const conn = await connectTo(ctx, server);
     try {
       await installHelper(ctx, conn, server);
-      let wroteRoot = false;
-      for (const p of projects) {
-        const dep = deploymentsOf(p.id).find((d) => d.server_id === server.id);
-        if (!dep) continue;
-        await pushProjectConf(ctx, conn, server, p, dep);
-        if (p.id === root.id) wroteRoot = true;
-        ctx.log(`Settings of ${p.name} written`);
+      const deps = depsOn(root, server);
+      for (const { project, dep } of deps) {
+        await pushProjectConf(ctx, conn, server, project, dep);
+        ctx.log(`Settings of ${project.name} written`);
       }
       // Preview server that doesn't run the app itself still needs the project's settings.
-      if (!wroteRoot && root.preview_server_id === server.id) await pushProjectConf(ctx, conn, server, root, { app_dir: '' });
-      if (root.git_repo && root.template) await ensureRepoAccess(ctx, conn, server, root.git_repo, { addKey: gh.addDeployKey });
+      if (!deps.some((x) => x.project.id === root.id) && root.preview_server_id === server.id) await pushProjectConf(ctx, conn, server, root, { app_dir: '' });
+      if (git) for (const { project, dep } of deps) await connectGit(ctx, conn, server, root, project, dep);
+      else if (root.git_repo && root.template) await ensureRepoAccess(ctx, conn, server, root.git_repo, { addKey: gh.addDeployKey });
+      // A preview-only server has no checkout of its own, but builds previews from the repo.
+      if (git && !deps.length && root.git_repo && gh.hasToken()) await ensureRepoAccess(ctx, conn, server, root.git_repo, { addKey: gh.addDeployKey });
       if (runners) await installRunner(ctx, conn, server, root.git_repo);
     } finally {
       conn.end();
     }
   }
 }
+
+/* ------------------------------------------------------------------ Git checkout on a server */
+/** The project (and staging copies) deployed on this server. */
+export const depsOn = (root, server) =>
+  ciProjects(root).flatMap((project) => deploymentsOf(project.id).filter((d) => d.server_id === server.id).map((dep) => ({ project, dep })));
+
+/** "git@github.com:Acme/Shop.git", "https://github.com/acme/shop" → "acme/shop" */
+export const repoOfUrl = (u) =>
+  String(u || '').trim().replace(/\.git$/, '').replace(/\/+$/, '').split(/[:/]/).slice(-2).join('/').toLowerCase();
+
+/**
+ * check:   look at the app folder (is it a checkout of the repo? can it fetch?) — changes nothing but origin/<branch>.
+ * connect: make it a checkout that can pull: clone into an empty folder, or attach an existing folder
+ *          (git init + reset to the branch: files stay exactly as they are), and use the deploy key.
+ * Runs as the SSH user, like the deploy script. Prints "SB_GIT key=value" lines.
+ */
+function gitScript({ mode, dir, url, branch, sshCmd }) {
+  return `DIR=${shq(dir)}; URL=${shq(url)}; BRANCH=${shq(branch)}; SSHC=${shq(sshCmd)}
+export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=true SSH_ASKPASS=true SSH_ASKPASS_REQUIRE=never
+out() { printf 'SB_GIT %s=%s\\n' "$1" "$(printf %s "$2" | tr '\\n' ' ')"; }
+gssh() { s="$(git config --get core.sshCommand 2>/dev/null || true)"; echo "\${s:-\${SSHC:-ssh}} -o BatchMode=yes -o ConnectTimeout=20"; }
+fetch() { GIT_SSH_COMMAND="$(gssh)" git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; }
+report() {
+  out branch "$(git symbolic-ref -q --short HEAD || echo detached)"
+  out commit "$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
+  out remote_commit "$(git rev-parse -q --verify "refs/remotes/origin/$BRANCH" 2>/dev/null || true)"
+  out behind "$(git rev-list --count "HEAD..refs/remotes/origin/$BRANCH" 2>/dev/null || true)"
+  out changed "$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')"
+}
+command -v git >/dev/null 2>&1 || { out state no_git_tool; exit 0; }
+${
+  mode === 'check'
+    ? `[ -d "$DIR" ] || { out state missing; exit 0; }
+[ -d "$DIR/.git" ] || { out state not_git; out files "$(ls -A "$DIR" 2>/dev/null | wc -l | tr -d ' ')"; exit 0; }
+cd "$DIR" || { out state error; out error "cannot open $DIR"; exit 0; }
+out remote "$(git remote get-url origin 2>/dev/null || true)"
+if err="$(fetch 2>&1)"; then out state ok; else out state no_access; out error "$(printf %s "$err" | tail -n 3)"; fi
+report`
+    : `set -e
+if [ -d "$DIR/.git" ]; then
+  cd "$DIR"
+  OLD="$(git remote get-url origin 2>/dev/null || true)"
+  if [ -z "$OLD" ]; then git remote add origin "$URL"; echo ">>> origin set to $URL"
+  elif [ "$OLD" != "$URL" ]; then git remote set-url origin "$URL"; echo ">>> origin was $OLD — now $URL"; fi
+  if [ -n "$SSHC" ]; then git config core.sshCommand "$SSHC"; echo '>>> git uses the Switchboard deploy key for this repository'; fi
+  fetch
+  git config "branch.$BRANCH.remote" >/dev/null 2>&1 || { git config "branch.$BRANCH.remote" origin; git config "branch.$BRANCH.merge" "refs/heads/$BRANCH"; }
+elif [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
+  echo ">>> $DIR is empty: clone $URL (branch $BRANCH)"
+  GIT_SSH_COMMAND="$(gssh)" git clone -q --branch "$BRANCH" "$URL" "$DIR"
+  cd "$DIR"
+  [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
+  out done cloned
+else
+  echo ">>> $DIR already has files but no Git: connect it to $URL ($BRANCH) — no file is changed"
+  cd "$DIR"
+  git init -q
+  git symbolic-ref HEAD "refs/heads/$BRANCH"
+  git remote add origin "$URL"
+  [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
+  fetch
+  git reset -q "refs/remotes/origin/$BRANCH"
+  git config "branch.$BRANCH.remote" origin; git config "branch.$BRANCH.merge" "refs/heads/$BRANCH"
+  out done attached
+fi
+out state ok
+out remote "$URL"
+report`
+}`;
+}
+
+const parseGit = (stdout) => {
+  const o = {};
+  for (const line of String(stdout || '').split('\n')) {
+    const m = line.match(/^SB_GIT (\w+)=(.*)$/);
+    if (m) o[m[1]] = m[2].trim();
+  }
+  for (const k of ['behind', 'changed', 'files']) if (o[k] !== undefined && o[k] !== '') o[k] = Number(o[k]);
+  return o;
+};
+
+/** Git state of one deployment, as last seen (kept in the root project's ci_state.git, by deployment id). */
+export const gitStates = (root) => ci(root).git || {};
+function saveGit(root, dep, st) {
+  const fresh = getProject(root.id);
+  const git = { ...gitStates(fresh), [dep.id]: { ...st, server_id: dep.server_id, project_id: dep.project_id, dir: dep.app_dir || '', at: now() } };
+  // Forget deployments that are gone.
+  const live = new Set(ciProjects(fresh).flatMap((p) => deploymentsOf(p.id).map((d) => String(d.id))));
+  for (const k of Object.keys(git)) if (!live.has(k)) delete git[k];
+  saveCi(root.id, { git });
+}
+
+export async function checkGit(conn, root, project, dep) {
+  if (!dep.app_dir) return { state: 'no_dir' };
+  const branch = project.git_branch || root.git_branch || 'main';
+  const r = await runRemote(null, conn, shellScript(gitScript({ mode: 'check', dir: dep.app_dir, url: gh.gitUrl(root.git_repo), branch, sshCmd: gitSshCommand(root.git_repo) })), { timeout: 3 * 60000, quiet: true, okCodes: [0, 1, 2, 126, 127, 128] });
+  const st = parseGit(r.stdout);
+  if (!st.state) return { state: 'error', error: (r.stderr || r.stdout || '').trim().split('\n').slice(-2).join(' ') || `exit ${r.code}` };
+  return st;
+}
+
+/** Make the app folder a checkout of the repo that this server can pull — or leave it if it already is one. */
+export async function connectGit(ctx, conn, server, root, project, dep) {
+  const where = `${server.name}:${dep.app_dir || '?'}${project.id === root.id ? '' : ` (${project.name})`}`;
+  if (!dep.app_dir) {
+    ctx.warn(`${server.name}: no app folder set for ${project.name} — set it on the project's Servers tab, then connect again`);
+    saveGit(root, dep, { state: 'no_dir' });
+    return { state: 'no_dir' };
+  }
+  if (!root.git_repo) throw new Error('Set the GitHub repository first');
+  const branch = project.git_branch || root.git_branch || 'main';
+  ctx.step(`Git in ${where}`);
+  const before = await checkGit(conn, root, project, dep);
+  const sameRepo = !before.remote || repoOfUrl(before.remote) === repoOfUrl(root.git_repo);
+  if (before.state === 'ok' && sameRepo) {
+    ctx.log(`${where} is already a Git checkout of ${root.git_repo} and can pull — left as it is`);
+    saveGit(root, dep, before);
+    return before;
+  }
+  if (before.state === 'ok') {
+    // It works, but with another repository: don't silently re-point a working setup.
+    ctx.warn(`${where} pulls from ${before.remote}, not ${root.git_repo} — left as it is. Change the repository in CI/CD settings, or fix the folder's origin by hand.`);
+    saveGit(root, dep, { ...before, state: 'other_repo' });
+    return before;
+  }
+  ctx.log(
+    {
+      missing: `${dep.app_dir} does not exist yet — it will be created and the repository cloned into it`,
+      not_git: before.files ? `${dep.app_dir} has ${before.files} files but is not a Git checkout — it is connected to the repository without changing any file` : `${dep.app_dir} is empty — the repository is cloned into it`,
+      no_access: `${dep.app_dir} is a Git checkout but cannot pull${before.error ? ` (${before.error})` : ''} — giving it access`,
+      no_git_tool: 'git is not installed — installing it',
+    }[before.state] || `State: ${before.state}${before.error ? ` — ${before.error}` : ''}`,
+  );
+  // Root part: git installed, the folder exists and belongs to the SSH user (it runs the deploy script).
+  const user = appUser(server);
+  await runRemote(
+    ctx,
+    conn,
+    asRoot(
+      server,
+      `set -e
+if ! command -v git >/dev/null 2>&1; then
+  echo '>>> Installing git'
+  if command -v apt-get >/dev/null 2>&1; then export DEBIAN_FRONTEND=noninteractive; apt-get update -q >/dev/null && apt-get install -y -q git ca-certificates >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q git >/dev/null
+  elif command -v yum >/dev/null 2>&1; then yum install -y -q git >/dev/null
+  elif command -v apk >/dev/null 2>&1; then apk add -q git; fi
+fi
+D=${shq(dep.app_dir)}
+[ -e "$D" ] || { mkdir -p "$D"; chown ${shq(user)}: "$D"; echo ">>> Created $D (owner ${user})"; }`,
+    ),
+    { timeout: 10 * 60000 },
+  );
+  if (gh.hasToken()) await ensureRepoAccess(ctx, conn, server, root.git_repo, { addKey: gh.addDeployKey });
+  else if (gitSshCommand(root.git_repo)) ctx.warn('No GitHub token: Switchboard cannot add a deploy key — the server must already be allowed to read the repository');
+  try {
+    // quiet: the SB_GIT lines are for Switchboard; the readable ">>>" lines go to the log.
+    const r = await runRemote(ctx, conn, shellScript(gitScript({ mode: 'connect', dir: dep.app_dir, url: gh.gitUrl(root.git_repo), branch, sshCmd: gitSshCommand(root.git_repo) })), { timeout: 30 * 60000, quiet: true });
+    for (const line of String(r.stdout).split('\n')) if (line.startsWith('>>> ')) ctx.log(line.slice(4));
+    const st = parseGit(r.stdout);
+    saveGit(root, dep, st);
+    const head = st.commit ? `${st.branch} @ ${st.commit.slice(0, 7)}` : st.branch;
+    ctx.log(`${where} is connected to ${root.git_repo} — ${head}${st.behind ? `, ${st.behind} commit(s) behind origin/${branch}` : ', up to date with GitHub'}`);
+    if (st.done === 'attached' && st.changed) ctx.warn(`${st.changed} file(s) in ${dep.app_dir} differ from ${branch} on GitHub (kept as they are). If your deploy script runs "git pull", local edits to tracked files can block it — "git status" in that folder shows them.`);
+    if (st.branch && st.branch !== branch && st.branch !== 'detached') ctx.warn(`${dep.app_dir} has branch ${st.branch} checked out, the project deploys ${branch}`);
+    return st;
+  } catch (e) {
+    for (const line of String(e.result?.stdout || '').split('\n')) if (line.startsWith('>>> ')) ctx.log(line.slice(4));
+    const err = `${e.result?.stderr || ''}\n${e.result?.stdout || ''}`.trim().split('\n').slice(-3).join(' ');
+    saveGit(root, dep, { state: 'no_access', error: err || e.message });
+    throw e;
+  }
+}
+
+/** Read-only look at every server of the project (in parallel). */
+export async function checkAllGit(root) {
+  await Promise.all(
+    ciServers(root).map(async (server) => {
+      const deps = depsOn(root, server);
+      if (!deps.length) return;
+      let conn;
+      try {
+        conn = await connectTo(null, server);
+        for (const { project, dep } of deps) saveGit(root, dep, await checkGit(conn, root, project, dep).catch((e) => ({ state: 'error', error: e.message })));
+      } catch (e) {
+        for (const { dep } of deps) saveGit(root, dep, { state: 'unreachable', error: e.message });
+      } finally {
+        conn?.end();
+      }
+    }),
+  );
+  bus.emit('state', { projectId: root.id });
+  return gitStates(getProject(root.id));
+}
+
+/** Connect one server (e.g. a backup server added later) to the repo + CI/CD, optionally deploy the newest commit. */
+defineJob('ci-connect', async (ctx, p) => {
+  const root = rootOf(getProject(ctx.job.project_id));
+  if (!root.git_repo) throw new Error('Set the GitHub repository first');
+  const server = getServer(Number(p.server));
+  if (!server) throw new Error('Server not found');
+  const deps = depsOn(root, server);
+  if (!deps.length) throw new Error(`${server.name} is not part of ${root.name} — add it to the project first`);
+  const runner = root.ci_enabled && root.ci_mode !== 'pull';
+  try {
+    if (gh.hasToken()) {
+      ctx.step(`Check access to ${root.git_repo}`);
+      const r = await gh.getRepo(root.git_repo);
+      ctx.log(`${r.full_name} — ${r.private ? 'private' : 'public'}, default branch ${r.default_branch}`);
+    } else ctx.warn('No GitHub token (Settings → GitHub): no deploy key, runner or workflow update — only the folder is connected');
+    await setupServers(ctx, root, { runners: runner && gh.hasToken(), git: true, only: server.id });
+    if (runner && gh.hasToken()) {
+      ctx.step('Commit the workflow file (adds this server to the deploy jobs)');
+      await commitWorkflow(ctx, root);
+    }
+    const how = !root.ci_enabled ? 'CI/CD is not on for this project: deploys run when you click Deploy (or turn on CI/CD)' : runner ? 'every push now also deploys here, through the GitHub runner' : 'Switchboard now deploys every new commit here too';
+    ctx.log(`${server.name} is connected — ${how}`);
+    if (p.deploy) {
+      for (const { project, dep } of deps) {
+        if (!String(project.deploy_script || '').trim()) {
+          ctx.warn(`${project.name} has no deploy script (Settings → Deploy script) — not deployed`);
+          continue;
+        }
+        const sha = gh.hasToken() ? await gh.branchSha(root.git_repo, project.git_branch || 'main').catch(() => null) : null;
+        const job = enqueue({ type: 'deploy', title: `Deploy ${project.name} on ${server.name}${sha ? ` @ ${sha.slice(0, 7)}` : ''} (just connected to Git)`, projectId: project.id, params: { deployment: dep.id, ...(sha ? { commit: sha } : {}) }, user: ctx.user });
+        ctx.log(`Deploy of ${project.name} on ${server.name} queued (job #${job.id})`);
+      }
+    }
+    logEvent('success', `${root.name}: ${server.name} connected to ${root.git_repo}${runner ? ' (runner + workflow)' : ''}`, { projectId: root.id, serverId: server.id, jobId: ctx.id, user: ctx.user });
+  } catch (e) {
+    alert('error', `${root.name}: connecting ${server.name} to Git FAILED — ${e.message}`, { projectId: root.id, jobId: ctx.id, link: `#/projects/${root.id}` });
+    throw e;
+  } finally {
+    bus.emit('state', { projectId: root.id });
+  }
+});
 
 defineJob('ci-setup', async (ctx, p) => {
   const root = rootOf(getProject(ctx.job.project_id));
@@ -256,7 +492,7 @@ defineJob('ci-setup', async (ctx, p) => {
     const pull = root.ci_mode === 'pull';
     saveCi(root.id, { repo_private: !!r.private });
     if (!pull && !r.private) ctx.warn('This repository is PUBLIC: a self-hosted runner can be targeted by pull requests from strangers. Prefer the "Switchboard pulls" mode, or require approval for outside contributors in GitHub → Settings → Actions.');
-    await setupServers(ctx, root, { runners: !pull });
+    await setupServers(ctx, root, { runners: !pull, git: true });
     const tests = root.ci_test_on !== 'none' && String(root.ci_test_cmd || '').trim();
     if (p.commit !== false && (!pull || tests)) {
       ctx.step(pull ? 'Commit the workflow file (tests only — Switchboard deploys)' : 'Commit the workflow file');

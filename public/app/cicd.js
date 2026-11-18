@@ -350,11 +350,93 @@ export const StagingDialog = {
   </modal>`,
 };
 
+/* ------------------------------------------------------------------ connect a server to Git */
+export const ConnectGitDialog = {
+  props: { project: Object, ci: Object, serverId: Number },
+  components: { FolderPicker },
+  setup(props) {
+    const c = props.ci;
+    const inProject = (id) => c.servers.find((s) => s.id === id);
+    const others = c.all_servers.filter((s) => !inProject(s.id));
+    const live = c.servers.flatMap((s) => s.deps).find((d) => d.active) || c.servers.flatMap((s) => s.deps)[0];
+    const f = reactive({ server_id: props.serverId || others[0]?.id || c.servers[0]?.id || '', app_dir: live?.dir || '', deploy: true });
+    const browsing = ref(false);
+    const srv = computed(() => c.all_servers.find((s) => s.id === f.server_id));
+    const member = computed(() => inProject(f.server_id));
+    const needDir = computed(() => !member.value || member.value.deps.some((d) => !d.dir));
+    const anyScript = computed(() => (member.value ? member.value.deps.some((d) => d.deploy_script) : c.projects[0] && live?.deploy_script));
+    const dirOk = computed(() => !needDir.value || /^\/[^\0]+$/.test(f.app_dir));
+    const busy = ref(false);
+    async function go() {
+      busy.value = true;
+      try {
+        const r = await http.post(`/projects/${c.root.id}/ci/connect`, { server_id: f.server_id, app_dir: needDir.value ? f.app_dir : undefined, deploy: f.deploy && !!anyScript.value });
+        closeDialog();
+        store.live++;
+        showJob(r.job.id);
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+    const pick = (path) => {
+      f.app_dir = path;
+      browsing.value = false;
+    };
+    return { c, f, others, live, srv, member, needDir, anyScript, dirOk, busy, browsing, go, pick, closeDialog };
+  },
+  template: `
+  <modal :title="'Connect a server to ' + c.repo" @close="closeDialog">
+    <div class="form">
+      <p class="muted" style="margin:0">Use this when a server (for example your <b>backup server</b>) can't pull from GitHub or doesn't get new commits.</p>
+      <div class="field"><label>Server</label>
+        <select v-model.number="f.server_id">
+          <optgroup v-if="c.servers.length" label="Already in this project"><option v-for="s in c.servers" :key="s.id" :value="s.id">{{ s.name }} ({{ s.ip }})</option></optgroup>
+          <optgroup v-if="others.length" label="Not in this project yet (added as a standby)"><option v-for="s in others" :key="s.id" :value="s.id">{{ s.name }} ({{ s.ip }})</option></optgroup>
+        </select>
+        <span v-if="!member && live" class="hint">It is added to {{ c.root.name }} as a standby server, with the same container and database settings as the live one.</span></div>
+      <div class="field" v-if="needDir"><label>App folder on {{ srv ? srv.name : 'the server' }}</label>
+        <div class="folder-go"><input v-model.trim="f.app_dir" class="code" placeholder="/srv/shop"><button type="button" class="btn btn-sm" :disabled="!srv" @click="browsing = !browsing">{{ browsing ? 'Hide' : 'Browse…' }}</button></div>
+        <span v-if="!dirOk" class="hint text-red">Use a full path, like /srv/shop.</span></div>
+      <folder-picker v-if="browsing && srv" :server="srv" :start="f.app_dir || '/srv/x'" :app-name="c.root.slug" @pick="pick" @close="browsing = false" />
+      <div class="fieldset">
+        <div class="fieldset-title">What happens</div>
+        <ol class="small" style="margin:0;padding-left:18px;line-height:1.7">
+          <li>git is installed if missing, and the server gets its own <b>read-only deploy key</b> on {{ c.repo }}.</li>
+          <li>The app folder becomes a Git checkout of <code>{{ c.branch }}</code>:
+            <span class="muted">empty folder → cloned · folder with files but no Git → connected <b>without changing any file</b> · already a checkout that works → left alone.</span></li>
+          <li v-if="c.enabled && c.mode !== 'pull'">A GitHub runner is installed and the workflow file is committed again with this server in it.</li>
+          <li v-else-if="c.enabled">Switchboard deploys every new commit here too (standby first, live last).</li>
+          <li v-else>CI/CD is not on yet — after this you can deploy here, and "Set up CI/CD" makes it automatic.</li>
+        </ol>
+      </div>
+      <label class="check" v-if="anyScript"><input type="checkbox" v-model="f.deploy"><span class="check-text">Then deploy the newest commit on it (runs the project's deploy script)</span></label>
+      <div v-else class="hint">No deploy script set for this project, so nothing is deployed — only the folder is connected.</div>
+    </div>
+    <template #footer>
+      <button class="btn btn-ghost" @click="closeDialog">Cancel</button>
+      <button class="btn btn-primary" @click="go" :disabled="busy || !f.server_id || !dirOk">Connect to Git</button>
+    </template>
+  </modal>`,
+};
+
 /* ------------------------------------------------------------------ CI/CD tab */
 const RUN_BADGE = (r) =>
   r.status !== 'completed'
     ? ['badge-blue', r.status === 'queued' ? 'queued' : 'running']
     : { success: ['badge-green', 'passed'], failure: ['badge-red', 'failed'], cancelled: ['badge-gray', 'cancelled'], skipped: ['badge-gray', 'skipped'], timed_out: ['badge-red', 'timed out'] }[r.conclusion] || ['badge-gray', r.conclusion || '?'];
+const GIT_BADGE = {
+  ok: ['badge-green', 'connected'],
+  other_repo: ['badge-amber', 'other repository'],
+  no_access: ['badge-red', "can't pull"],
+  not_git: ['badge-amber', 'not a Git folder'],
+  missing: ['badge-amber', 'folder missing'],
+  no_dir: ['badge-amber', 'no app folder set'],
+  no_git_tool: ['badge-amber', 'git not installed'],
+  unreachable: ['badge-red', 'server unreachable'],
+  error: ['badge-red', 'error'],
+};
 const PREVIEW_BADGE = { waiting: ['badge-gray', 'waiting for CI'], building: ['badge-blue', 'building'], ready: ['badge-green', 'ready'], failed: ['badge-red', 'failed'] };
 
 export const CicdTab = {
@@ -385,7 +467,10 @@ export const CicdTab = {
         toast(e.message, 'error');
       }
     }
-    onMounted(() => load(true));
+    onMounted(async () => {
+      await load(true);
+      if (c.value?.is_root && c.value.repo && c.value.servers.length) checkGit();
+    });
     watch(() => store.live, () => load());
     async function act(key, fn, ok) {
       busy.value[key] = true;
@@ -405,6 +490,11 @@ export const CicdTab = {
       runJob(http.post(`/projects/${props.project.id}/ci/setup`, { commit: true }));
     };
     const updateServers = () => runJob(http.post(`/projects/${props.project.id}/ci/servers`));
+    const gitOf = (d) => (c.value.git || {})[d.id] || null;
+    const gitBadge = (d) => (gitOf(d) ? GIT_BADGE[gitOf(d).state] || ['badge-gray', gitOf(d).state] : ['badge-gray', 'not checked']);
+    const notConnected = computed(() => (c.value ? c.value.servers.filter((s) => s.deps.some((d) => gitOf(d) && gitOf(d).state !== 'ok')) : []));
+    const checkGit = () => act('git', () => http.post(`/projects/${c.value.root.id}/ci/git-check`));
+    const connect = (s) => openDialog('connect-git', { project: props.project, ci: c.value, serverId: s ? s.id : undefined });
     const commit = () => act('commit', () => http.post(`/projects/${props.project.id}/ci/commit`), 'Workflow committed to GitHub');
     const refresh = () => act('refresh', () => http.post(`/projects/${props.project.id}/ci/refresh`));
     const runNow = () => act('run', () => http.post(`/projects/${props.project.id}/ci/run`, { branch: runBranch.value }), `Started on ${runBranch.value} — it shows up below in a few seconds`);
@@ -422,7 +512,7 @@ export const CicdTab = {
       runJob(http.post(`/projects/${c.value.root.id}/staging/${s.id}/data`));
     };
     const runBadge = RUN_BADGE;
-    return { c, f, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
+    return { c, f, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
   },
   template: `
   <div v-if="!c" class="muted">Loading…</div>
@@ -430,6 +520,7 @@ export const CicdTab = {
     <div v-if="!c.is_root" class="alert alert-info"><span class="alert-icon">ℹ</span><span>This is a staging copy. CI/CD is managed on <a :href="'#/projects/' + c.root.id">{{ c.root.name }}</a>; pushes to <code>{{ project.git_branch }}</code> deploy here.</span></div>
     <div v-if="!c.token" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Add a GitHub token first: <a href="#/settings">Settings → GitHub</a>.</span></div>
     <div v-if="c.error" class="alert alert-error"><span class="alert-icon">✖</span><span>GitHub: {{ c.error }}</span></div>
+    <div v-if="c.is_root && notConnected.length" class="alert alert-warn"><span class="alert-icon">⚠</span><span><b>{{ notConnected.map(s => s.name).join(', ') }}</b> can't get updates from GitHub yet. <button class="btn btn-xs admin-only" @click="connect(notConnected[0])">Connect to Git</button></span></div>
 
     <div class="card card-body form" v-if="c.is_root">
       <div class="row between wrap gap-8"><h3>GitHub CI/CD</h3>
@@ -478,21 +569,31 @@ export const CicdTab = {
     </div>
 
     <div class="card" v-if="c.is_root && c.repo">
-      <div class="card-head"><h3>Runners on your servers</h3>
-        <div class="row gap-6"><button class="btn btn-sm" @click="load(true)">Refresh status</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and settings to the servers">Update servers</button></div></div>
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>Server</th><th>Runner label</th><th>Status</th><th>Version</th><th></th></tr></thead>
+      <div class="card-head"><h3>Servers and Git</h3>
+        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and settings to the servers">Update servers</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
+      <div class="table-wrap"><table class="table" v-if="c.servers.length">
+        <thead><tr><th>Server</th><th>App folder</th><th>Git</th><th v-if="c.mode !== 'pull'">Runner</th><th></th></tr></thead>
         <tbody><tr v-for="s in c.servers" :key="s.id">
-          <td class="strong">{{ s.name }}</td><td class="mono small">{{ s.label }}</td>
-          <template v-for="r in [c.runners.find(x => x.server_id === s.id)]" :key="s.id + 'r'">
-            <td><template v-if="r"><span v-if="r.live" class="badge" :class="r.live.status === 'online' ? (r.live.busy ? 'badge-blue' : 'badge-green') : 'badge-red'">{{ r.live.status === 'online' ? (r.live.busy ? 'busy' : 'online') : r.live.status }}</span><span v-else class="badge badge-gray">installed</span></template>
-              <span v-else class="muted small">not installed</span></td>
-            <td class="small muted">{{ r ? r.version : '' }}</td>
-            <td class="actions"><button v-if="r" class="btn btn-xs btn-danger admin-only" @click="removeRunner(r)">Remove</button></td>
-          </template>
+          <td class="strong">{{ s.name }}<div v-if="s.deps.some(d => d.active)" class="muted small">live</div><div v-else-if="s.deps.length" class="muted small">standby</div><div v-else class="muted small">previews</div></td>
+          <td class="small"><div v-for="d in s.deps" :key="d.id"><code>{{ d.dir || '—' }}</code><span v-if="s.deps.length > 1 || d.project_id !== c.root.id" class="muted"> {{ d.project }}</span></div></td>
+          <td class="small"><div v-for="d in s.deps" :key="d.id">
+            <span class="badge" :class="gitBadge(d)[0]">{{ gitBadge(d)[1] }}</span>
+            <template v-if="gitOf(d)">
+              <span v-if="gitOf(d).commit" class="mono muted" style="margin-left:6px">{{ gitOf(d).branch }}@{{ gitOf(d).commit.slice(0, 7) }}</span>
+              <span v-if="gitOf(d).behind" class="text-amber"> · {{ gitOf(d).behind }} behind</span>
+              <span v-if="gitOf(d).changed" class="muted" title="Tracked files edited on the server (git status)"> · {{ gitOf(d).changed }} local change{{ gitOf(d).changed > 1 ? 's' : '' }}</span>
+              <div v-if="gitOf(d).error && gitOf(d).state !== 'ok'" class="muted small" style="max-width:360px;white-space:normal">{{ gitOf(d).error }}</div>
+            </template></div></td>
+          <td v-if="c.mode !== 'pull'"><template v-for="r in [c.runners.find(x => x.server_id === s.id)]" :key="s.id + 'r'">
+            <template v-if="r"><span v-if="r.live" class="badge" :class="r.live.status === 'online' ? (r.live.busy ? 'badge-blue' : 'badge-green') : 'badge-red'">{{ r.live.status === 'online' ? (r.live.busy ? 'busy' : 'online') : r.live.status }}</span><span v-else class="badge badge-gray">installed</span> <span class="small muted">{{ r.version }}</span></template>
+            <span v-else class="muted small">not installed</span></template></td>
+          <td class="actions">
+            <button v-if="s.deps.length" class="btn btn-xs admin-only" :class="{ 'btn-primary': s.deps.some(d => !gitOf(d) || gitOf(d).state !== 'ok') || (c.enabled && c.mode !== 'pull' && !s.installed) }" @click="connect(s)">{{ s.deps.every(d => gitOf(d) && gitOf(d).state === 'ok') && (!c.enabled || c.mode === 'pull' || s.installed) ? 'Reconnect' : 'Connect to Git' }}</button>
+            <template v-for="r in [c.runners.find(x => x.server_id === s.id)]" :key="s.id + 'x'"><button v-if="r" class="btn btn-xs btn-danger admin-only" @click="removeRunner(r)">Remove runner</button></template>
+          </td>
         </tr></tbody>
-      </table></div>
-      <div class="hint" style="padding:10px 18px 14px">Runs as user <code>sb-runner</code> in <code>/opt/switchboard-runner</code>, as a systemd service. Remove one here before you delete a server.</div>
+      </table><div v-else class="empty">No servers in this project yet — "Connect a server" adds one.</div></div>
+      <div class="hint" style="padding:10px 18px 14px">"Connect to Git" gives the server a read-only deploy key and makes its app folder a Git checkout of <code>{{ c.branch }}</code> (a folder that already has files is connected without changing them){{ c.enabled && c.mode !== 'pull' ? ', then installs the runner (user sb-runner in /opt/switchboard-runner)' : '' }}. Remove a runner here before you delete a server.</div>
     </div>
 
     <div class="card card-body form" v-if="c.is_root && c.repo">

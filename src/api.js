@@ -57,7 +57,7 @@ import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, list
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel } from './ops/ci.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, depsOn, gitStates, checkAllGit } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -2054,7 +2054,15 @@ api.get('/projects/:id/ci', async (req, res) => {
     error: st.error || null,
     runs: all('SELECT * FROM ci_runs WHERE project_id = ? ORDER BY run_id DESC LIMIT 30', root.id),
     runners,
-    servers: ciServers(root).map((s) => ({ id: s.id, name: s.name, label: runnerLabel(s), installed: runners.some((r) => r.server_id === s.id) })),
+    servers: ciServers(root).map((s) => ({
+      id: s.id,
+      name: s.name,
+      ip: s.ip,
+      label: runnerLabel(s),
+      installed: runners.some((r) => r.server_id === s.id),
+      deps: depsOn(root, s).map(({ project, dep }) => ({ id: dep.id, project: project.name, project_id: project.id, branch: project.git_branch || root.git_branch || 'main', dir: dep.app_dir || '', active: project.active_deployment_id === dep.id, deploy_script: !!String(project.deploy_script || '').trim() })),
+    })),
+    git: gitStates(root),
     preview: { server_id: root.preview_server_id, zone, example: zone ? `pr-12-${root.slug}.${zone.zone_name}` : null },
     previews: all('SELECT * FROM previews WHERE project_id = ? ORDER BY pr DESC', root.id),
     projects: ciProjects(root).map((x) => ({ id: x.id, name: x.name, env: x.env, branch: x.git_branch, domain: x.domain, servers: deploymentsOf(x.id).map((d) => d.server_name) })),
@@ -2099,6 +2107,39 @@ api.post('/projects/:id/ci/servers', (req, res) => {
   const p = rootOf(mustProject(req.params.id));
   const job = enqueue({ type: 'ci-servers', title: `Update deploy settings on the servers (${p.name})`, projectId: p.id, user: who(req) });
   res.json({ job });
+});
+
+/** Connect a server (e.g. a backup server) to the repo + CI/CD. Not in the project yet → added as a standby with the live server's settings. */
+api.post('/projects/:id/ci/connect', (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo) throw bad('Set the GitHub repository first (CI/CD → Repository → Save)');
+  const server = mustServer(req.body.server_id);
+  if (!depsOn(p, server).length) {
+    const deps = deploymentsOf(p.id);
+    const src = deps.find((d) => d.id === p.active_deployment_id) || deps[0];
+    const dir = str(req.body.app_dir, 500) || src?.app_dir || '';
+    if (!/^\/[^\0]+$/.test(dir) || /(^|\/)\.\.?(\/|$)/.test(dir)) throw bad('Give the app folder on the server as a full path, like /srv/shop');
+    const row = { project_id: p.id, server_id: server.id, priority: Math.max(10, ...deps.map((d) => d.priority)) + 1, app_dir: dir, health: 'unknown', created_at: now() };
+    if (src) Object.assign(row, { app_container: src.app_container, db_type: src.db_type, db_container: src.db_container, db_name: src.db_name, db_user: src.db_user, db_password: src.db_password });
+    else row.db_type = 'none';
+    insert('deployments', row);
+    audit(req, 'info', `${server.name} added to project ${p.name} (standby${src ? `, same settings as ${src.server_name}` : ''}) to connect it to Git`, { projectId: p.id, serverId: server.id });
+    refreshDnsState(p.id).catch(() => {});
+    checkProjectNow(p.id).catch(() => {});
+  } else if (req.body.app_dir) {
+    // Folder given for a server already in the project: set it when none was set.
+    for (const { dep } of depsOn(p, server)) if (!dep.app_dir && dep.project_id === p.id) update('deployments', dep.id, { app_dir: str(req.body.app_dir, 500) });
+  }
+  const job = enqueue({ type: 'ci-connect', title: `Connect ${server.name} to ${p.git_repo} (${p.name})`, projectId: p.id, serverId: server.id, params: { server: server.id, deploy: req.body.deploy === true }, user: who(req) });
+  bus.emit('state', { projectId: p.id });
+  res.json({ job });
+});
+
+/** Look at the Git folder on every server of the project (read-only). */
+api.post('/projects/:id/ci/git-check', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo) throw bad('Set the GitHub repository first');
+  res.json({ git: await checkAllGit(p) });
 });
 
 api.post('/projects/:id/ci/commit', async (req, res) => {
