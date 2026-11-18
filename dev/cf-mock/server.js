@@ -26,6 +26,74 @@ let lbSeq = 0;
 const lbId = () => hid(`lb:${++lbSeq}:${Date.now()}`);
 const telegram = []; // messages "sent" to Telegram (the lab points TELEGRAM_API_BASE here)
 
+
+// ---- Origin CA: sign a CSR with a throwaway CA key (tiny DER encoder, no openssl needed) ----
+const caKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+const originCerts = [];
+function derLen(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  const b = [];
+  for (let x = n; x > 0; x >>= 8) b.unshift(x & 0xff);
+  return Buffer.from([0x80 | b.length, ...b]);
+}
+const tlv = (tag, ...parts) => {
+  const v = Buffer.concat(parts);
+  return Buffer.concat([Buffer.from([tag]), derLen(v.length), v]);
+};
+const seq = (...p) => tlv(0x30, ...p);
+function oid(str) {
+  const [a, b, ...rest] = str.split('.').map(Number);
+  const out = [40 * a + b];
+  for (const n of rest) {
+    const bytes = [n & 0x7f];
+    for (let x = n >> 7; x > 0; x >>= 7) bytes.unshift(0x80 | (x & 0x7f));
+    out.push(...bytes);
+  }
+  return tlv(0x06, Buffer.from(out));
+}
+const utf8 = (s) => tlv(0x0c, Buffer.from(s));
+const name = (pairs) => seq(...pairs.map(([o, v]) => tlv(0x31, seq(oid(o), utf8(v)))));
+const utc = (d) => tlv(0x17, Buffer.from(d.toISOString().replace(/[-:T]/g, '').slice(2, 14) + 'Z'));
+function readTlv(buf, off) {
+  let len = buf[off + 1];
+  let hdr = 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    len = 0;
+    for (let i = 0; i < n; i++) len = len * 256 + buf[off + 2 + i];
+    hdr += n;
+  }
+  return { start: off, value: off + hdr, end: off + hdr + len };
+}
+function signCsr(csrPem, hostnames, days) {
+  const der = Buffer.from(csrPem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, ''), 'base64');
+  const info = readTlv(der, readTlv(der, 0).value);
+  const version = readTlv(der, info.value);
+  const subject = readTlv(der, version.end);
+  const spki = readTlv(der, subject.end);
+  const spkiRaw = der.subarray(spki.start, spki.end);
+  const sha256rsa = seq(oid('1.2.840.113549.1.1.11'), Buffer.from([0x05, 0x00]));
+  const serial = crypto.randomBytes(16);
+  serial[0] &= 0x7f;
+  const from = new Date();
+  const to = new Date(from.getTime() + days * 864e5);
+  const san = seq(oid('2.5.29.17'), tlv(0x04, seq(...hostnames.map((h) => tlv(0x82, Buffer.from(h))))));
+  const tbs = seq(
+    tlv(0xa0, tlv(0x02, Buffer.from([2]))),
+    tlv(0x02, serial),
+    sha256rsa,
+    name([['2.5.4.6', 'US'], ['2.5.4.10', 'CloudFlare, Inc.'], ['2.5.4.11', 'CloudFlare Origin SSL Certificate Authority']]),
+    seq(utc(from), utc(to)),
+    name([['2.5.4.10', 'CloudFlare, Inc.'], ['2.5.4.11', 'CloudFlare Origin CA'], ['2.5.4.3', 'CloudFlare Origin Certificate']]),
+    spkiRaw,
+    tlv(0xa3, seq(san)),
+  );
+  const sig = crypto.sign('sha256', tbs, caKey);
+  const cert = seq(tbs, sha256rsa, tlv(0x03, Buffer.from([0]), sig));
+  const pem = `-----BEGIN CERTIFICATE-----\n${cert.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`;
+  return { pem, expires: to };
+}
+
 function send(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -36,7 +104,7 @@ const fail = (res, status, code, message) => send(res, status, { success: false,
 http
   .createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
-    if (url.pathname === '/__state') return send(res, 200, { records, purges, telegram, lb, settings });
+    if (url.pathname === '/__state') return send(res, 200, { records, purges, telegram, lb, settings, origin_certs: originCerts });
     if (url.pathname === '/__reset') {
       lb.monitors.length = 0;
       lb.pools.length = 0;
@@ -45,6 +113,7 @@ http
       for (const r of records) if (r.type === 'A' && r.name !== 'mail.shop.test') r.content = IP;
       for (const r of records) r.proxied = r.name !== 'mail.shop.test';
       for (const k of Object.keys(settings)) delete settings[k];
+      originCerts.length = 0;
       purges = 0;
       telegram.length = 0;
       return send(res, 200, { ok: true });
@@ -106,6 +175,22 @@ http
         }
       }
       const json = () => JSON.parse(body || '{}');
+      if (p === '/certificates' && req.method === 'POST') {
+        const b = json();
+        if (!/BEGIN CERTIFICATE REQUEST/.test(b.csr || '')) return fail(res, 400, 1010, 'Invalid CSR');
+        if (!Array.isArray(b.hostnames) || !b.hostnames.length) return fail(res, 400, 1011, 'hostnames required');
+        if (!['origin-rsa', 'origin-ecc'].includes(b.request_type)) return fail(res, 400, 1012, 'Invalid request_type');
+        let signed;
+        try {
+          signed = signCsr(b.csr, b.hostnames, b.requested_validity || 5475);
+        } catch (e) {
+          return fail(res, 400, 1010, `Invalid CSR: ${e.message}`);
+        }
+        const item = { id: hid(`cert:${Date.now()}:${originCerts.length}`), certificate: signed.pem, hostnames: b.hostnames, expires_on: signed.expires.toISOString(), request_type: b.request_type, requested_validity: b.requested_validity || 5475, csr: b.csr };
+        originCerts.push(item);
+        console.log(`ORIGIN CERT for ${b.hostnames.join(', ')}`);
+        return ok(res, item);
+      }
       if ((m = p.match(/^\/zones\/([^/]+)\/settings\/(ssl|always_use_https)$/))) {
         if (![zone, zone2].some((x) => x.id === m[1])) return fail(res, 404, 7003, 'Zone not found');
         const zs = zoneSettings(m[1]);

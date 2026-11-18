@@ -61,7 +61,7 @@ Open **http://YOUR-MACHINE-IP:8080**, enter the setup code from the logs, and ch
 
 ### 3. Connect Cloudflare
 **Settings → Cloudflare** → paste an API token → **Test**.
-Create the token in Cloudflare → *My Profile → API Tokens → Create Token → "Edit zone DNS"* template (permissions `Zone · DNS · Edit` and `Zone · Zone · Read`). To set the SSL mode from Switchboard, also add `Zone · Zone Settings · Edit`.
+Create the token in Cloudflare → *My Profile → API Tokens → Create Token → "Edit zone DNS"* template (permissions `Zone · DNS · Edit` and `Zone · Zone · Read`). To set the SSL mode from Switchboard, also add `Zone · Zone Settings · Edit`; to install Cloudflare Origin Certificates, `Zone · SSL and Certificates · Edit`.
 
 ### 4. Add your servers
 **Servers → + Add server**: a name, the server's **public IP**, the SSH user and its private key → **Test connection**.
@@ -130,6 +130,7 @@ If a secret ever leaks: change the server passwords / SSH keys, database passwor
 - Use **proxied (orange cloud)** DNS records — then a switch takes effect in seconds.
 - Use the same SSL setup on all servers (e.g. one Cloudflare Origin Certificate, SSL mode "Full (strict)").
 - **Project → Settings → Cloudflare DNS records** can also point one record at another IP (one of the project's servers or any other, e.g. an old server), turn the proxy on/off, and set the zone's SSL mode. **Full** is the safe default (Switchboard's web proxy has a self-signed certificate). Avoid **Flexible**: if the server redirects http → https, visitors get an endless redirect loop. Before changing the mode, Switchboard checks every proxied hostname of the zone and refuses a change that would break one (you can still force it). Admins only; every change is in the activity log.
+- For **Full (strict)**: the same card has **Install Origin Certificate**. Each server makes its own key, Cloudflare signs a 15-year certificate for the zone (and `*.zone`), and Switchboard's web proxy uses it right away. On a server where your own nginx serves the site, the files are saved in `/etc/ssl/cloudflare/` and the job log shows the two nginx lines to add. Tick "Then switch SSL to Full (strict)" to switch in the same step (only if every hostname passes).
 - If your servers only accept Cloudflare IPs on 80/443, also allow the Switchboard machine's IP (health checks go straight to each server).
 - Only one server should be live at a time; standbys get a copy of the data.
 - A server with a **private IP** (home Wi-Fi `192.168.x.x`, cloud-internal `10.x.x.x`) can't receive visitors — set its public IP (and keep the private one as "SSH host"). Switchboard refuses to point DNS at a private IP.
@@ -319,7 +320,7 @@ DATA_DIR=/tmp/sb-test PORT=8093 ADMIN_USER=admin ADMIN_PASSWORD=admin-password-1
 SB_URL=http://localhost:8093 node dev/e2e-billing.mjs   # server bills, reminders, mark as paid
 ```
 
-`dev/e2e-dnsedit.mjs` tests changing a record's IP / proxy and the SSL mode from the project settings (`SB_URL`, `CF_URL`, `SB_KEY_FILE` — see its first lines).
+`dev/e2e-dnsedit.mjs` tests changing a record's IP / proxy and the SSL mode from the project settings, `dev/e2e-origincert.mjs` the Origin Certificate on vps-ci / vps-new (`SB_URL`, `CF_URL`, `SB_KEY_FILE` — see their first lines).
 
 `dev/e2e-dbaccess.mjs` tests "Database access" on the clone pair (vps-src / vps-new) — see its first lines for how to start a test Switchboard on the lab network.
 

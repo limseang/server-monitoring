@@ -105,7 +105,13 @@ export function sslProblems(status, mode) {
   const live = status.checks.filter((c) => c.proxied);
   if (mode === 'full') return live.filter((c) => !c.https).map((c) => `${c.name} (${c.ip}) does not answer HTTPS on port 443${c.error ? ` — ${c.error}` : ''}`);
   if (mode === 'strict') {
-    return live.filter((c) => !c.strict_ok).map((c) => `${c.name} (${c.ip}) ${!c.https ? `does not answer HTTPS on port 443${c.error ? ` — ${c.error}` : ''}` : `has a certificate Cloudflare won't accept in strict mode (${c.issuer || 'self-signed'}${c.days_left < 0 ? ', expired' : ''})`}`);
+    const out = live.filter((c) => !c.strict_ok).map((c) => `${c.name} (${c.ip}) ${!c.https ? `does not answer HTTPS on port 443${c.error ? ` — ${c.error}` : ''}` : `has a certificate Cloudflare won't accept in strict mode (${c.issuer || 'self-signed'}${c.days_left < 0 ? ', expired' : ''})`}`);
+    // A standby that works with "Full" today but would show error 526 right after a switch to it.
+    const liveIps = new Set(live.map((c) => c.ip));
+    for (const c of status.checks) {
+      if (c.standby && !liveIps.has(c.ip) && c.https && !c.strict_ok) out.push(`${c.server} (${c.ip}) has a certificate strict mode won't accept (${c.issuer || 'self-signed'}) — after a switch to it the site would show error 526. Install the Origin Certificate there first.`);
+    }
+    return out;
   }
   if (mode === 'flexible') return live.filter((c) => c.redirects_to_https).map((c) => `${c.name} (${c.ip}) redirects http → https, so Flexible would make an endless redirect loop (ERR_TOO_MANY_REDIRECTS)`);
   return [];

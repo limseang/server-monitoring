@@ -125,7 +125,12 @@ edge_site() {
   local name=$1 port=$2
   shift 2
   [ $# -gt 0 ] || return 0
-  local f
+  local f crt="$ETC/edge/ssl/cert.pem" key="$ETC/edge/ssl/key.pem"
+  # A Cloudflare Origin Certificate installed by Switchboard for this site (for SSL mode "Full (strict)").
+  if [ -s "$ETC/edge/ssl/site-$name.pem" ] && [ -s "$ETC/edge/ssl/site-$name.key" ]; then
+    crt="$ETC/edge/ssl/site-$name.pem"
+    key="$ETC/edge/ssl/site-$name.key"
+  fi
   f="$(edge_dir)/sb-$name.conf"
   cat >"$f.tmp" <<EOF
 # Switchboard: $name → 127.0.0.1:$port
@@ -133,8 +138,8 @@ server {
   listen 80;
   listen 443 ssl;
   server_name $*;
-  ssl_certificate $ETC/edge/ssl/cert.pem;
-  ssl_certificate_key $ETC/edge/ssl/key.pem;
+  ssl_certificate $crt;
+  ssl_certificate_key $key;
   client_max_body_size 100m;
   location / {
     proxy_pass http://127.0.0.1:$port;

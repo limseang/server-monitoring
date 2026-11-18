@@ -28,6 +28,7 @@ import { connect, exec, withSSH } from './ssh.js';
 import { sendNotification, telegramChats } from './notify.js';
 import { refreshDnsState, dnsTargetProblem, setRecord } from './ops/dns.js';
 import { sslStatus, sslProblems, applySsl, SSL_MODES } from './ops/cfssl.js';
+import { certHostnames } from './ops/origincert.js';
 import { countTables, backupAbsPath } from './ops/database.js';
 import { ensureLocal, backupAvailable, removeBackupFiles } from './ops/backupstore.js';
 import { s3Config, testS3 } from './s3.js';
@@ -1361,7 +1362,7 @@ api.post('/projects/:id/dns/records/:record', async (req, res) => {
 /** Cloudflare SSL mode of the project's zone(s) + an HTTPS check of every hostname a change would touch. */
 api.get('/projects/:id/ssl', async (req, res) => {
   const p = mustProject(req.params.id);
-  res.json(await sslStatus(p));
+  res.json({ ...(await sslStatus(p)), cert_hostnames: certHostnames(p) });
 });
 
 api.post('/projects/:id/ssl', async (req, res) => {
@@ -1387,6 +1388,17 @@ api.post('/projects/:id/ssl', async (req, res) => {
     audit(req, problems.length || mode === 'flexible' || mode === 'off' ? 'warn' : 'info', `${p.name}: Cloudflare SSL of ${zn}: ${z.before} → ${z.ssl}${z.always_use_https ? `, Always Use HTTPS ${z.always_use_https}` : ''}${problems.length ? ` (forced despite: ${problems.join('; ')})` : ''}`, { projectId: p.id });
   }
   res.json({ zones: out, status: await sslStatus(p) });
+});
+
+/** Make a Cloudflare Origin Certificate for each server of the project and install it (job). Admin only. */
+api.post('/projects/:id/ssl/origin-cert', (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!parseJSON(p.dns_records, []).length) throw bad('Link the Cloudflare DNS records to this project first');
+  if (!deploymentsOf(p.id).length) throw bad('Add a server to this project first');
+  const strict = bool(req.body?.strict);
+  const job = enqueue({ type: 'origin-cert', title: `Cloudflare Origin Certificate (${p.name})${strict ? ' + Full (strict)' : ''}`, projectId: p.id, params: { strict }, user: who(req) });
+  audit(req, 'warn', `${p.name}: Cloudflare Origin Certificate for all servers started${strict ? ', then SSL → Full (strict)' : ''}`, { projectId: p.id, jobId: job.id });
+  res.json({ job });
 });
 
 /** Mark a server as active WITHOUT touching DNS (e.g. DNS was changed by hand in Cloudflare). */
