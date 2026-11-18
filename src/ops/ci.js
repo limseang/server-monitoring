@@ -262,6 +262,14 @@ function gitScript({ mode, dir, url, branch, sshCmd }) {
 export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=true SSH_ASKPASS=true SSH_ASKPASS_REQUIRE=never
 out() { printf 'SB_GIT %s=%s\\n' "$1" "$(printf %s "$2" | tr '\\n' ' ')"; }
 gssh() { s="$(git config --get core.sshCommand 2>/dev/null || true)"; echo "\${s:-\${SSHC:-ssh}} -o BatchMode=yes -o ConnectTimeout=20"; }
+# A folder owned by another user (e.g. files made inside a Docker container): git refuses it ("dubious
+# ownership") for every command, also the deploy script's git pull. Mark just this folder as safe for the SSH user.
+trust() {
+  if git -C "$DIR" rev-parse --git-dir 2>&1 | grep -q 'dubious ownership'; then
+    git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$DIR" || git config --global --add safe.directory "$DIR"
+    echo ">>> $DIR belongs to user $(ls -ld "$DIR" | awk '{print $3}'), not $(id -un): marked as safe for git (git config --global safe.directory) — no owner changed"
+  fi
+}
 fetch() { GIT_SSH_COMMAND="$(gssh)" git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; }
 report() {
   out branch "$(git symbolic-ref -q --short HEAD || echo detached)"
@@ -276,12 +284,15 @@ ${
     ? `[ -d "$DIR" ] || { out state missing; exit 0; }
 [ -d "$DIR/.git" ] || { out state not_git; out files "$(ls -A "$DIR" 2>/dev/null | wc -l | tr -d ' ')"; exit 0; }
 cd "$DIR" || { out state error; out error "cannot open $DIR"; exit 0; }
-out remote "$(git remote get-url origin 2>/dev/null || true)"
-if err="$(fetch 2>&1)"; then out state ok; else out state no_access; out error "$(printf %s "$err" | tail -n 3)"; fi
+out remote "$(git config -f .git/config --get remote.origin.url 2>/dev/null || true)"
+if err="$(fetch 2>&1)"; then out state ok
+elif printf %s "$err" | grep -q 'dubious ownership'; then out state unsafe_owner; out error "the folder belongs to user $(ls -ld . | awk '{print $3}'), git refuses it for $(id -un)"
+else out state no_access; out error "$(printf %s "$err" | tail -n 3)"; fi
 report`
     : `set -e
 if [ -d "$DIR/.git" ]; then
   cd "$DIR"
+  trust
   OLD="$(git remote get-url origin 2>/dev/null || true)"
   if [ -z "$OLD" ]; then git remote add origin "$URL"; echo ">>> origin set to $URL"
   elif [ "$OLD" != "$URL" ]; then git remote set-url origin "$URL"; echo ">>> origin was $OLD — now $URL"; fi
@@ -292,12 +303,14 @@ elif [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
   echo ">>> $DIR is empty: clone $URL (branch $BRANCH)"
   GIT_SSH_COMMAND="$(gssh)" git clone -q --branch "$BRANCH" "$URL" "$DIR"
   cd "$DIR"
+  trust
   [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
   out done cloned
 else
   echo ">>> $DIR already has files but no Git: connect it to $URL ($BRANCH) — no file is changed"
   cd "$DIR"
   git init -q
+  trust
   git symbolic-ref HEAD "refs/heads/$BRANCH"
   git remote add origin "$URL"
   [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
@@ -360,6 +373,11 @@ export async function connectGit(ctx, conn, server, root, project, dep) {
     saveGit(root, dep, before);
     return before;
   }
+  if (before.state === 'unsafe_owner' && !sameRepo) {
+    ctx.warn(`${where} is a checkout of ${before.remote}, not ${root.git_repo} — left as it is. Is the app folder right? (Servers tab → the server → folder)`);
+    saveGit(root, dep, { ...before, state: 'other_repo' });
+    return before;
+  }
   if (before.state === 'ok') {
     // It works, but with another repository: don't silently re-point a working setup.
     ctx.warn(`${where} pulls from ${before.remote}, not ${root.git_repo} — left as it is. Change the repository in CI/CD settings, or fix the folder's origin by hand.`);
@@ -370,6 +388,7 @@ export async function connectGit(ctx, conn, server, root, project, dep) {
     {
       missing: `${dep.app_dir} does not exist yet — it will be created and the repository cloned into it`,
       not_git: before.files ? `${dep.app_dir} has ${before.files} files but is not a Git checkout — it is connected to the repository without changing any file` : `${dep.app_dir} is empty — the repository is cloned into it`,
+      unsafe_owner: `${dep.app_dir} is a Git checkout, but ${before.error || 'it belongs to another user'} — marking it as safe`,
       no_access: `${dep.app_dir} is a Git checkout but cannot pull${before.error ? ` (${before.error})` : ''} — giving it access`,
       no_git_tool: 'git is not installed — installing it',
     }[before.state] || `State: ${before.state}${before.error ? ` — ${before.error}` : ''}`,

@@ -96,7 +96,7 @@ await step('Clean up, log in, repo with two commits, three server entries for vp
   await api('POST', '/auth/login', { username: 'admin', password: 'admin-password-123' });
   for (const p of await api('GET', '/projects')) if (p.slug.startsWith('git-connect-lab')) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
   for (const s of await api('GET', '/servers')) if (s.name.startsWith('gc-')) await api('DELETE', `/servers/${s.id}`);
-  on('rm -rf /srv/gc-live /srv/gc-backup /srv/gc-empty');
+  on('rm -rf /srv/gc-live /srv/gc-backup /srv/gc-empty /srv/gc-owned');
   await api('PUT', '/settings', { github_token: 'gh-test-token' });
   await freshRepo(REPO);
   await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'index.html', content: 'v1\n' });
@@ -195,6 +195,39 @@ await step('Set up CI/CD (Switchboard deploys) checks every server and changes n
   check(on('cat /srv/gc-backup/index.html') === before, 'backup files untouched');
   const c = await ci();
   check(c.enabled && c.servers.length === 3 && c.servers.every((s) => c.git[s.deps[0].id]?.state === 'ok'), 'CI/CD on, all three servers connected');
+});
+
+await step('Folder owned by another user ("dubious ownership") → marked safe, then it can pull and deploy', async () => {
+  // Like files created inside a Docker container (uid 1000) while Switchboard logs in as root.
+  on('rm -rf /srv/gc-owned && id -u gc-other >/dev/null 2>&1 || useradd -M gc-other');
+  on(`git clone -q ${URL_GIT} /srv/gc-owned && chown -R gc-other: /srv/gc-owned`);
+  on("git config --global --unset-all safe.directory /srv/gc-owned || true");
+  check(/dubious ownership/.test(sh('docker exec vps-ci git -C /srv/gc-owned status 2>&1 || true')), 'git refuses the folder for root (as on the real server)');
+  const p = await api('GET', `/projects/${project.id}`);
+  const dep = p.deployments.find((d) => d.server_id === srv['gc-empty'].id);
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-owned' });
+  await api('POST', `/projects/${project.id}/ci/git-check`);
+  const st = gitOf(await ci(), 'gc-empty');
+  check(st?.state === 'unsafe_owner' && /gc-other/.test(st.error || ''), `check: ${st?.state} (${st?.error})`);
+  const { job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-empty'].id, deploy: true });
+  const j = await waitJob(job);
+  check(/marked as safe for git/.test(j.log), 'log: marked as safe');
+  check(on('git config --global --get-all safe.directory').split('\n').includes('/srv/gc-owned'), 'safe.directory set for root, for this folder only');
+  check(on("stat -c %U /srv/gc-owned") === 'gc-other', 'folder owner not changed');
+  const sha = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v3.txt', content: 'v3\n' })).sha;
+  const { job: dj } = await api('POST', `/deployments/${dep.id}/deploy`, {});
+  await waitJob(dj);
+  check(on('git -C /srv/gc-owned rev-parse HEAD') === sha, `deploy pulled ${sha.slice(0, 7)} into the folder`);
+  check(gitOf(await ci(), 'gc-empty')?.state === 'ok', 'state: connected');
+  // A refused folder that is a checkout of ANOTHER repo is not re-pointed.
+  on('git config --global --unset-all safe.directory /srv/gc-owned');
+  on('git -C /srv/gc-owned config --file .git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git || git config --file /srv/gc-owned/.git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git');
+  const { job: j2 } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-empty'].id });
+  const l2 = await waitJob(j2);
+  check(/is a checkout of git:\/\/172.30.0.6\/lab-user\/gc-other.git, not lab-user\/gc-app — left as it is/.test(l2.log), 'other repo in a refused folder: left alone');
+  check(on('git config --file /srv/gc-owned/.git/config remote.origin.url') === 'git://172.30.0.6/lab-user/gc-other.git', 'origin unchanged');
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-empty' });
+  on('rm -rf /srv/gc-owned');
 });
 
 await step('Developer may check but not connect', async () => {

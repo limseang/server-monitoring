@@ -430,6 +430,7 @@ const GIT_BADGE = {
   ok: ['badge-green', 'connected'],
   other_repo: ['badge-amber', 'other repository'],
   no_access: ['badge-red', "can't pull"],
+  unsafe_owner: ['badge-red', "can't pull (folder owner)"],
   not_git: ['badge-amber', 'not a Git folder'],
   missing: ['badge-amber', 'folder missing'],
   no_dir: ['badge-amber', 'no app folder set'],
