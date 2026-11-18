@@ -263,14 +263,20 @@ export function checkUnusual(server) {
   }
   const ssh = sum(recent, 'ssh_fail');
   const sshMax = Number(getSetting('traffic_ssh_fails')) || 50;
-  if (ssh >= sshMax) findings.push({ kind: 'ssh', level: 'warn', text: `${ssh} failed SSH logins in 5 minutes — someone is guessing passwords. Use SSH keys / fail2ban` });
+  const guard = parseJSON(server.ssh_guard, null);
+  // Password login off: guessing can't get in, so no alert. fail2ban on: a quiet note at most once a day.
+  if (ssh >= sshMax && !guard?.passwords_off) {
+    if (guard?.fail2ban) findings.push({ kind: 'ssh', level: 'info', cooldown: 24 * 3600e3, text: `${ssh} failed SSH logins in 5 minutes — fail2ban is blocking the IPs that guess. Turn off password login (Protect SSH) to stop this for good` });
+    else findings.push({ kind: 'ssh', level: 'warn', text: `${ssh} failed SSH logins in 5 minutes — someone is guessing passwords. Click to protect SSH (fail2ban, password login off)` });
+  }
 
   for (const f of findings) {
     const key = `${server.id}:${f.kind}`;
-    if (Date.now() - (cooldown.get(key) || 0) < COOLDOWN_MS) continue;
+    if (Date.now() - (cooldown.get(key) || 0) < (f.cooldown || COOLDOWN_MS)) continue;
     cooldown.set(key, Date.now());
     const tail = live.length && f.kind !== 'ssh' ? ` ${server.name} is LIVE for ${live.map((p) => p.name).join(', ')} — switch to a standby if it gets worse.` : '';
-    alert(f.level, `Unusual on ${server.name}: ${f.text}.${tail}`, { serverId: server.id, link: live.length ? `#/projects/${live[0].id}` : `#/servers/${server.id}` });
+    const link = f.kind === 'ssh' ? `#/servers/${server.id}?protect-ssh=1` : live.length ? `#/projects/${live[0].id}` : `#/servers/${server.id}`;
+    alert(f.level, `Unusual on ${server.name}: ${f.text}.${tail}`, { serverId: server.id, link });
   }
   if (findings.length) bus.emit('state', {});
   return findings;

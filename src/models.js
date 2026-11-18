@@ -29,6 +29,7 @@ export function serverPublic(s) {
     has_passphrase: !!ssh_passphrase,
     has_password: !!ssh_password,
     metrics: parseJSON(metrics),
+    ssh_guard: parseJSON(s.ssh_guard, null),
   };
 }
 

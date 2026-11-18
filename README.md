@@ -29,7 +29,7 @@ Built for people who run apps (Laravel, Node/Nuxt, static sites…) in **Docker*
 | **Backups** | Scheduled + one-click database backups (MySQL, MariaDB, PostgreSQL). Restore into any server (with a safety backup first). Store them in **S3** (AWS, MinIO, Wasabi, R2, Spaces…). |
 | **Monitoring** | Health checks every minute straight to each server, uptime bars, CPU/memory/disk, containers, SSL expiry, DNS drift. |
 | **Traffic & logs** | Requests per minute, errors, top pages/IPs/bots from your nginx logs. Live log viewer (nginx, Laravel, containers, SSH logins). |
-| **Alerts** | Telegram, Discord, Slack or any webhook: server down, failover, failed backup, disk full, finished jobs you pick (deploy, clone…), **traffic spike / attack**, many 5xx errors, SSH brute force… |
+| **Alerts** | Telegram, Discord, Slack or any webhook: server down, failover, failed backup, disk full, finished jobs you pick (deploy, clone…), **traffic spike / attack**, many 5xx errors, SSH brute force (one click to **protect SSH**: fail2ban + keys only)… |
 | **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. **Clean up / free memory** in one click (or weekly). |
 | **Deploys & CI/CD** | Deploy button, or **GitHub Actions with self-hosted runners**: push → tests → deploy server by server. **Staging** copies and **pull-request previews**. |
 | **New apps** | Start a new **Laravel / Node / static** app from a template: Docker, database, web proxy, DNS and a GitHub repo, set up for you. |
@@ -207,6 +207,17 @@ When a server gets slow or its disk fills up, old Docker leftovers and logs are 
 </details>
 
 <details>
+<summary><b>Protect SSH (too many failed logins)</b></summary>
+
+When you get *"Unusual on <server>: 51 failed SSH logins in 5 minutes — someone is guessing passwords"*, click the alert (or server → **More → Protect SSH**). Switchboard first shows the current state: is password login on, is fail2ban running, how many failed logins and from which IPs, and how many SSH keys the server has. Then tick:
+
+- **Block IPs that keep guessing (fail2ban)** — installed for you if missing. After 5 wrong tries in 10 minutes (you can change both) an IP is blocked for 60 minutes, longer each time it comes back (up to a week). Switchboard's own IP and every server in Switchboard are never blocked; add your home/office IP under *Never block* too. Blocked IPs are listed in the dialog with a button to unblock one (e.g. after you mistyped your own password).
+- **Turn off password login (SSH keys only)** — the real fix: guessing passwords becomes useless. Only possible when Switchboard itself logs in with a key, and you have to confirm that *you* can log in with a key too. Switchboard writes `/etc/ssh/sshd_config.d/00-switchboard-guard.conf`, checks it with `sshd -t`, reloads SSH, asks the running SSH server which login methods it accepts now, and opens a new connection to make sure it still gets in — if not, it puts the old setting back.
+
+After that the alert gets quieter: with fail2ban it becomes a short note at most once a day, with password login off there is no alert any more (guessing can't get in). **Remove protection** undoes both (fail2ban itself stays installed).
+</details>
+
+<details>
 <summary><b>Let another service use a project's database (e.g. a media server)</b></summary>
 
 If another app connects **straight to the database** (its `.env` has `DB_HOST=` an IP of your server), it breaks every time you switch servers. Give it one name that follows the live server instead:
@@ -322,6 +333,7 @@ SB_URL=http://localhost:8093 node dev/e2e-billing.mjs   # server bills, reminder
 
 `dev/e2e-dnsedit.mjs` tests changing a record's IP / proxy and the SSL mode from the project settings, `dev/e2e-origincert.mjs` the Origin Certificate on vps-ci / vps-new (`SB_URL`, `CF_URL`, `SB_KEY_FILE` — see their first lines).
 
+`dev/e2e-sshguard.mjs` tests "Protect SSH" (fail2ban really blocks a guessing IP, password login off) on vps-new.
 `dev/e2e-dbaccess.mjs` tests "Database access" on the clone pair (vps-src / vps-new) — see its first lines for how to start a test Switchboard on the lab network.
 
 The lab needs about 6 GB of memory for Docker when everything runs at once.

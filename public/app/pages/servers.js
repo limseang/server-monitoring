@@ -154,17 +154,23 @@ export const ServerPage = {
     const reset = () => openDialog('server-reset', { server: s.value });
     const reinstall = () => openDialog('server-reinstall', { server: s.value });
     const cleanup = () => openDialog('server-cleanup', { server: s.value });
+    const protectSsh = () => openDialog('ssh-guard', { server: s.value });
     // Link from a "disk full" alert: #/servers/<id>?cleanup=1 opens the cleanup dialog once.
     watch(s, (v) => {
       if (v && store.user?.role === 'admin' && /[?&]cleanup=1/.test(location.hash)) {
         history.replaceState(null, '', `#/servers/${v.id}`);
         cleanup();
       }
+      // From a "failed SSH logins" alert: #/servers/<id>?protect-ssh=1
+      if (v && store.user?.role === 'admin' && /[?&]protect-ssh=1/.test(location.hash)) {
+        history.replaceState(null, '', `#/servers/${v.id}`);
+        protectSsh();
+      }
     });
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { tab, cleanup, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -181,6 +187,7 @@ export const ServerPage = {
           <span v-if="m" class="chip-meta"><icon name="box" :size="13" />{{ running }}/{{ m.containers.length }} containers</span>
           <span v-if="m" class="chip-meta">up {{ uptimeStr(m.uptime_s) }}</span>
           <span v-for="r in s.roles" :key="r" class="badge badge-green">{{ r }}</span>
+          <span v-if="s.ssh_guard" class="badge" :class="s.ssh_guard.passwords_off ? 'badge-green' : 'badge-blue'" :title="'Protected ' + (s.ssh_guard.at || '')">{{ s.ssh_guard.passwords_off ? 'SSH: keys only' : 'SSH: fail2ban' }}</span>
         </div>
       </div>
       <div class="actions">
@@ -199,6 +206,7 @@ export const ServerPage = {
           <button class="admin-only menu-item" @click="clone">Clone to another server…</button>
           <button class="admin-only menu-item" @click="copyProject">Copy a project to another server…</button>
           <button class="admin-only menu-item" @click="cleanup">Clean up / free memory…</button>
+          <button class="admin-only menu-item" @click="protectSsh">Protect SSH (fail2ban, keys only)…</button>
           <button class="admin-only menu-item" @click="osUpgrade">Upgrade OS (Ubuntu / Debian)…</button>
           <button class="admin-only menu-item" @click="resetKey">Reset SSH host key</button>
           <div class="menu-sep"></div>

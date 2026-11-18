@@ -338,6 +338,10 @@ const MIGRATIONS = [
   `
   ALTER TABLE projects ADD COLUMN db_access TEXT;
   `,
+  // v11: SSH protection per server (fail2ban / password login off), so repeated alerts can be quieter
+  `
+  ALTER TABLE servers ADD COLUMN ssh_guard TEXT;
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;
