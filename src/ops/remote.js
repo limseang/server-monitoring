@@ -59,9 +59,38 @@ export function dockerExec(server, container, script, { env = {}, interactive = 
   return `${dockerBin(server)} exec ${interactive ? '-i ' : ''}${envArgs ? `${envArgs} ` : ''}${shq(container)} sh -c ${shq(script)}`;
 }
 
+/**
+ * Shell lines that make git (in the current folder) fail fast instead of waiting forever for
+ * something nobody can answer: a username/password or credential-manager login, an SSH
+ * passphrase or host-key question, or a dead/stalled network connection. Keeps the repo's own
+ * core.sshCommand (e.g. its deploy key) and only adds the safety options to it.
+ */
+export const GIT_NO_WAIT = `export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=true SSH_ASKPASS=true SSH_ASKPASS_REQUIRE=never
+export GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=60
+if command -v git >/dev/null 2>&1; then
+  sb_ssh="\${GIT_SSH_COMMAND:-$(git config --get core.sshCommand 2>/dev/null || true)}"
+  export GIT_SSH_COMMAND="\${sb_ssh:-ssh} -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+  unset sb_ssh
+fi
+`;
+
+/** Plain-language hint for a failed git step (null when the output doesn't look like a git problem). */
+export function gitHint(text) {
+  const t = String(text || '');
+  if (/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password/i.test(t))
+    return 'git needs a login for this repo (HTTPS remote). On the server, switch the remote to SSH with a deploy key (git remote set-url origin git@github.com:OWNER/REPO.git), or save a token with a credential helper for the deploy user.';
+  if (/Host key verification failed/i.test(t))
+    return 'The server does not know GitHub\'s SSH host key yet. Log in to the server as the deploy user once and run: ssh -T git@github.com (answer "yes").';
+  if (/Permission denied \(publickey\)|Load key .*: (incorrect passphrase|bad permissions)|passphrase/i.test(t))
+    return 'GitHub refused the server\'s SSH key. Add the deploy user\'s public key (~/.ssh/*.pub) as a deploy key of the repo, and use a key without a passphrase (deploys can\'t type one).';
+  if (/Connection timed out|Operation timed out|Could not resolve host|Network is unreachable|Connection refused|timeout|Timeout was reached|transfer rate|ssh: connect to host/i.test(t))
+    return 'The server could not reach GitHub (network/DNS/firewall). Check on the server: ping github.com, and that outgoing port 22 (SSH) or 443 (HTTPS) is allowed.';
+  return null;
+}
+
 /** Wrap a (multi-line) script so it runs with bash when available, in an optional directory. */
-export function shellScript(script, { cwd, strict = false } = {}) {
-  const body = `${strict ? 'set -ex\n' : ''}${script}\n`;
+export function shellScript(script, { cwd, strict = false, prelude = '' } = {}) {
+  const body = `${prelude}${strict ? 'set -ex\n' : ''}${script}\n`;
   const cd = cwd ? `cd ${shq(cwd)} || exit 1; ` : '';
   return `${cd}SB_SH="$(command -v bash || command -v sh)"; "$SB_SH" -c ${shq(body)}`;
 }

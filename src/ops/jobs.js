@@ -6,7 +6,7 @@ import { defineJob } from '../jobs.js';
 import { getProject, getServer, getDeployment, deploymentsOf } from '../models.js';
 import { probe } from '../health.js';
 import { fmtBytes, sleep } from '../util.js';
-import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot } from './remote.js';
+import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, gitHint } from './remote.js';
 import { syncDatabase, backupDeployment, importFromFile, countTables, backupAbsPath, pruneBackups, requireDb } from './database.js';
 import { syncFiles, parseSyncPaths } from './files.js';
 import { setMaintenance } from './app.js';
@@ -349,7 +349,17 @@ defineJob('deploy', async (ctx, p) => {
           // A deploy started from GitHub (pull mode) passes the exact commit, like the runner does.
           const env = /^[0-9a-f]{7,40}$/.test(String(p.commit || '')) ? `export SB_COMMIT=${p.commit}; export SB_BRANCH=${shq(project.git_branch || 'main')}\n` : '';
           if (env) ctx.log(`Commit ${p.commit.slice(0, 7)} (${project.git_branch})`);
-          await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true }), { timeout: 60 * 60000 });
+          // git never waits for a login/passphrase/host-key answer or a dead network (it fails with a hint instead).
+          try {
+            await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true, prelude: GIT_NO_WAIT }), { timeout: 60 * 60000 });
+          } catch (e) {
+            const hint = gitHint(`${e.result?.stderr || ''}\n${e.result?.stdout || ''}\n${e.message}`);
+            if (hint) {
+              ctx.warn(hint);
+              e.message = `${e.message} — ${hint}`;
+            }
+            throw e;
+          }
         } finally {
           conn.end();
         }
