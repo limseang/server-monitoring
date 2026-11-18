@@ -237,7 +237,7 @@ export function projectConf(project, dep, server) {
     SB_USER: appUser(server),
     SB_REPO_URL: project.git_repo ? gitUrl(project.git_repo) : '',
     SB_BRANCH: project.git_branch || 'main',
-    SB_GIT_SSH: project.git_repo && /^(git@|ssh:)/.test(gitUrl(project.git_repo)) ? `ssh -i ~/.ssh/${keyName(project.git_repo)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new` : '',
+    SB_GIT_SSH: project.git_repo ? gitSshCommand(project.git_repo) : '',
     SB_TEMPLATE: project.template || '',
     SB_DB: opts.db || 'none',
     SB_ENV: project.env || 'production',
@@ -257,6 +257,9 @@ export function projectConf(project, dep, server) {
 
 /** SSH key the server uses to read (or push) the repo: one per repo, GitHub allows a key on one repo only. */
 export const keyName = (repo) => `switchboard-${repo.replace(/[^A-Za-z0-9_.-]+/g, '_')}`;
+
+/** core.sshCommand that makes git use the repo's deploy key ('' when the server clones over another protocol). */
+export const gitSshCommand = (repo) => (/^(git@|ssh:)/.test(gitUrl(repo)) ? `ssh -i ~/.ssh/${keyName(repo)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new` : '');
 
 /**
  * Write the project's settings + deploy script to the server. `dep` may be a plain object
