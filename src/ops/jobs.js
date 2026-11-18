@@ -13,6 +13,7 @@ import { setMaintenance } from './app.js';
 import { pointDnsTo, purgeProjectCache, refreshDnsState, dnsTargetProblem } from './dns.js';
 import { runClone } from './clone.js';
 import { hostAppScript } from './hostapps.js';
+import { ownContainerId } from './wipe.js';
 import { checkProjectNow, collectMetrics } from '../monitor.js';
 import { isLb, addMember, drainMember, moveTraffic, whileDrained, enableLb, disableLb, applyLb, saveRuntime } from './lb.js';
 import { setupDbServer, moveDatabase, sharedDbDep, refreshDbFirewall } from './dbserver.js';
@@ -405,17 +406,32 @@ defineJob('command', async (ctx, p) => {
 defineJob('container', async (ctx, p) => {
   const server = getServer(Number(p.server));
   if (!server) throw new Error('Server not found');
-  const verbs = { restart: 'restarted', stop: 'stopped', start: 'started' };
+  const verbs = { restart: 'restarted', stop: 'stopped', start: 'started', rm: 'deleted' };
   if (!verbs[p.action]) throw new Error('Unknown container action');
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(String(p.container || ''))) throw new Error('Invalid container name');
-  ctx.step(`docker ${p.action} ${p.container} on ${server.name}`);
+  const D = dockerBin(server);
   const conn = await connectTo(ctx, server);
   try {
-    await runRemote(ctx, conn, `${dockerBin(server)} ${p.action} ${shq(p.container)}`, { timeout: 180000 });
+    if (p.action === 'rm') {
+      ctx.step(`Delete container ${p.container} on ${server.name} (docker rm -f — its data volumes are kept)`);
+      const info = await runRemote(ctx, conn, `${D} inspect -f '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}}' ${shq(p.container)}`, { quiet: true, timeout: 30000 });
+      const [id, project] = info.stdout.trim().split(' ');
+      const me = ownContainerId();
+      if (me && (id === me || (me.length === 12 && id.startsWith(me)))) throw new Error(`${p.container} is this Switchboard itself — it can't delete its own container`);
+      await runRemote(ctx, conn, `${D} rm -f ${shq(p.container)}`, { timeout: 180000 });
+      if (project) ctx.log(`It belonged to the Docker Compose project "${project}": "docker compose up" (or Deploy) creates it again. To remove it for good, take the service out of its docker-compose.yml.`);
+    } else {
+      ctx.step(`docker ${p.action} ${p.container} on ${server.name}`);
+      await runRemote(ctx, conn, `${D} ${p.action} ${shq(p.container)}`, { timeout: 180000 });
+    }
   } finally {
     conn.end();
   }
-  logEvent('info', `${server.name}: container ${p.container} ${verbs[p.action]}`, { serverId: server.id, jobId: ctx.id, user: ctx.user });
+  logEvent(p.action === 'rm' ? 'warn' : 'info', `${server.name}: container ${p.container} ${verbs[p.action]}`, { serverId: server.id, jobId: ctx.id, user: ctx.user });
+  if (p.action === 'rm') {
+    await collectMetrics(getServer(server.id)).catch(() => {});
+    bus.emit('state', { serverId: server.id });
+  }
 });
 
 /* --------------------------------------------------------------------------- MAINTENANCE */

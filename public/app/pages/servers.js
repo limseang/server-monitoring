@@ -111,6 +111,19 @@ export const ServerPage = {
     const osUpgrade = () => openDialog('os-upgrade', { server: s.value });
     const logs = (c) => openDialog('logs', { server: s.value, container: c.name });
     async function action(c, act) {
+      if (act === 'rm') {
+        const ok = await confirmBox({
+          title: `Delete container ${c.name}?`,
+          message:
+            'The container is removed (docker rm -f), also when it is restarting or running. Its data volumes are kept.' +
+            (c.project ? `\n\nIt is part of the compose project "${c.project}": "docker compose up" or a Deploy creates it again. To remove it for good, take the service out of docker-compose.yml.` : ''),
+          confirmText: 'Delete container',
+          danger: true,
+          typeToConfirm: c.name,
+        });
+        if (ok) runJob(http.post(`/servers/${props.id}/containers/${encodeURIComponent(c.name)}/rm`, { confirm: c.name }));
+        return;
+      }
       if (act !== 'start') {
         const ok = await confirmBox({ title: `${act === 'stop' ? 'Stop' : 'Restart'} ${c.name}?`, message: c.project ? `Part of compose project "${c.project}".` : '', confirmText: act === 'stop' ? 'Stop' : 'Restart', danger: act === 'stop' });
         if (!ok) return;
@@ -243,7 +256,8 @@ export const ServerPage = {
             <td class="actions"><button class="btn btn-xs" @click="logs(c)">Logs</button>
               <button class="admin-only btn btn-xs" @click="action(c, 'restart')">Restart</button>
               <button v-if="c.state === 'running'" class="admin-only btn btn-xs btn-danger" @click="action(c, 'stop')">Stop</button>
-              <button v-else class="admin-only btn btn-xs" @click="action(c, 'start')">Start</button></td>
+              <button v-else class="admin-only btn btn-xs" @click="action(c, 'start')">Start</button>
+              <button class="admin-only btn btn-xs btn-danger" @click="action(c, 'rm')">Delete</button></td>
           </tr></tbody>
         </table>
         <div v-else class="empty">{{ m ? 'No containers.' : 'No data yet.' }}</div>

@@ -540,8 +540,18 @@ api.post('/servers/:id/containers/:name/:action', (req, res) => {
   const s = mustServer(req.params.id);
   const name = str(req.params.name, 128);
   if (!RE.container.test(name)) throw bad('Invalid container name');
-  if (!['restart', 'stop', 'start'].includes(req.params.action)) throw bad('Unknown action');
-  const job = enqueue({ type: 'container', title: `docker ${req.params.action} ${name} @ ${s.name}`, serverId: s.id, params: { server: s.id, container: name, action: req.params.action }, user: who(req) });
+  if (!['restart', 'stop', 'start', 'rm'].includes(req.params.action)) throw bad('Unknown action');
+  if (req.params.action === 'rm') {
+    if (str(req.body?.confirm, 128) !== name) throw bad(`Type the container name "${name}" to confirm`);
+    const live = get(
+      'SELECT p.name FROM deployments d JOIN projects p ON p.id = d.project_id WHERE d.server_id = ? AND p.active_deployment_id = d.id AND (d.app_container = ? OR d.db_container = ?)',
+      s.id,
+      name,
+      name,
+    );
+    if (live) throw bad(`${name} is the live app or database container of ${live.name} on ${s.name}. Switch ${live.name} to another server first.`);
+  }
+  const job = enqueue({ type: 'container', title: `docker ${req.params.action === 'rm' ? 'rm (delete)' : req.params.action} ${name} @ ${s.name}`, serverId: s.id, params: { server: s.id, container: name, action: req.params.action }, user: who(req) });
   res.json({ job });
 });
 

@@ -118,6 +118,7 @@ If a secret ever leaks: change the server passwords / SSH keys, database passwor
 | Point a subdomain at an app | Servers → a server → **Connect domain** (or Ports & domains tab). |
 | Deploy | Server card → **Deploy**, or push to GitHub when CI/CD is set up. |
 | Run a project on another server too | Project → server card **⋯** → **Copy to another server…** (or Servers → a server → **More → Copy a project to another server…**). Pick the server and, if you like, new ports. **Check both servers** shows what will be copied first. |
+| Delete a broken container (e.g. one stuck restarting) | Servers → a server → **Containers** tab → **Delete** (type its name to confirm). Data volumes are kept; a live project's app/database container is refused. A compose container comes back on the next `docker compose up` / Deploy — take it out of `docker-compose.yml` to remove it for good. |
 | Take a project off one server | Project → server card **⋯** → **Remove from project…** → "Also delete it from the server" (backs up the database first). |
 | Delete a project for good | Project → Settings → **Delete project** → "Also delete it from all servers". A final DB backup is kept in `backups/_deleted/`. |
 | Clean a server but keep its OS | Servers → a server → **More → Reset server…**. **Scan** shows what will be deleted first. |
