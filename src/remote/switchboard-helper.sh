@@ -140,9 +140,13 @@ server {
   server_name $*;
   ssl_certificate $crt;
   ssl_certificate_key $key;
-  client_max_body_size 100m;
+  # Large uploads (multi-GB media): no nginx size cap (the app sets its own), stream the
+  # body to the app as it arrives instead of buffering it all first, long timeouts.
+  client_max_body_size 0;
+  client_body_timeout 1h;
   location / {
     proxy_pass http://127.0.0.1:$port;
+    proxy_request_buffering off;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
@@ -150,7 +154,8 @@ server {
     proxy_set_header X-Forwarded-Proto \$sb_proto;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$sb_upgrade;
-    proxy_read_timeout 300s;
+    proxy_send_timeout 1h;
+    proxy_read_timeout 1h;
   }
 }
 EOF
