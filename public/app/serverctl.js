@@ -157,7 +157,12 @@ export const DomainDialog = {
       scanned.value = r?.ports || [];
       if (!f.port) f.port = apps.value[0]?.port || '';
     });
-    const apps = computed(() => (scanned.value || []).filter((p) => p.proto === 'tcp' && p.kind !== 'ssh' && !(p.kind === 'web' && [80, 443].includes(p.port))));
+    // Apps a website can point to: containers first; never SSH, DNS (53) or the web proxy itself
+    const apps = computed(() =>
+      (scanned.value || [])
+        .filter((p) => p.proto === 'tcp' && p.kind !== 'ssh' && p.port !== 53 && !/systemd-resolve|dnsmasq/.test(p.process || '') && !(p.kind === 'web' && [80, 443].includes(p.port)))
+        .sort((a, b) => (a.container ? 0 : 1) - (b.container ? 0 : 1) || a.port - b.port),
+    );
     const f = reactive({ port: props.port || apps.value[0]?.port || '', zone: null, sub: '', proxied: true, takeover: false, project: '' });
     const projects = computed(() => (s.deployments || []).map((d) => ({ id: d.project_id, name: d.project_name })));
     const host = computed(() => (f.zone ? (f.sub ? `${f.sub.toLowerCase()}.${f.zone.zone_name}` : f.zone.zone_name) : ''));
