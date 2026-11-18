@@ -47,6 +47,7 @@ import { PROVIDERS, CURRENCIES, isDate, localDate, parseRemindDays, money } from
 import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, remindDays, paymentsOf, recentPayments, recordPayment, deletePayment, checkBilling } from './billing.js';
 import { dbAccessOf, dbAccessProblem, dbAccessIssues, dbDeps, zoneOf, DEFAULT_PORTS, PROXY_IMAGE } from './ops/dbaccess.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron, nextCleanup } from './monitor.js';
+import { previewGuard, guardOptions, unbanIp } from './ops/sshguard.js';
 import { previewCleanup, cleanupOptions, cleanupLabel, getSchedule, setSchedule } from './ops/cleanup.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
@@ -979,6 +980,46 @@ api.post('/servers/:id/reset', (req, res) => {
 function cleanupBusy(id) {
   return all("SELECT params FROM jobs WHERE type = 'server-cleanup' AND status IN ('queued', 'running')").some((r) => parseJSON(r.params, {}).server === id);
 }
+
+/* ---------- protect SSH (fail2ban, password login off) ---------- */
+api.post('/servers/:id/ssh-guard/preview', async (req, res) => {
+  const s = mustServer(req.params.id);
+  try {
+    res.json({ ok: true, plan: await previewGuard(s) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.post('/servers/:id/ssh-guard', (req, res) => {
+  const s = mustServer(req.params.id);
+  let o;
+  try {
+    o = guardOptions(req.body || {});
+  } catch (e) {
+    throw bad(e.message);
+  }
+  if (!o.remove && !o.fail2ban && !o.passwords_off) throw bad('Tick at least one protection');
+  if (o.passwords_off && s.auth_type === 'password') throw bad('Switchboard logs in to this server with a password — switch it to an SSH key first (Edit server), or it would lock itself out');
+  if (o.passwords_off && !bool(req.body?.confirm_keys)) throw bad('Confirm that you can log in to this server with an SSH key');
+  if (all("SELECT params FROM jobs WHERE type = 'ssh-guard' AND status IN ('queued', 'running')").some((r) => parseJSON(r.params, {}).server === s.id)) throw bad('SSH protection of this server is already running');
+  const what = o.remove ? 'remove SSH protection' : [o.fail2ban && 'fail2ban', o.passwords_off && 'password login off'].filter(Boolean).join(' + ');
+  const job = enqueue({ type: 'ssh-guard', title: `Protect SSH on ${s.name}: ${what}`, serverId: s.id, params: { server: s.id, ...o }, user: who(req) });
+  audit(req, 'warn', `${s.name}: ${what}`, { serverId: s.id, jobId: job.id });
+  res.json({ job });
+});
+
+api.post('/servers/:id/ssh-guard/unban', async (req, res) => {
+  const s = mustServer(req.params.id);
+  const ip = str(req.body?.ip, 64);
+  try {
+    await unbanIp(s, ip);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  audit(req, 'info', `${s.name}: ${ip} unblocked (fail2ban)`, { serverId: s.id });
+  res.json({ ok: true });
+});
 
 api.post('/servers/:id/cleanup/preview', async (req, res) => {
   const s = mustServer(req.params.id);

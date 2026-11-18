@@ -7,6 +7,7 @@ import { TemplateProjectDialog, StagingDialog } from './cicd.js';
 import { PowerDialog, PasswordDialog, PortDialog, DomainDialog } from './serverctl.js';
 import { RemoveDeploymentDialog, DeleteProjectDialog, ResetServerDialog, ReinstallDialog } from './wipedialogs.js';
 import { CleanupDialog } from './cleanupdialog.js';
+import { SshGuardDialog } from './sshguard.js';
 import { CopyProjectDialog } from './copydialog.js';
 
 /* ======================================================================= SERVER */
@@ -880,6 +881,7 @@ export const DIALOGS = {
   'server-reset': ResetServerDialog,
   'server-reinstall': ReinstallDialog,
   'server-cleanup': CleanupDialog,
+  'ssh-guard': SshGuardDialog,
   'remove-deployment': RemoveDeploymentDialog,
   'delete-project': DeleteProjectDialog,
   'lb-setup': LbSetupDialog,
