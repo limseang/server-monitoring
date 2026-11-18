@@ -194,15 +194,42 @@ await step('turn off: everything removed', async () => {
   check(!p.dns_records.some((x) => x.name === HOST) && !p.db_access.enabled, 'unlinked from the project, feature off');
 });
 
+await step('a database that already publishes its own port (docker -p 3306:3306)', async () => {
+  onVps('vps-new', 'docker rm -f dbx-pub >/dev/null 2>&1; docker run -d --name dbx-pub -p 3306:3306 -e MYSQL_ROOT_PASSWORD=rootpass-c -e MYSQL_DATABASE=shop mysql:8.4 >/dev/null');
+  for (let i = 0; i < 60 && query(OK_IP, NEW, 3306, 'SELECT 1') !== '1'; i++) await sleep(2000);
+  check(query(BAD_IP, NEW, 3306, 'SELECT 1') === '1', 'before: that database is open to everybody');
+  const p = await api('POST', '/projects', { name: `${TAG} pub`, domain: `${TAG}pub.shop.test`, health_scheme: 'http', health_path: '/up' });
+  ids.project2 = p.id;
+  const d = await api('POST', `/projects/${p.id}/deployments`, { server_id: ids.new, db_type: 'mysql', db_container: 'dbx-pub', db_name: 'shop', db_user: 'root', db_password: 'rootpass-c', skip_backup: true });
+  await api('POST', `/projects/${p.id}/adopt`, { deployment: d.id });
+  const host = `db-${TAG}pub.shop.test`;
+  let j = await waitJob((await api('PUT', `/projects/${p.id}/db-access`, { host, port: 3307, ips: [{ ip: OK_IP }] })).job);
+  check(j.status === 'failed' && /already publishes its port on 3306/.test(j.log), 'another port is refused with "set the port to 3306"');
+  j = await waitJob((await api('PUT', `/projects/${p.id}/db-access`, { host, port: 3306, ips: [{ ip: OK_IP }] })).job);
+  check(j.status === 'success' && /publishes this port itself/.test(j.log), 'port 3306: uses the database\'s own port, no extra proxy');
+  const v = await api('GET', `/projects/${p.id}/db-access`);
+  check(v.servers[0].state === 'open' && v.servers[0].via === 'own-port' && v.servers[0].ok, 'state: OPEN via its own port, database answers');
+  check(!onVps('vps-new', 'docker ps -a --format "{{.Names}}"').includes(`sb-dbaccess-${p.id}`), 'no proxy container');
+  check(query(OK_IP, NEW, 3306, 'SELECT 1') === '1', 'allowed IP still connects');
+  check(query(BAD_IP, NEW, 3306, 'SELECT 1') === null, 'everybody else is blocked now');
+  check(onVps('vps-new', 'ip6tables -S INPUT 2>/dev/null || true').includes(`SB-DBX-${p.id}6`) || !onVps('vps-new', 'command -v ip6tables || true'), 'IPv6 to the port is closed too');
+  j = await waitJob((await api('DELETE', `/projects/${p.id}/db-access`, {})).job);
+  check(j.status === 'success' && !onVps('vps-new', 'iptables -S; ip6tables -S 2>/dev/null || true').includes(`SB-DBX-${p.id}`), 'turn off removes the IPv4 and IPv6 rules');
+  check(onVps('vps-new', 'docker ps --format "{{.Names}}"').includes('dbx-pub'), "the user's database container is left alone");
+});
+
 await step('clean up', async () => {
   try {
     sh(`docker exec vps-src docker exec shop-db-1 mysql -uroot -prootpass-c -e 'DROP TABLE IF EXISTS shop.dbx_media' 2>/dev/null`);
     sh(`docker exec vps-new docker exec shop-db-1 mysql -uroot -prootpass-c -e 'DROP TABLE IF EXISTS shop.dbx_media' 2>/dev/null`);
   } catch {}
-  if (ids.project) {
-    const p = await api('GET', `/projects/${ids.project}`);
-    await api('DELETE', `/projects/${ids.project}`, { confirm: p.slug });
+  for (const id of [ids.project, ids.project2].filter(Boolean)) {
+    const p = await api('GET', `/projects/${id}`);
+    await api('DELETE', `/projects/${id}`, { confirm: p.slug });
   }
+  try {
+    onVps('vps-new', 'docker rm -f dbx-pub >/dev/null 2>&1 || true');
+  } catch {}
   for (const k of ['src', 'new']) if (ids[k]) await api('DELETE', `/servers/${ids[k]}`);
   check(true, 'test project and servers removed from the dashboard');
 });

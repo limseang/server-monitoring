@@ -60,14 +60,33 @@ iptables -A ${c} -s 127.0.0.0/8 -j RETURN
 ${ips.map((ip) => `iptables -A ${c} -s ${ip} -j RETURN`).join('\n')}
 iptables -A ${c} -j DROP
 iptables -C DOCKER-USER -p tcp -m conntrack --ctorigdstport ${port} --ctdir ORIGINAL -j ${c} 2>/dev/null || iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport ${port} --ctdir ORIGINAL -j ${c}
+# IPv6: allowed IPs are IPv4, so the port is closed over IPv6 (a database publishing on [::] would bypass the rules above)
+if command -v ip6tables >/dev/null 2>&1 && ip6tables -S INPUT >/dev/null 2>&1; then
+  ip6tables -N ${c}6 2>/dev/null; ip6tables -F ${c}6
+  ip6tables -A ${c}6 -i lo -j RETURN
+  ip6tables -A ${c}6 -i docker0 -j RETURN
+  ip6tables -A ${c}6 -i br-+ -j RETURN
+  ip6tables -A ${c}6 -j DROP
+  ip6tables -C INPUT -p tcp --dport ${port} -j ${c}6 2>/dev/null || ip6tables -I INPUT -p tcp --dport ${port} -j ${c}6
+  if ip6tables -S DOCKER-USER >/dev/null 2>&1; then
+    ip6tables -C DOCKER-USER -p tcp -m conntrack --ctorigdstport ${port} --ctdir ORIGINAL -j ${c}6 2>/dev/null || ip6tables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport ${port} --ctdir ORIGINAL -j ${c}6
+  fi
+fi
 `;
 }
+
+/** Shell helper: delete the rules in a parent chain that jump to a target chain (except for one port). */
+const SBDEL = `sbdel() {
+  command -v "$1" >/dev/null 2>&1 || return 0
+  "$1" -S "$2" 2>/dev/null | grep -- "-j $3\\$" | { if [ -n "$4" ]; then grep -v -- "port $4 " || true; else cat; fi; } | sed 's/^-A /-D /' | while read -r R; do eval "$1" $R; done
+}`;
 
 /** Remove the rules (also used before re-adding with another port). */
 const unfirewall = (project) => {
   const c = chainName(project);
-  return `while iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j ${c}$'; do R="$(iptables -S DOCKER-USER | grep -- '-j ${c}$' | head -1 | sed 's/^-A /-D /')"; eval iptables $R || break; done
-iptables -F ${c} 2>/dev/null; iptables -X ${c} 2>/dev/null; rm -f ${DIR}/${project.id}.sh
+  return `${SBDEL}
+sbdel iptables DOCKER-USER ${c}; sbdel ip6tables DOCKER-USER ${c}6; sbdel ip6tables INPUT ${c}6
+iptables -F ${c} 2>/dev/null; iptables -X ${c} 2>/dev/null; ip6tables -F ${c}6 2>/dev/null; ip6tables -X ${c}6 2>/dev/null; rm -f ${DIR}/${project.id}.sh
 # last project gone: no reboot line, no folder
 if ! ls ${DIR}/*.sh >/dev/null 2>&1; then rmdir ${DIR} 2>/dev/null; if command -v crontab >/dev/null 2>&1; then crontab -l 2>/dev/null | grep -v 'switchboard-dbaccess' | crontab -; fi; fi; true`;
 };
@@ -100,11 +119,21 @@ NET="$(${docker} inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{prin
 [ "$NET" != host ] || { echo "Database container $DB uses the host network — publish its port yourself" >&2; exit 3; }
 TARGET="$DB"
 [ "$NET" != bridge ] || TARGET="$(${docker} inspect -f '{{(index .NetworkSettings.Networks "bridge").IPAddress}}' "$DB")"
+# Does the database container already publish its port on this server (docker -p 3306:3306)?
+PUB="$(${docker} port "$DB" $IN/tcp 2>/dev/null | grep -v -e '^127\.' -e '^\[::1\]' | sed 's/.*://' | grep -E '^[0-9]+$' | sort -u | head -1 || true)"
+OWN=0
+if [ -n "$PUB" ]; then
+  [ "$PUB" = "$P" ] || { echo "The database container $DB already publishes its port on $PUB (open to the internet) — set the port to $PUB here (Edit → Port) so Switchboard protects that one" >&2; exit 4; }
+  OWN=1
+fi
 CUR="$(${docker} inspect -f '{{index .Config.Labels "switchboard.dbaccess"}}' "$NAME" 2>/dev/null || true)"
-if [ "$CUR" != ${shq(sig)} ] || [ "$(${docker} inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != true ]; then
+if [ $OWN = 1 ]; then
+  ${docker} rm -f "$NAME" >/dev/null 2>&1 || true
+  echo "mode: own port"
+elif [ "$CUR" != ${shq(sig)} ] || [ "$(${docker} inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != true ]; then
   ${docker} rm -f "$NAME" >/dev/null 2>&1 || true
   if (ss -ltnH "sport = :$P" 2>/dev/null || netstat -ltn 2>/dev/null | awk '{print $4}' | grep -E "[:.]$P\\$") | grep -q .; then
-    echo "Port $P is already used by something else on this server — pick another port" >&2; exit 4
+    echo "Port $P is already used by something else on this server (docker ps / ss -ltnp shows what) — pick another port" >&2; exit 4
   fi
   ${docker} pull -q ${PROXY_IMAGE} >/dev/null 2>&1 || true
   ${docker} run -d --name "$NAME" --restart unless-stopped --network "$NET" -p "0.0.0.0:$P:$IN" \\
@@ -118,11 +147,12 @@ command -v iptables >/dev/null 2>&1 || { echo "iptables is not installed — can
 iptables -S DOCKER-USER >/dev/null 2>&1 || { echo "No DOCKER-USER firewall chain (is Docker running with iptables?)" >&2; exit 5; }
 mkdir -p ${DIR}
 # rules for an old port go first
-iptables -S DOCKER-USER | grep -- '-j ${chainName(project)}$' | grep -v -- "--ctorigdstport $P " | sed 's/^-A /-D /' | while read -r R; do eval iptables $R; done
+${SBDEL}
+sbdel iptables DOCKER-USER ${chainName(project)} $P; sbdel ip6tables DOCKER-USER ${chainName(project)}6 $P; sbdel ip6tables INPUT ${chainName(project)}6 $P
 cat > ${DIR}/${project.id}.sh; chmod 700 ${DIR}/${project.id}.sh; sh ${DIR}/${project.id}.sh
 if command -v crontab >/dev/null 2>&1; then (crontab -l 2>/dev/null | grep -v 'switchboard-dbaccess'; echo '@reboot sleep 40 && for f in ${DIR}/*.sh; do sh "$f"; done') | crontab -; fi
 # check: can the database be reached through the proxy?
-PADDR="$NAME"; [ "$NET" != bridge ] || PADDR="$(${docker} inspect -f '{{(index .NetworkSettings.Networks "bridge").IPAddress}}' "$NAME")"
+PADDR="$NAME"; [ $OWN = 0 ] || PADDR=127.0.0.1; [ $OWN = 1 ] || [ "$NET" != bridge ] || PADDR="$(${docker} inspect -f '{{(index .NetworkSettings.Networks "bridge").IPAddress}}' "$NAME")"
 sleep 1
 if ${docker} exec "$DB" sh -c 'command -v pg_isready' >/dev/null 2>&1; then
   ${docker} exec "$DB" pg_isready -h "$PADDR" -p $IN -t 5 >/dev/null && echo "check: database answers through the proxy" || echo "check: NO answer through the proxy"
@@ -133,10 +163,11 @@ fi`;
   try {
     const r = await runRemote(ctx, conn, asRoot(server, setup), { stdin: firewallScript(project, port, ips), quiet: true, timeout: 180000 });
     const ok = /database answers through the proxy/.test(r.stdout);
-    const state = { state: mode, port, ok, error: ok ? null : 'The database did not answer through the proxy' };
+    const own = /mode: own port/.test(r.stdout);
+    const state = { state: mode, port, ok, via: own ? 'own-port' : 'proxy', error: ok ? null : 'The database did not answer' };
     saveServerState(project.id, dep.id, state);
     ctx?.log(
-      `${dep.server_name}: port ${port} ${mode === 'open' ? `OPEN for ${ips.join(', ') || 'nobody (add IPs)'}` : 'CLOSED to outside (standby)'}${ok ? ' — database answers ✓' : ''}`,
+      `${dep.server_name}: port ${port} ${mode === 'open' ? `OPEN for ${ips.join(', ') || 'nobody (add IPs)'}` : 'CLOSED to outside (standby)'}${own ? ' (the database publishes this port itself — protected by the firewall)' : ''}${ok ? ' — database answers ✓' : ''}`,
     );
     if (!ok) ctx?.warn(`${dep.server_name}: the database did not answer through the proxy — is ${db} running?`);
     return state;

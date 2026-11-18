@@ -121,7 +121,7 @@ export const DbAccessTab = {
           <thead><tr><th>Server</th><th>Outside access</th><th>Port</th><th>Checked</th></tr></thead>
           <tbody><tr v-for="s in v.servers" :key="s.id">
             <td><span class="strong">{{ s.server_name }}</span> <span v-if="s.is_active" class="badge badge-green">LIVE</span><div class="tiny muted mono">{{ s.server_ip }}<template v-if="s.db_container"> · {{ s.db_container }}</template></div></td>
-            <td><span class="badge" :class="stateBadge(s)[0]">{{ stateBadge(s)[1] }}</span><div v-if="s.error" class="tiny text-red">{{ s.error }}</div><div v-else-if="s.state && s.ok" class="tiny muted">database answers through the proxy</div></td>
+            <td><span class="badge" :class="stateBadge(s)[0]">{{ stateBadge(s)[1] }}</span><div v-if="s.error" class="tiny text-red">{{ s.error }}</div><div v-else-if="s.state && s.ok" class="tiny muted">{{ s.via === 'own-port' ? 'the database publishes this port itself — protected by the firewall' : 'database answers through the proxy' }}</div></td>
             <td class="mono">{{ s.port || '—' }}</td>
             <td class="small muted"><ago v-if="s.at" :at="s.at" /><span v-else>—</span></td>
           </tr></tbody>
