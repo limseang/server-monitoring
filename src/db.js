@@ -342,6 +342,38 @@ const MIGRATIONS = [
   `
   ALTER TABLE servers ADD COLUMN ssh_guard TEXT;
   `,
+  // v12: usage history (CPU / memory / GPU / network per stats check) + a record of every busy time
+  `
+  CREATE TABLE server_stats (
+    server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    at TEXT NOT NULL,
+    cpu REAL,
+    mem REAL,
+    swap REAL,
+    load1 REAL,
+    disk REAL,
+    gpu REAL,
+    gpu_mem REAL,
+    net_rx REAL,
+    net_tx REAL,
+    PRIMARY KEY (server_id, at)
+  );
+  CREATE TABLE busy_periods (
+    id INTEGER PRIMARY KEY,
+    server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    peak_cpu REAL,
+    peak_mem REAL,
+    peak_gpu REAL,
+    peak_rpm REAL,
+    avg_rpm REAL,
+    baseline_rpm REAL,
+    requests INTEGER,
+    cause TEXT
+  );
+  CREATE INDEX idx_busy_server ON busy_periods (server_id, started_at);
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

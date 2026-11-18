@@ -55,6 +55,7 @@ import { TEMPLATES, DB_NAMES } from './ops/stack.js';
 import { templateProjectRow } from './ops/provision.js';
 import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, listFolders, makeFolder, cleanFolder } from './ops/serverctl.js';
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
+import { usageSummary } from './ops/usage.js';
 import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
@@ -2187,6 +2188,13 @@ api.get('/servers/:id/traffic', (req, res) => {
     live_for: all('SELECT p.id, p.name FROM projects p JOIN deployments d ON d.id = p.active_deployment_id WHERE d.server_id = ?', s.id),
     events: all("SELECT * FROM events WHERE server_id = ? AND message LIKE 'Unusual on %' ORDER BY id DESC LIMIT 20", s.id),
   });
+});
+
+// Usage history: CPU / memory / GPU / network over time + every busy time (server → Usage history)
+api.get('/servers/:id/usage', (req, res) => {
+  const s = mustServer(req.params.id);
+  const minutes = [60, 360, 1440, 10080, 43200].includes(Number(req.query.minutes)) ? Number(req.query.minutes) : 1440;
+  res.json(usageSummary(s.id, minutes));
 });
 
 api.post('/servers/:id/traffic/collect', async (req, res) => {

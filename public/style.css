@@ -25,6 +25,9 @@
   --amber-bg: rgba(251, 191, 36, 0.12);
   --blue: #60a5fa;
   --blue-bg: rgba(96, 165, 250, 0.13);
+  --series-1: #3987e5; /* chart series (CVD-checked order: blue, orange, aqua) */
+  --series-2: #d95926;
+  --series-3: #199e70;
   --gray: #8189a0;
   --gray-bg: rgba(129, 137, 160, 0.14);
   --log-bg: #090b10;
@@ -57,6 +60,9 @@
   --amber-bg: rgba(217, 119, 6, 0.12);
   --blue: #2563eb;
   --blue-bg: rgba(37, 99, 235, 0.1);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
   --gray: #687189;
   --gray-bg: rgba(104, 113, 137, 0.12);
   --log-bg: #0f131c;
@@ -626,6 +632,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .tchart-x span { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; }
 .tchart-tip { position: absolute; top: 4px; transform: translateX(-50%); background: color-mix(in srgb, var(--panel-2) 95%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--border-2); border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 190px; pointer-events: none; box-shadow: var(--shadow); z-index: 5; }
 .tchart-tip-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 3px; color: var(--text-2); }
+.uchart-band { fill: var(--red); opacity: 0.1; }
+.uchart-band-key { background: color-mix(in srgb, var(--red) 25%, transparent) !important; }
+.uchart-limit { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+.uchart-cross { stroke: var(--border-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.uchart-dot { position: absolute; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 2px var(--panel); pointer-events: none; }
 .tchart-tip-row b { color: var(--text); font-variant-numeric: tabular-nums; }
 .toplist { display: flex; flex-direction: column; padding: 6px 8px 10px; }
 .toprow { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; border-radius: 8px; min-width: 0; }
