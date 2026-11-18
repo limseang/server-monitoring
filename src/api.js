@@ -760,6 +760,13 @@ function cloneInput(req) {
     addToProjects: req.body.addToProjects === undefined ? true : bool(req.body.addToProjects),
     extraPaths: lines,
   };
+  // Optional picks (left out = copy everything): compose project names and app folders.
+  if (Array.isArray(req.body.stacks)) {
+    params.stacks = req.body.stacks.map((x) => str(x, 128)).filter((x) => /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(x)).slice(0, 300);
+  }
+  if (Array.isArray(req.body.folders)) {
+    params.folders = req.body.folders.map((x) => str(x, 500)).filter((x) => RE.absPath.test(x) && x !== '/' && !x.includes('..')).slice(0, 300);
+  }
   return { src, dst, params };
 }
 

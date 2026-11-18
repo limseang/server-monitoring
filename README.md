@@ -179,7 +179,7 @@ Servers → a server:
 
 - **Load balancing** (project → Traffic tab): your own nginx load balancer or Cloudflare Load Balancing; zero-downtime switches and rolling deploys.
 - **Shared database server**: MySQL / MariaDB / PostgreSQL + Redis on one server, reachable only by your app servers.
-- **Clone a server** (server → Clone): Docker, images, compose stacks with volumes and databases, host setup (packages, users, cron, nginx, certificates, firewall…). "Scan" shows what will be copied first.
+- **Clone a server** (server → Clone): Docker, images, compose stacks with volumes and databases, host setup (packages, users, cron, nginx, certificates, firewall…). "Scan" shows what will be copied first — with a tick box for every Docker project and every app folder outside Docker, so you can copy **all or only some** of them (All / None). Only the picked projects get the new server as a standby. Host setup (nginx, cron…) is still copied as a whole.
 - **Copy one project to another server** (project → server card ⋯ → Copy to another server, or server → More): only that project — its Docker Compose stack (folder, exact images, volumes with the database, paused while copied for an exact snapshot) and/or its apps outside Docker (PM2 apps, systemd services, its nginx server blocks, the app folder, the user that runs it and its Node.js). Each port the project uses is listed: keep it, or type a new one. A port already used on the target (or 22) is refused. A new port is written into the copied `docker-compose.yml` / `.env`, the PM2 env (`PORT`) or systemd `Environment=`, nginx `proxy_pass`/`listen` and Switchboard's web proxy site, so the copy really runs there. The target is then added to the project as a standby (traffic is not moved). Nothing on the target is overwritten unless you tick **Replace**. Note: the project's health check uses one port for every server — if you change that port, check through the domain (port 80/443) instead.
 - **Upgrade OS**: Ubuntu LTS / Debian, one release at a time, containers restarted and health-checked afterwards.
 - **Reset a server** (server → More → Reset server): deletes every container, volume, image and compose folder, plus (optional) PM2/systemd apps, nginx sites and crontabs, GitHub runners and Switchboard's files. Keeps the OS, users, SSH and Docker, and saves the old configs to `/root/switchboard-reset-<date>.tar.gz`. Refused while the server is live for a project, a load balancer, a database server, or runs Switchboard itself.
@@ -232,7 +232,7 @@ The `dev/` folder has a complete **test lab** — fake servers, fake Cloudflare,
 ./dev/setup.sh                       # starts the lab → http://localhost:8090 (admin / admin-password-123)
 node dev/e2e.mjs                     # switch, copy, backup/restore, failover, alerts, deploy
 node dev/e2e-extra.mjs               # PostgreSQL, MariaDB, failed import rollback
-./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-copy-project.mjs, e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs)
+./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-clone-pick.mjs, e2e-copy-project.mjs, e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs)
 ./dev/ci-setup.sh && node dev/e2e-ci.mjs         # templates, CI/CD, staging, previews (also e2e-server.mjs, e2e-traffic.mjs)
 docker compose -f dev/docker-compose.yml --profile s3 up -d s3 && node dev/e2e-s3.mjs   # S3 backups
 docker compose -f dev/docker-compose.yml down -v # remove the lab
