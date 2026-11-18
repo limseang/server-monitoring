@@ -69,8 +69,13 @@ export function nginxConfig(project, members, lbServer, cfg = {}) {
     '        proxy_next_upstream error timeout http_502 http_503 http_504;',
     '        proxy_next_upstream_tries 3;',
     '        proxy_connect_timeout 5s;',
-    '        proxy_read_timeout 120s;',
-    '        client_max_body_size 100m;',
+    // Large uploads (multi-GB media): no size cap, stream the body to the server as it
+    // arrives (no buffering the whole POST first), long timeouts between reads/writes.
+    '        client_max_body_size 0;',
+    '        client_body_timeout 1h;',
+    '        proxy_request_buffering off;',
+    '        proxy_send_timeout 1h;',
+    '        proxy_read_timeout 1h;',
   ];
   if (https) location.push('        proxy_ssl_server_name on;', '        proxy_ssl_name $host;');
   location.push('    }');
