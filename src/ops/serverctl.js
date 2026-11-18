@@ -398,3 +398,57 @@ defineJob('domain-remove', async (ctx, p) => {
   logEvent('info', `${d.host} disconnected from ${server.name}`, { serverId: server.id, jobId: ctx.id, user: ctx.user });
   bus.emit('state', {});
 });
+
+/* ------------------------------------------------------------------ folders (where a new app goes) */
+/** Clean an absolute folder path: no "..", no doubled or trailing slashes. Returns '' when it is not one. */
+export function cleanFolder(p) {
+  if (typeof p !== 'string' || !p.startsWith('/') || p.length > 500 || /[\0\n\r\t]/.test(p)) return '';
+  const c = `/${p.split('/').filter(Boolean).join('/')}`;
+  if (/(^|\/)\.\.?(\/|$)/.test(c)) return '';
+  return c;
+}
+
+/**
+ * The sub-folders of `dir` on a server (for the folder picker), plus a few handy places to start.
+ * Read-only; runs as root so folders like /srv or /root can be listed too.
+ */
+export async function listFolders(server, dir) {
+  const path = cleanFolder(dir || '/srv') || '/srv';
+  const conn = await connect(server, { timeout: 15000 });
+  try {
+    const script = [
+      `D=${shq(path)}`,
+      'if [ -d "$D" ]; then echo "@exists"; [ -z "$(ls -A "$D" 2>/dev/null)" ] && echo "@empty"; find "$D" -mindepth 1 -maxdepth 1 -type d ! -name ".*" -printf "%f\\n" 2>/dev/null | LC_ALL=C sort | head -n 500; fi',
+      `echo "@home $(getent passwd ${shq(server.ssh_user || 'root')} | cut -d: -f6)"`,
+      'for p in /srv /opt /var/www /home; do [ -d "$p" ] && echo "@place $p"; done; true',
+    ].join('\n');
+    const r = await exec(conn, asRoot(server, script), { timeout: 20000 });
+    if (r.code) throw new Error(r.stderr.replace(/\x1eSBPGID \d+\n?/, '').trim().split('\n').pop() || `Could not list ${path}`);
+    const out = { path, parent: path === '/' ? null : path.replace(/\/[^/]+$/, '') || '/', exists: false, empty: false, dirs: [], places: [] };
+    for (const l of r.stdout.split('\n').filter(Boolean)) {
+      if (l === '@exists') out.exists = true;
+      else if (l === '@empty') out.empty = true;
+      else if (l.startsWith('@home ')) {
+        const h = l.slice(6).trim();
+        if (h && h !== '/') out.places.unshift(h);
+      } else if (l.startsWith('@place ')) out.places.push(l.slice(7));
+      else out.dirs.push(l);
+    }
+    out.places = [...new Set(out.places)];
+    return out;
+  } finally {
+    conn.end();
+  }
+}
+
+/** Make a folder (and its parents) on a server, owned by the user apps run as. */
+export async function makeFolder(server, dir) {
+  const user = server.ssh_user || 'root';
+  const conn = await connect(server, { timeout: 15000 });
+  try {
+    const r = await exec(conn, asRoot(server, `set -e; mkdir -p -- ${shq(dir)}; chown ${shq(user)}: ${shq(dir)}`), { timeout: 20000 });
+    if (r.code) throw new Error(r.stderr.replace(/\x1eSBPGID \d+\n?/, '').trim().split('\n').pop() || `Could not create ${dir}`);
+  } finally {
+    conn.end();
+  }
+}

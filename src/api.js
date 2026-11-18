@@ -33,7 +33,7 @@ import { s3Config, testS3 } from './s3.js';
 import { dockerBin, shq, asRoot } from './ops/remote.js';
 import { previewClone } from './ops/clone.js';
 import { previewCopy, portMap } from './ops/copyproject.js';
-import { previewReset, resetOptions, removalProblem, deleteProjectRecord } from './ops/wipe.js';
+import { previewReset, resetOptions, removalProblem, deleteProjectRecord, safeDir } from './ops/wipe.js';
 import { previewReinstall, reinstallOptions, REINSTALL_OS } from './ops/reinstall.js';
 import { isLb, lbConfig } from './ops/lb.js';
 import { METHODS as LB_METHODS, nginxConfig } from './lb/nginx.js';
@@ -50,7 +50,7 @@ import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
 import { TEMPLATES, DB_NAMES } from './ops/stack.js';
 import { templateProjectRow } from './ops/provision.js';
-import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts } from './ops/serverctl.js';
+import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, listFolders, makeFolder, cleanFolder } from './ops/serverctl.js';
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel } from './ops/ci.js';
 
@@ -1808,6 +1808,14 @@ api.get('/github/repo-info', async (req, res) => {
   res.json({ ...info, branches });
 });
 
+/** A folder an app may live in: absolute, at least two levels deep, not a system or home folder itself. */
+function appFolderInput(v) {
+  const dir = cleanFolder(str(v, 500));
+  if (!dir) throw bad('Folder must be an absolute path like /srv/shop or /home/deploy/shop');
+  if (!safeDir(dir)) throw bad(`${dir} can't hold an app — use a folder of its own, like /srv/shop, /opt/shop or /home/deploy/shop (not /, /home, /var/www, /etc…)`);
+  return dir;
+}
+
 api.post('/projects/from-template', (req, res) => {
   const b = req.body || {};
   const template = str(b.template, 20);
@@ -1831,13 +1839,14 @@ api.post('/projects/from-template', (req, res) => {
   if (template === 'compose' && !appPort) throw bad('Enter the port the app listens on (from its docker-compose.yml, e.g. 8080)');
   let healthPath = str(b.health_path, 200) || '/';
   if (!healthPath.startsWith('/')) healthPath = `/${healthPath}`;
+  const appDir = b.folder ? appFolderInput(b.folder) : null;
   const row = templateProjectRow({ name, template, db, domain, repo, branch, extraHosts, appPort, healthPath });
   const id = insert('projects', { ...row, slug: uniqueSlug(name), created_at: now() });
   const job = enqueue({
     type: 'provision',
     title: `Set up ${name} (${t.label})`,
     projectId: id,
-    params: { servers, createRepo: code === 'new', privateRepo: b.privateRepo !== false, zone, takeoverDns: bool(b.takeoverDns), ci: repo && ['pull', 'runner'].includes(b.ci) ? b.ci : null },
+    params: { servers, appDir, createRepo: code === 'new', privateRepo: b.privateRepo !== false, zone, takeoverDns: bool(b.takeoverDns), ci: repo && ['pull', 'runner'].includes(b.ci) ? b.ci : null },
     user: who(req),
   });
   audit(req, 'info', `Project ${name} created from the ${t.label} template`, { projectId: id, jobId: job.id });
@@ -2101,6 +2110,21 @@ api.post('/servers/:id/power', (req, res) => {
 api.get('/servers/:id/users', async (req, res) => {
   const s = mustServer(req.params.id);
   res.json(await listUsers(s));
+});
+
+/** Folder picker for a new app: the sub-folders of ?path= on the server. */
+api.get('/servers/:id/folders', async (req, res) => {
+  const s = mustServer(req.params.id);
+  res.json(await listFolders(s, str(req.query.path, 500)));
+});
+
+/** "New folder" in the folder picker. */
+api.post('/servers/:id/folders', async (req, res) => {
+  const s = mustServer(req.params.id);
+  const dir = appFolderInput(req.body.path);
+  await makeFolder(s, dir);
+  audit(req, 'info', `Folder ${dir} created on ${s.name}`, { serverId: s.id });
+  res.json({ path: dir });
 });
 
 api.post('/servers/:id/password', async (req, res) => {
