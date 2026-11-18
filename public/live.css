@@ -1,0 +1,38 @@
+/* Live views: the pulsing LIVE badge, "jump to latest" and live tiles. Kept apart from style.css. */
+.live-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 99px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; vertical-align: middle;
+  background: var(--gray-bg); color: var(--text-2);
+}
+.live-pill i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.live-pill.live-live { background: var(--red-bg); color: var(--red); }
+.live-pill.live-live i { animation: sb-live-pulse 1.4s ease-in-out infinite; }
+.live-pill.live-connecting i, .live-pill.live-offline i { animation: sb-live-blink 0.9s steps(2, start) infinite; }
+.live-pill.live-offline { background: var(--amber-bg, var(--gray-bg)); color: var(--amber, var(--text-2)); }
+.live-pill.live-paused i { border-radius: 1px; width: 7px; height: 8px; background: none; border-left: 2.5px solid currentColor; border-right: 2.5px solid currentColor; }
+@keyframes sb-live-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes sb-live-blink { to { visibility: hidden; } }
+
+.log-wrap { position: relative; }
+/* a live log scrolls inside its own box, so "scroll up to stop following" works */
+.log-wrap .log.tall { min-height: 50vh; max-height: max(50vh, calc(100vh - 240px)); -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.log-jump {
+  position: absolute; right: 14px; bottom: 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  animation: sb-live-rise 0.18s ease-out;
+}
+@keyframes sb-live-rise { from { transform: translateY(6px); opacity: 0; } }
+
+.live-card h3 { margin: 0; }
+.live-tiles .tile-value.small-value { font-size: 20px; }
+.live-num { transition: color 0.3s; }
+
+@media (max-width: 700px) {
+  .log-jump { right: 8px; bottom: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-pill i, .log-jump { animation: none !important; }
+}

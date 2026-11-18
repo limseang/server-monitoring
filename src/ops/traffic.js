@@ -168,8 +168,18 @@ fi`);
   return parts.join('\n');
 }
 
-/** Read new log lines of one server and store the counts. Returns the number of new requests. */
-export async function collectTraffic(server) {
+/**
+ * Read new log lines of one server and store the counts. Returns the number of new requests.
+ * One read per server at a time: the minute loop and a live Traffic tab share it, so no log
+ * part is read (and counted) twice.
+ */
+const reading = new Map(); // serverId → promise of the read in progress
+export function collectTraffic(server) {
+  if (!reading.has(server.id)) reading.set(server.id, readTraffic(server).finally(() => reading.delete(server.id)));
+  return reading.get(server.id);
+}
+
+async function readTraffic(server) {
   const st = parseJSON(server.traffic_state, null) || { sources: [], pos: {}, discovered_at: null, last: null };
   const conn = await connect(server, { timeout: 15000 });
   const nowSec = Math.floor(Date.now() / 1000);
@@ -402,25 +412,33 @@ true`,
 const SAFE_PATH = /^\/[A-Za-z0-9._\/-]{1,300}$/;
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
-export async function readLog(server, source, lines = 200) {
+/** Shell command that prints the last n lines of a log source; with follow it keeps printing new lines. */
+export function logCommand(server, source, lines = 200, follow = false) {
   const n = Math.max(10, Math.min(2000, Number(lines) || 200));
   const [type, ...rest] = String(source || '').split(':');
   const arg = rest.join(':');
   const D = dockerBin(server).replace(/^sudo(\s+-\S+)*\s+/, '') || 'docker';
-  let cmd;
+  const tail = follow ? `tail -n ${n} -F` : `tail -n ${n}`;
   if (['file', 'error', 'auth', 'syslog'].includes(type)) {
     if (!SAFE_PATH.test(arg) || arg.includes('..') || !arg.startsWith('/var/log/')) throw new Error('That log file is not allowed');
-    cmd = `tail -n ${n} ${shq(arg)}`;
-  } else if (type === 'docker' || type === 'container') {
+    return `${tail} ${shq(arg)}${follow ? ' 2>/dev/null' : ''}`;
+  }
+  if (type === 'docker' || type === 'container') {
     if (!SAFE_NAME.test(arg)) throw new Error('Bad container name');
-    cmd = `${D} logs --tail ${n} --timestamps ${shq(arg)} 2>&1`;
-  } else if (type === 'laravel') {
+    return `${D} logs ${follow ? '-f ' : ''}--tail ${n} --timestamps ${shq(arg)} 2>&1`;
+  }
+  if (type === 'laravel') {
     const [c, dir] = [arg.split(':')[0], arg.split(':').slice(1).join(':')];
     if (!SAFE_NAME.test(c) || !SAFE_PATH.test(dir) || dir.includes('..')) throw new Error('Bad Laravel log');
-    cmd = `${D} exec ${shq(c)} sh -c ${shq(`f=$(ls -t ${dir}/*.log 2>/dev/null | head -n 1); [ -n "$f" ] && tail -n ${n} "$f" || echo 'No log file yet'`)}`;
-  } else if (type === 'journal') {
-    cmd = `journalctl -u ssh -u sshd -n ${n} --no-pager -o short-iso 2>&1`;
-  } else throw new Error('Unknown log source');
+    return `${D} exec ${shq(c)} sh -c ${shq(`f=$(ls -t ${dir}/*.log 2>/dev/null | head -n 1); [ -n "$f" ] && ${tail} "$f" || echo 'No log file yet'`)}`;
+  }
+  if (type === 'journal') return `journalctl -u ssh -u sshd -n ${n} ${follow ? '-f ' : ''}--no-pager -o short-iso 2>&1`;
+  throw new Error('Unknown log source');
+}
+
+export async function readLog(server, source, lines = 200) {
+  const n = Math.max(10, Math.min(2000, Number(lines) || 200));
+  const cmd = logCommand(server, source, n);
   const conn = await connect(server, { timeout: 15000 });
   try {
     const r = await exec(conn, asRoot(server, cmd), { timeout: 30000, maxBuffer: 16 * 1024 * 1024 });

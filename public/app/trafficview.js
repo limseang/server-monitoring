@@ -1,5 +1,6 @@
-import { ref, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from '/vendor/vue.js';
 import { store, http, toast, openDialog, bytes, fmtDate } from './lib.js';
+import { useLive, LivePill } from './live.js';
 
 /* ------------------------------------------------------------------ stacked bar chart */
 const CLASSES = [
@@ -77,18 +78,31 @@ export const TrafficChart = {
 /* ------------------------------------------------------------------ Traffic tab */
 export const TrafficTab = {
   props: { server: Object },
-  components: { TrafficChart },
+  components: { TrafficChart, LivePill },
   setup(props) {
     const minutes = ref(60);
     const t = ref(null);
     const showTable = ref(false);
+    let loading = false;
     async function load() {
+      if (loading) return;
+      loading = true;
       try {
         t.value = await http.get(`/servers/${props.server.id}/traffic?minutes=${minutes.value}`);
       } catch (e) {
         toast(e.message, 'error');
+      } finally {
+        loading = false;
       }
     }
+    // Live: while this tab is open the server reads the nginx logs every 5 s (instead of every minute).
+    const liveErr = ref('');
+    const every = ref(5);
+    const live = useLive(() => `/servers/${props.server.id}/live?traffic=1`, {
+      init: (d) => ((every.value = d.every || 5), (liveErr.value = d.error || '')),
+      traffic: () => ((liveErr.value = ''), load()),
+      status: (d) => (liveErr.value = d.ok ? '' : d.error),
+    });
     onMounted(load);
     watch(minutes, load);
     watch(() => store.live, load);
@@ -108,18 +122,20 @@ export const TrafficTab = {
     }
     const switchAway = (p) => (location.hash = `#/projects/${p.id}`);
     const fmt = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : n.toLocaleString());
-    return { collecting, collectNow, minutes, t, showTable, errPct, notFound, RANGES, switchAway, fmt, bytes, fmtDate, load };
+    return { live, liveErr, every, collecting, collectNow, minutes, t, showTable, errPct, notFound, RANGES, switchAway, fmt, bytes, fmtDate, load };
   },
   template: `
   <div v-if="!t" class="muted">Loading…</div>
   <div v-else class="stack">
+    <div v-if="liveErr && liveErr !== t.error" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Live: {{ liveErr }}</span></div>
     <div v-if="t.error" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Traffic: {{ t.error }}</span></div>
     <div v-if="!t.sources.length && !t.error" class="alert alert-info"><span class="alert-icon">ℹ</span><span>Looking for nginx access logs on this server — the first numbers appear within 1–2 minutes.</span></div>
     <div v-if="t.live_for.length" class="alert alert-info"><span class="alert-icon">●</span><span><b>Live server</b> for {{ t.live_for.map(p => p.name).join(', ') }}. If something looks wrong here, <a v-for="p in t.live_for" :key="p.id" :href="'#/projects/' + p.id">switch {{ p.name }} to a standby</a>.</span></div>
 
     <div class="row between wrap gap-8">
       <div class="seg"><button v-for="r in RANGES" :key="r[0]" :class="{ on: minutes === r[0] }" @click="minutes = r[0]">{{ r[1] }}</button></div>
-      <span class="row gap-8"><span class="muted small" v-if="t.polled_at">read <ago :at="t.polled_at" /> · every minute from {{ t.sources.filter(s => s.type === 'file' || s.type === 'docker').length }} log(s)</span>
+      <span class="row gap-8 wrap"><live-pill :state="live.state.value" :every="every" /><span class="muted small" v-if="t.polled_at">read <ago :at="t.polled_at" /> · {{ live.state.value === 'live' ? 'every ' + every + ' s while open' : 'every minute' }} from {{ t.sources.filter(s => s.type === 'file' || s.type === 'docker').length }} log(s)</span>
+        <button v-if="live.state.value === 'paused'" class="btn btn-sm" @click="live.resume()">▶ Live</button><button v-else class="btn btn-sm btn-ghost" @click="live.pause()">❚❚ Pause</button>
         <button class="btn btn-sm dev-only" @click="collectNow" :disabled="collecting"><span v-if="collecting" class="spinner"></span><icon v-else name="refresh" />Read now</button></span>
     </div>
 
@@ -160,19 +176,22 @@ export const TrafficTab = {
 };
 
 /* ------------------------------------------------------------------ Logs tab */
+const MAX_LINES = 5000;
+
 export const LogsTab = {
   props: { server: Object },
+  components: { LivePill },
   setup(props) {
     const sources = ref(null);
     const source = ref('');
     const lines = ref(200);
     const q = ref('');
-    const follow = ref(true);
     const out = ref([]);
-    const loading = ref(false);
     const err = ref('');
     const box = ref(null);
-    let timer = null;
+    const atBottom = ref(true); // auto-scroll only while the user is at the bottom
+    const unseen = ref(0); // new lines that came in while scrolled up
+    const skipped = ref(0);
     async function loadSources() {
       try {
         sources.value = await http.get(`/servers/${props.server.id}/log-sources`);
@@ -182,41 +201,61 @@ export const LogsTab = {
         sources.value = [];
       }
     }
-    async function load() {
-      if (!source.value) return;
-      loading.value = true;
-      try {
-        const r = await http.get(`/servers/${props.server.id}/logs?source=${encodeURIComponent(source.value)}&lines=${lines.value}&q=${encodeURIComponent(q.value)}`);
-        const atBottom = !box.value || box.value.scrollHeight - box.value.scrollTop - box.value.clientHeight < 40;
-        out.value = r.lines;
-        err.value = '';
-        if (atBottom) requestAnimationFrame(() => box.value && (box.value.scrollTop = box.value.scrollHeight));
-      } catch (e) {
-        err.value = e.message;
-      } finally {
-        loading.value = false;
-      }
+    const toBottom = () =>
+      nextTick(() => {
+        if (box.value) box.value.scrollTop = box.value.scrollHeight;
+      });
+    function onScroll() {
+      const el = box.value;
+      if (!el) return;
+      atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      if (atBottom.value) unseen.value = 0;
     }
-    const tick = () => {
-      clearTimeout(timer);
-      if (follow.value) timer = setTimeout(async () => (await load(), tick()), 4000);
-    };
+    function jump() {
+      unseen.value = 0;
+      atBottom.value = true;
+      toBottom();
+    }
+    // One stream: first the last N lines, then each new line as it is written (tail -F / docker logs -f).
+    const live = useLive(
+      () => (source.value ? `/servers/${props.server.id}/logs/live?source=${encodeURIComponent(source.value)}&lines=${lines.value}&q=${encodeURIComponent(q.value)}` : null),
+      {
+        lines(d) {
+          err.value = '';
+          if (d.first) {
+            out.value = d.lines;
+            skipped.value = 0;
+            unseen.value = 0;
+            atBottom.value = true;
+          } else {
+            const next = out.value.concat(d.lines);
+            out.value = next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
+            if (!atBottom.value) unseen.value += d.lines.length;
+          }
+          skipped.value += d.skipped || 0;
+          if (atBottom.value) toBottom();
+        },
+        end(d) {
+          if (d.error) err.value = d.error;
+          if (d.fatal) live.stop();
+        },
+      },
+    );
     onMounted(async () => {
       await loadSources();
-      await load();
-      tick();
+      live.restart();
     });
-    onUnmounted(() => clearTimeout(timer));
-    watch([source, lines], load);
-    watch(follow, tick);
+    watch([source, lines], () => live.resume());
     let qt = null;
     watch(q, () => {
       clearTimeout(qt);
-      qt = setTimeout(load, 400);
+      qt = setTimeout(() => live.resume(), 500);
     });
+    onUnmounted(() => clearTimeout(qt));
+    const toggle = () => (live.state.value === 'paused' || live.state.value === 'off' ? live.resume() : live.pause());
     const cls = (l) =>
       / (5\d\d) \d+ /.test(l) || /\b(error|emerg|crit|fatal|exception|failed password|invalid user)\b/i.test(l) ? 'l-err' : / (4\d\d) \d+ /.test(l) || /\b(warn|warning)\b/i.test(l) ? 'l-warn' : '';
-    return { sources, source, lines, q, follow, out, loading, err, box, load, cls };
+    return { sources, source, lines, q, out, err, box, live, toggle, onScroll, jump, atBottom, unseen, skipped, cls };
   },
   template: `
   <div class="stack">
@@ -224,11 +263,14 @@ export const LogsTab = {
       <select v-model="source" style="max-width:380px" :disabled="!sources"><option v-if="!sources" value="">Finding logs on the server (a few seconds)…</option><option v-for="s in sources || []" :key="s.id" :value="s.id">{{ s.label }}</option></select>
       <select v-model.number="lines" style="max-width:120px"><option :value="100">100 lines</option><option :value="200">200 lines</option><option :value="500">500 lines</option><option :value="2000">2000 lines</option></select>
       <input v-model="q" placeholder="Filter (e.g. 500, an IP, error)…" style="max-width:260px">
-      <label class="check small" style="align-items:center"><input type="checkbox" v-model="follow" style="margin:0">Follow live</label>
-      <button class="btn btn-sm" @click="load" :disabled="loading"><span v-if="loading" class="spinner"></span><icon v-else name="refresh" />Refresh</button>
+      <button class="btn btn-sm" :class="{ 'btn-primary': live.state.value === 'paused' || live.state.value === 'off' }" @click="toggle" :disabled="!source">{{ live.state.value === 'paused' || live.state.value === 'off' ? '▶ Live' : '❚❚ Pause' }}</button>
+      <live-pill v-if="source" :state="live.state.value" />
     </div>
     <div v-if="err" class="alert alert-warn"><span class="alert-icon">⚠</span><span>{{ err }}</span></div>
-    <div class="log tall" ref="box"><div v-for="(l, i) in out" :key="i" :class="cls(l)">{{ l }}</div><div v-if="!out.length" class="log-empty">{{ sources && !sources.length ? 'No logs found on this server.' : 'No lines' + (q ? ' match the filter' : '') + '.' }}</div></div>
-    <div class="hint">Red = server errors (5xx) and error messages · amber = 4xx and warnings. Updates every 4 seconds while "Follow live" is on.</div>
+    <div class="log-wrap">
+      <div class="log tall" ref="box" @scroll="onScroll"><div v-for="(l, i) in out" :key="i" :class="cls(l)">{{ l }}</div><div v-if="!out.length" class="log-empty">{{ sources && !sources.length ? 'No logs found on this server.' : live.state.value === 'connecting' ? 'Connecting…' : 'No lines' + (q ? ' match the filter' : '') + ' yet — new lines show up here as they are written.' }}</div></div>
+      <button v-if="!atBottom && out.length" class="btn btn-sm log-jump" @click="jump">↓ Jump to latest<template v-if="unseen"> · {{ unseen }} new</template></button>
+    </div>
+    <div class="hint">Red = server errors (5xx) and error messages · amber = 4xx and warnings. New lines appear as they are written; scroll up to stop following, Pause to freeze.<template v-if="skipped"> {{ skipped }} lines were skipped because the log was very fast.</template></div>
   </div>`,
 };
