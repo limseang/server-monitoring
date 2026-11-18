@@ -16,7 +16,7 @@ export const HealthPill = {
     const h = computed(() => HEALTH[props.dep?.health] || HEALTH.unknown);
     return { h };
   },
-  template: `<span class="pill"><span class="dot" :class="'dot-' + h.cls"></span>{{ h.label }}</span>`,
+  template: `<span class="pill" :class="'pill-' + h.cls"><span class="dot" :class="'dot-' + h.cls"></span>{{ h.label }}</span>`,
 };
 
 /** 24h strip: each segment is one time bucket (green = all checks passed). */
@@ -34,7 +34,7 @@ export const UptimeBar = {
     };
     return { cls, tip };
   },
-  template: `<div class="uptime"><span v-for="(b, i) in bars || []" :key="i" class="ub" :class="cls(b)" :title="tip(b, i)"></span></div>`,
+  template: `<div class="uptime"><span v-for="(b, i) in bars || []" :key="i" class="ub" :class="cls(b)" :title="tip(b, i)" :style="{ '--i': i }"></span></div>`,
 };
 
 export const MeterBar = {
@@ -71,68 +71,75 @@ export const Modal = {
     </div>`,
 };
 
-/** Only one dropdown is open at a time across the whole page. */
+/** Only one dropdown or help bubble is open at a time across the whole page. */
 const openMenu = ref(null);
 
 /**
- * Dropdown button. The panel is moved to <body> (so cards, tables and scroll
- * boxes never clip or cover it), placed with fixed coordinates under the
- * button, and flipped/shifted to stay on screen. Closes on a tap/click
- * outside (pointer events, so it works on iPad), Escape, picking an item,
- * or when another menu opens.
+ * Shared logic for a button + floating panel. The panel is moved to <body>
+ * (so cards, tables and scroll boxes never clip or cover it), placed with
+ * fixed coordinates next to the button, and flipped/shifted to stay on
+ * screen. Closes on a tap/click outside (pointer events, so it works on
+ * iPad), Escape, or when another one opens.
  */
+function usePopover(align) {
+  const id = Symbol('pop');
+  const open = computed(() => openMenu.value === id);
+  const btn = ref(null);
+  const pop = ref(null);
+  const pos = ref({ top: '0px', left: '0px', visibility: 'hidden' });
+  const up = ref(false);
+
+  const place = () => {
+    if (!open.value || !btn.value || !pop.value) return;
+    const b = btn.value.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth, vh = window.innerHeight, m = 8;
+    const w = pop.value.offsetWidth, h = pop.value.offsetHeight;
+    const a = align();
+    let left = a === 'left' ? b.left : a === 'center' ? b.left + b.width / 2 - w / 2 : b.right - w;
+    left = Math.max(m, Math.min(left, vw - w - m));
+    let top = b.bottom + 6;
+    up.value = top + h > vh - m && b.top - 6 - h >= m; // not enough room below → open upwards
+    if (up.value) top = b.top - 6 - h;
+    pos.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px`, maxHeight: `${vh - 2 * m}px` };
+  };
+  const close = () => { if (open.value) openMenu.value = null; };
+  const toggle = () => {
+    openMenu.value = open.value ? null : id;
+    if (open.value) { pos.value = { ...pos.value, visibility: 'hidden' }; nextTick(place); }
+  };
+  const onDown = (e) => {
+    if (!open.value) return;
+    if (pop.value?.contains(e.target) || btn.value?.contains(e.target)) return;
+    close();
+  };
+  const onKey = (e) => { if (open.value && e.key === 'Escape') { close(); btn.value?.focus(); } };
+  const onMove = () => open.value && place();
+  onMounted(() => {
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onMove);
+    window.addEventListener('scroll', onMove, true);
+  });
+  onUnmounted(() => {
+    close();
+    document.removeEventListener('pointerdown', onDown, true);
+    document.removeEventListener('keydown', onKey);
+    window.removeEventListener('resize', onMove);
+    window.removeEventListener('scroll', onMove, true);
+  });
+  return { open, toggle, close, btn, pop, pos, up };
+}
+
+/** Dropdown button. Also closes when an item is picked. */
 export const MenuBtn = {
   props: { label: { type: String, default: '⋯' }, align: { type: String, default: 'right' }, small: Boolean },
   setup(props) {
-    const id = Symbol('menu');
-    const open = computed(() => openMenu.value === id);
-    const btn = ref(null);
-    const pop = ref(null);
-    const pos = ref({ top: '0px', left: '0px', visibility: 'hidden' });
-    const up = ref(false);
-
-    const place = () => {
-      if (!open.value || !btn.value || !pop.value) return;
-      const b = btn.value.getBoundingClientRect();
-      const vw = document.documentElement.clientWidth, vh = window.innerHeight, m = 8;
-      const w = pop.value.offsetWidth, h = pop.value.offsetHeight;
-      let left = props.align === 'left' ? b.left : b.right - w;
-      left = Math.max(m, Math.min(left, vw - w - m));
-      let top = b.bottom + 6;
-      up.value = top + h > vh - m && b.top - 6 - h >= m; // not enough room below → open upwards
-      if (up.value) top = b.top - 6 - h;
-      pos.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px`, maxHeight: `${vh - 2 * m}px` };
-    };
-    const close = () => { if (open.value) openMenu.value = null; };
-    const toggle = () => {
-      openMenu.value = open.value ? null : id;
-      if (open.value) { pos.value = { ...pos.value, visibility: 'hidden' }; nextTick(place); }
-    };
-    const onDown = (e) => {
-      if (!open.value) return;
-      if (pop.value?.contains(e.target) || btn.value?.contains(e.target)) return;
-      close();
-    };
-    const onKey = (e) => { if (open.value && e.key === 'Escape') { close(); btn.value?.focus(); } };
+    const m = usePopover(() => props.align);
     const onPick = (e) => {
       const item = e.target.closest('button, a');
-      if (item && !item.disabled) close();
+      if (item && !item.disabled) m.close();
     };
-    const onMove = () => open.value && place();
-    onMounted(() => {
-      document.addEventListener('pointerdown', onDown, true);
-      document.addEventListener('keydown', onKey);
-      window.addEventListener('resize', onMove);
-      window.addEventListener('scroll', onMove, true);
-    });
-    onUnmounted(() => {
-      close();
-      document.removeEventListener('pointerdown', onDown, true);
-      document.removeEventListener('keydown', onKey);
-      window.removeEventListener('resize', onMove);
-      window.removeEventListener('scroll', onMove, true);
-    });
-    return { open, toggle, btn, pop, pos, up, onPick };
+    return { ...m, onPick };
   },
   template: `
     <div class="menu">
@@ -143,6 +150,47 @@ export const MenuBtn = {
         </transition>
       </teleport>
     </div>`,
+};
+
+/**
+ * Small "?" next to a server word. Tap it for a plain-language explanation.
+ * Use a key from HELP (`term="dns"`) or pass your own `text`.
+ */
+export const HELP = {
+  live: ['Live server', 'The server your visitors are using right now. Your domain points here.'],
+  standby: ['Standby server', 'A spare copy of your site, ready to take over. Nobody visits it until you switch traffic to it.'],
+  health: ['Health', 'Every minute Switchboard opens your website like a visitor would. Healthy = it answered fast. Unstable = slow or sometimes no answer. Down = no answer.'],
+  uptime: ['Uptime (last 24 hours)', 'Each little bar is a slice of time. Green = the website answered every check. Orange = some checks failed. Red = most failed. Grey = no checks yet.'],
+  data: ['Data', 'How fresh the database copy on this server is. The live server always has the real, current data. A standby only has what you last copied to it.'],
+  database: ['Database', 'Where the app keeps its information (users, orders, posts…). Shown as type · database name @ the container it runs in.'],
+  app: ['App container', 'The Docker container that runs your website code on this server.'],
+  folder: ['Folder', 'Where your project files live on the server.'],
+  backup: ['Backup', 'Saves a copy of the database now, so you can go back to it later if something goes wrong.'],
+  maintenance: ['Maintenance', 'Shows visitors a "back soon" page while you work on the site. Turn it off when you are done.'],
+  deploy: ['Deploy', 'Puts your newest code on this server (runs the deploy script from Settings).'],
+  switch: ['Switch server', 'Moves your visitors to another server. Switchboard can copy the data first, then changes the DNS so the domain points to the new server.'],
+  copy: ['Copy data', 'Copies the database from the live server to a standby, so the standby is up to date if you need to switch.'],
+  dns: ['DNS', 'The internet\'s address book. It tells browsers which server IP your domain (like example.com) lives on. Switching servers = changing this address.'],
+  ssl: ['SSL certificate', 'What makes the padlock and https:// work. It runs out after a while and must be renewed; the number shows days left.'],
+};
+export const HelpTip = {
+  props: { term: String, text: String, title: String },
+  setup(props) {
+    const m = usePopover(() => 'center');
+    const entry = computed(() => HELP[props.term] || [props.title || '', props.text || '']);
+    return { ...m, entry };
+  },
+  template: `
+    <span class="help">
+      <button ref="btn" type="button" class="help-btn" :class="{ 'is-open': open }" @click.stop.prevent="toggle" :aria-expanded="open" :aria-label="'What is ' + (entry[0] || 'this') + '?'">?</button>
+      <teleport to="body">
+        <transition name="menu-fade">
+          <div v-if="open" ref="pop" class="help-pop" :class="{ 'menu-up': up }" :style="pos" role="tooltip">
+            <b v-if="entry[0]">{{ entry[0] }}</b><span>{{ entry[1] }}</span>
+          </div>
+        </transition>
+      </teleport>
+    </span>`,
 };
 
 export const JobStatus = {
@@ -432,4 +480,4 @@ export const Icon = {
   ICONS,
 };
 
-export const components = { Icon, Ago, HealthPill, UptimeBar, MeterBar, Modal, MenuBtn, JobStatus, JobsTable, EventsList, JobLog, RecordsPicker, CronField };
+export const components = { Icon, Ago, HealthPill, UptimeBar, MeterBar, Modal, MenuBtn, HelpTip, JobStatus, JobsTable, EventsList, JobLog, RecordsPicker, CronField };
