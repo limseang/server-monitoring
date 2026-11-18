@@ -107,6 +107,7 @@ export const ServerPage = {
     const edit = () => openDialog('server', { server: s.value });
     const command = () => openDialog('command', { server: s.value });
     const clone = () => openDialog('clone', { server: s.value });
+    const copyProject = () => openDialog('project-copy', { server: s.value });
     const osUpgrade = () => openDialog('os-upgrade', { server: s.value });
     const logs = (c) => openDialog('logs', { server: s.value, container: c.name });
     async function action(c, act) {
@@ -141,7 +142,7 @@ export const ServerPage = {
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -174,6 +175,7 @@ export const ServerPage = {
         <menu-btn label="More ▾">
           <button class="admin-only menu-item" @click="edit">Edit server</button>
           <button class="admin-only menu-item" @click="clone">Clone to another server…</button>
+          <button class="admin-only menu-item" @click="copyProject">Copy a project to another server…</button>
           <button class="admin-only menu-item" @click="osUpgrade">Upgrade OS (Ubuntu / Debian)…</button>
           <button class="admin-only menu-item" @click="resetKey">Reset SSH host key</button>
           <div class="menu-sep"></div>

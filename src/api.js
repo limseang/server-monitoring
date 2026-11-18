@@ -32,6 +32,7 @@ import { ensureLocal, backupAvailable, removeBackupFiles } from './ops/backupsto
 import { s3Config, testS3 } from './s3.js';
 import { dockerBin, shq, asRoot } from './ops/remote.js';
 import { previewClone } from './ops/clone.js';
+import { previewCopy, portMap } from './ops/copyproject.js';
 import { previewReset, resetOptions, removalProblem, deleteProjectRecord } from './ops/wipe.js';
 import { previewReinstall, reinstallOptions, REINSTALL_OS } from './ops/reinstall.js';
 import { isLb, lbConfig } from './ops/lb.js';
@@ -701,7 +702,7 @@ api.post('/projects/:id/backup-shared', (req, res) => {
 
 /* ---------- OS upgrade ---------- */
 function serverBusy(id) {
-  return all("SELECT params, type, server_id FROM jobs WHERE type IN ('clone', 'os-upgrade') AND status IN ('queued', 'running')").some((r) => {
+  return all("SELECT params, type, server_id FROM jobs WHERE type IN ('clone', 'os-upgrade', 'project-copy') AND status IN ('queued', 'running')").some((r) => {
     const p = parseJSON(r.params, {});
     return r.server_id === id || p.source === id || p.target === id || p.server === id;
   });
@@ -821,6 +822,53 @@ api.post('/servers/:id/clone', (req, res) => {
   if (cloneBusy(src.id, dst.id) || serverBusy(src.id) || serverBusy(dst.id)) throw bad('A clone or OS upgrade involving one of these servers is already running');
   const job = enqueue({ type: 'clone', title: `Clone ${src.name} → ${dst.name}`, serverId: src.id, params, user: who(req) });
   audit(req, 'warn', `Clone of ${src.name} to ${dst.name} started`, { serverId: dst.id, jobId: job.id });
+  res.json({ job });
+});
+
+/* ---------- copy one project to another server ---------- */
+function copyInput(req) {
+  const project = mustProject(req.params.id);
+  const dep = getDeployment(toId(req.body.deployment));
+  if (!dep || dep.project_id !== project.id) throw bad('Pick the server to copy from (a server of this project)');
+  const dst = mustServer(req.body.target);
+  if (dst.id === dep.server_id) throw bad('Pick a different server to copy to');
+  let ports;
+  try {
+    ports = portMap(req.body.ports);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  const params = {
+    project: project.id,
+    deployment: dep.id,
+    source: dep.server_id,
+    target: dst.id,
+    ports,
+    installDocker: req.body.installDocker === undefined ? true : bool(req.body.installDocker),
+    freeze: req.body.freeze === undefined ? true : bool(req.body.freeze),
+    replace: bool(req.body.replace),
+  };
+  return { project, dep, dst, params };
+}
+
+api.post('/projects/:id/copy/preview', async (req, res) => {
+  const { project, dep, dst, params } = copyInput(req);
+  try {
+    res.json({ ok: true, plan: await previewCopy(project, dep, dst, params) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.post('/projects/:id/copy', (req, res) => {
+  const { project, dep, dst, params } = copyInput(req);
+  const src = getServer(dep.server_id);
+  if (serverBusy(src.id) || serverBusy(dst.id) || cloneBusy(src.id, dst.id) || resetBusy(src.id) || resetBusy(dst.id)) {
+    throw bad('A clone, copy, OS upgrade, reset or reinstall involving one of these servers is already running');
+  }
+  if (params.replace && str(req.body.confirm, 80) !== dst.name) throw bad(`Type the server name "${dst.name}" to confirm replacing what exists there`);
+  const job = enqueue({ type: 'project-copy', title: `Copy ${project.name}: ${src.name} → ${dst.name}`, projectId: project.id, serverId: src.id, params, user: who(req) });
+  audit(req, 'warn', `Copy of ${project.name} from ${src.name} to ${dst.name} started`, { projectId: project.id, serverId: dst.id, jobId: job.id });
   res.json({ job });
 });
 
@@ -1228,7 +1276,7 @@ api.get('/jobs', (req, res) => {
     args.push(toId(req.query.project));
   }
   if (req.query.server) {
-    where.push("(server_id = ? OR project_id IN (SELECT project_id FROM deployments WHERE server_id = ?) OR (type = 'clone' AND json_extract(params, '$.target') = ?))");
+    where.push("(server_id = ? OR project_id IN (SELECT project_id FROM deployments WHERE server_id = ?) OR (type IN ('clone', 'project-copy') AND json_extract(params, '$.target') = ?))");
     args.push(toId(req.query.server), toId(req.query.server), toId(req.query.server));
   }
   if (req.query.status) {

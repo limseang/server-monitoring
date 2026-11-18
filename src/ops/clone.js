@@ -198,7 +198,7 @@ async function scanDocker(ctx, conn, server, scan) {
 }
 
 /** Sizes (bytes) of paths on a server, via du. */
-async function sizes(ctx, conn, server, paths) {
+export async function sizes(ctx, conn, server, paths) {
   const res = {};
   if (!paths.length) return res;
   const out = await root(ctx, conn, server, `du -sk -- ${paths.map(shq).join(' ')} 2>/dev/null; true`, { timeout: 600000 });
@@ -497,7 +497,7 @@ for p in docker-compose-plugin docker-buildx-plugin; do apt-get install -y -q "$
   return conn;
 }
 
-async function installPackages(ctx, conn, server, packages) {
+export async function installPackages(ctx, conn, server, packages) {
   if (!packages.length) {
     ctx.log('No extra packages to install');
     return;
@@ -515,7 +515,7 @@ async function installPackages(ctx, conn, server, packages) {
   }
 }
 
-async function copyUsers(ctx, conn, server, srcScan, dstScan) {
+export async function copyUsers(ctx, conn, server, srcScan, dstScan) {
   const haveGroups = new Set(dstScan.groups.map((g) => g.name));
   const haveUsers = new Set(dstScan.users.map((u) => u.name));
   const script = [];
@@ -571,7 +571,7 @@ async function copyCrontabs(ctx, conn, server, srcScan) {
 }
 
 /** Copy host files (configs + extra paths) with owner names kept. sudoers.d is validated first. */
-async function copyHostFiles(ctx, { src, dst, srcConn, dstConn, paths, quiet = false, title }) {
+export async function copyHostFiles(ctx, { src, dst, srcConn, dstConn, paths, quiet = false, title }) {
   const list = [...new Set(paths)].filter((p) => p.startsWith('/') && p !== '/');
   if (!list.length) return false;
   if (!quiet) ctx.step(title || `Copy host files to ${dst.name}: ${list.join(', ')}`);
@@ -682,7 +682,7 @@ async function enableFirewall(ctx, conn, server) {
   }
 }
 
-async function copyImages(ctx, { src, dst, srcConn, dstConn, plan }) {
+export async function copyImages(ctx, { src, dst, srcConn, dstConn, plan }) {
   const D1 = rootDocker(src);
   const D2 = rootDocker(dst);
   if (plan.toCopy.length) {
@@ -746,7 +746,7 @@ async function removeStack(ctx, conn, server, project) {
   await root(ctx, conn, server, `ids=$(${D} ps -aq --filter label=com.docker.compose.project=${shq(project)}); [ -n "$ids" ] && ${D} rm -f $ids >/dev/null; true`);
 }
 
-async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, replace, dstHas }) {
+export async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, replace, dstHas }) {
   const D1 = rootDocker(src);
   ctx.step(`Stack "${st.project}"${st.dir ? ` (${st.dir})` : ''}: ${st.containers.length} container(s), ${st.volumes.length} volume(s)`);
   if (dstHas && replace) await removeStack(ctx, dstConn, dst, st.project);
@@ -798,7 +798,7 @@ async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, replace,
 }
 
 /** Start the stack on the target the way it was on the source (running services up, stopped ones created). */
-async function startStack(ctx, conn, server, st) {
+export async function startStack(ctx, conn, server, st) {
   const D = rootDocker(server);
   if (!st.dir) return;
   const files = st.configFiles.map((f) => `-f ${shq(f)}`).join(' ');
@@ -818,7 +818,7 @@ async function startStack(ctx, conn, server, st) {
   }
 }
 
-async function verifyStacks(ctx, conn, server, stacks) {
+export async function verifyStacks(ctx, conn, server, stacks) {
   const D = rootDocker(server);
   await sleep(8000);
   let bad = 0;
@@ -868,7 +868,7 @@ function addToProjects(ctx, src, dst) {
 }
 
 /** Same Node.js setup as the source: nvm folders / manual /usr/local install, then global npm packages. */
-async function copyNodeRuntime(ctx, { src, dst, srcConn, dstConn, plan }) {
+export async function copyNodeRuntime(ctx, { src, dst, srcConn, dstConn, plan }) {
   if (plan.nodePaths.length) {
     // nvm needs its lines in the shell startup files too.
     const rc = [];

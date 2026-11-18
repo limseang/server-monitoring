@@ -170,6 +170,7 @@ export const JOB_TYPES = {
   'ci-servers': 'Update servers',
   'runner-remove': 'Remove runner',
   'preview-down': 'Remove preview',
+  'project-copy': 'Copy project',
 };
 
 /* ------------------------------------------------------------------ router (hash based) */
