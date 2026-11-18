@@ -214,6 +214,7 @@ docker compose up -d --build      # your data in ./data is kept; database change
 | DB "Access denied" | Set the DB user/password on the project's server card (⋯ → Edit containers / database). |
 | Health check fails but the site works | Check scheme/port/path in project Settings and your firewall (allow the Switchboard machine). |
 | Switch stops at `php: command not found` | Set the **App container** on the server card (⋯ → Edit containers / database). |
+| `Could not reach Telegram (EAI_AGAIN)` / `EAI_AGAIN github.com` | The container can't look up names (DNS) — common on home servers. Update to the latest `docker-compose.yml` (it sets DNS servers 1.1.1.1 / 8.8.8.8; change them with `DNS_1` / `DNS_2` in `.env`) and run `docker compose up -d`. Check with `docker exec switchboard node -e "require('dns').lookup('api.telegram.org',console.log)"`. |
 | Server shows Down but is running | "Down" means the *website* doesn't answer on the server's IP. Check ports 80/443 at your provider's firewall / port forwarding. |
 
 ## Development & test lab
