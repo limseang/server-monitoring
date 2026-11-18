@@ -279,6 +279,14 @@ export const SettingsPage = {
             <label class="check mt-8"><input type="checkbox" v-model="f.notify_jobs_failed_only" :true-value="1" :false-value="0"><span class="check-text">Only when the job fails or is cancelled</span></label>
             <span class="hint">Failed deploys, clones, backups… already send an alert; you get one message per job, never two.</span>
           </div>
+          <div class="field"><label>Payment reminders <span class="muted">(servers with billing info — see <a href="#/billing">Billing</a>)</span></label>
+            <label class="check"><input type="checkbox" :checked="!!f.billing_reminders" @change="f.billing_reminders = $event.target.checked ? 1 : 0"><span class="check-text"><b>Message me before a server payment is due</b></span></label>
+            <div class="form-row-3 mt-8">
+              <div class="field"><label>Days before the due date</label><input v-model="f.billing_remind_days" class="code" placeholder="7,3,1,0"><span class="hint">One message on each of these days (0 = the due day).</span></div>
+              <div class="field"><label>Not before (hour, 0–23)</label><input type="number" min="0" max="23" v-model.number="f.billing_remind_hour"><span class="hint">So reminders don't arrive at night.</span></div>
+              <div class="field"><label>&nbsp;</label><label class="check"><input type="checkbox" :checked="!!f.billing_overdue_daily" @change="f.billing_overdue_daily = $event.target.checked ? 1 : 0"><span class="check-text">Remind every day while overdue</span></label></div>
+            </div>
+          </div>
           <div class="row gap-8"><button class="btn btn-primary" @click="save" :disabled="saving">Save</button><button class="btn" @click="testNotify">Send test message</button><button v-if="s.has_telegram_token" class="btn btn-ghost" @click="clearSecret('telegram_token')">Remove Telegram token</button></div>
           <div v-if="nTest && !nTest.loading" class="result" :class="nTest.ok ? 'ok' : 'err'">{{ nTest.ok ? '✔ Sent via ' + nTest.sent.join(' + ') : '✖ ' + (nTest.error || nTest.errors.join('; ')) }}</div>
         </div>

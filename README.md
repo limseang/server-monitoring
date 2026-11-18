@@ -33,6 +33,7 @@ Built for people who run apps (Laravel, Node/Nuxt, static sites…) in **Docker*
 | **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. |
 | **Deploys & CI/CD** | Deploy button, or **GitHub Actions with self-hosted runners**: push → tests → deploy server by server. **Staging** copies and **pull-request previews**. |
 | **New apps** | Start a new **Laravel / Node / static** app from a template: Docker, database, web proxy, DNS and a GitHub repo, set up for you. |
+| **Server bills** | Remember when each rented server must be paid (DigitalOcean, Hetzner, Vultr, home…): price, every 1/3/6/12 months, a one-click link to the provider's billing page, **reminders before the due date** (never twice), "Mark as paid" with payment history, and your total cost per month. |
 | **More** | Load balancing (own nginx or Cloudflare), shared database server, clone a whole server or copy one project to another server (on other ports if you like), OS upgrades, apps outside Docker (PM2, systemd), users with roles (admin / developer / viewer), 2FA, audit log. |
 
 ---
@@ -187,6 +188,29 @@ Servers → a server:
 </details>
 
 <details>
+<summary><b>Server bills and payment reminders</b></summary>
+
+So you never pay a server late:
+
+1. Open a server → **Billing** → **+ Add billing info**.
+2. Pick the provider (DigitalOcean, Hetzner, Vultr, Linode, AWS, Google Cloud, Azure, Contabo, OVH, Scaleway, Home, or *Other*). The link to its billing page is filled in for you — change it to your own panel link if you like.
+3. Enter the **price**, the **currency** and how often you pay (every month, 3, 6, 12 months, or a custom number of months).
+4. Enter the **next payment date** (the day you are paid until). Tick **Renews automatically** if the provider charges your card by itself.
+5. **Save.**
+
+What happens then:
+
+- You get a Telegram / webhook message **7, 3, 1 and 0 days before** the due date (change the days in **Settings → Alerts → Payment reminders**). Each reminder is sent **once** — even after Switchboard restarts. Messages are not sent before 9:00 (also a setting; uses the `TZ` time zone).
+- If the date passes, you get an **OVERDUE** message every day (or once — a setting) until you mark it as paid.
+- **Renews automatically**: just one heads-up ("check your card has money"); when the day passes, the date moves forward by itself and the payment is recorded as *auto-renew*.
+- After paying, click **Mark as paid**: the next payment date moves forward by one billing period (or the months you enter), and the payment goes into the history (date, amount, period, who, note). Deleted a payment by mistake? Deleting the latest payment puts the date back.
+- **Open <provider> ↗** opens the provider's billing page in a new tab.
+- The **Billing** page (left menu) lists every server with its next payment, the **total cost per month per currency**, and all payments. The Overview shows **Upcoming payments**, and payments due in 3 days or overdue appear in the problems list. Server cards get a 💳 *due in 3d* badge.
+
+Only admins can change billing info or mark payments; developers and viewers can look.
+</details>
+
+<details>
 <summary><b>Users and roles</b></summary>
 
 Settings → Users: **admin** (everything), **developer** (deploy, logs, maintenance, backups, app-container commands, CI runs, staging data, previews), **viewer** (read-only, no logs or backup downloads). Every action is in the Activity log.
@@ -236,6 +260,15 @@ node dev/e2e-extra.mjs               # PostgreSQL, MariaDB, failed import rollba
 ./dev/ci-setup.sh && node dev/e2e-ci.mjs         # templates, CI/CD, staging, previews (also e2e-server.mjs, e2e-traffic.mjs)
 docker compose -f dev/docker-compose.yml --profile s3 up -d s3 && node dev/e2e-s3.mjs   # S3 backups
 docker compose -f dev/docker-compose.yml down -v # remove the lab
+```
+
+Tests that don't need the lab:
+
+```bash
+npm test                             # unit tests (billing dates and reminders)
+node dev/cf-mock/server.js &         # fake Telegram on :8787, then run a Switchboard that uses it:
+DATA_DIR=/tmp/sb-test PORT=8093 ADMIN_USER=admin ADMIN_PASSWORD=admin-password-123 TELEGRAM_API_BASE=http://127.0.0.1:8787 node src/index.js &
+SB_URL=http://localhost:8093 node dev/e2e-billing.mjs   # server bills, reminders, mark as paid
 ```
 
 The lab needs about 6 GB of memory for Docker when everything runs at once.

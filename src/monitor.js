@@ -20,6 +20,7 @@ import { pollAllCi } from './ops/ci.js';
 import { collectAllTraffic, pruneTraffic } from './ops/traffic.js';
 import { cleanupLocal } from './ops/backupstore.js';
 import { humanDuration, isoAgo } from './util.js';
+import { checkBilling } from './billing.js';
 
 /* ============================== HEALTH CHECKS ============================== */
 
@@ -474,6 +475,7 @@ export function startMonitor() {
   loop('prune', () => 3600, prune, 60000);
   loop('ci', () => 60, pollAllCi, 20000); // GitHub Actions results + pull request previews
   loop('traffic', () => 60, collectAllTraffic, 25000);
+  loop('billing', () => 3600, () => checkBilling(), 50000); // server payment reminders (each sent once per due date)
   loop('backup-store', () => 600, () => cleanupLocal(), 45000); // S3: retry failed uploads, remove local copies that are in S3 // nginx access logs → Traffic tab + unusual-activity alerts
   reloadSchedules();
   logEvent('info', 'Switchboard started');

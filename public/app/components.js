@@ -369,6 +369,7 @@ const ICONS = {
   layers: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',
   bolt: 'M13 2L4 14h7l-1 8 9-12h-7z',
   external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
+  card: 'M3 6h18v12H3zM3 10h18M7 15h4',
 };
 export const Icon = {
   props: { name: String, size: { type: Number, default: 16 } },

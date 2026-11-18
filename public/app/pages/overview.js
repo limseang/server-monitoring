@@ -1,6 +1,7 @@
 import { computed } from '/vendor/vue.js';
 import { store, openDialog, bytes, uptimeStr, freshness, HEALTH, ago, tick } from '../lib.js';
 import { UptimeBar, MeterBar, JobsTable, HealthPill } from '../components.js';
+import { DueBadge, money, dateText, totalsText, dueLabel, dueClass } from '../billing.js';
 
 export const ProjectCard = {
   props: { project: Object },
@@ -63,7 +64,7 @@ export const ProjectCard = {
 
 export const ServerCard = {
   props: { server: Object },
-  components: { MeterBar },
+  components: { MeterBar, DueBadge },
   setup(props) {
     const m = computed(() => props.server.metrics);
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
@@ -73,7 +74,7 @@ export const ServerCard = {
   template: `
   <a class="card server-card" :href="'#/servers/' + server.id">
     <div class="row between gap-8">
-      <div class="row gap-8" style="min-width:0"><span class="dot" :class="'dot-' + status"></span><b class="ellipsis">{{ server.name }}</b><span v-if="m && m.busy" class="badge badge-red" title="CPU or memory has been high for a while">BUSY</span></div>
+      <div class="row gap-8" style="min-width:0"><span class="dot" :class="'dot-' + status"></span><b class="ellipsis">{{ server.name }}</b><span v-if="m && m.busy" class="badge badge-red" title="CPU or memory has been high for a while">BUSY</span><due-badge v-if="server.billing && server.billing.days_left !== null && server.billing.days_left <= 7" :billing="server.billing" /></div>
       <span class="muted mono small">{{ server.ip }}</span>
     </div>
     <template v-if="m">
@@ -95,7 +96,7 @@ export default {
     const serversUp = computed(() => (data.value?.servers || []).filter((s) => s.status === 'up').length);
     const healthy = computed(() => (data.value?.projects || []).filter((p) => p.deployments.find((d) => d.is_active)?.health === 'up').length);
     const icon = { error: '✖', warn: '⚠', info: 'ℹ' };
-    return { data, errors, problems, serversUp, healthy, icon, addServer: () => openDialog('server'), addProject: () => openDialog('project'), newApp: () => openDialog('template-project'), fromGithub: () => openDialog('template-project', { fromRepo: true }) };
+    return { money, dateText, totalsText, dueLabel, dueClass, data, errors, problems, serversUp, healthy, icon, addServer: () => openDialog('server'), addProject: () => openDialog('project'), newApp: () => openDialog('template-project'), fromGithub: () => openDialog('template-project', { fromRepo: true }) };
   },
   template: `
   <div>
@@ -130,6 +131,20 @@ export default {
         <div class="section-head"><h2>Servers</h2><a href="#/servers" class="small">All servers →</a></div>
         <div v-if="!data.servers.length" class="empty-card"><p class="muted">No servers yet.</p><button class="btn" @click="addServer">+ Add a server</button></div>
         <div class="grid grid-servers"><server-card v-for="s in data.servers" :key="s.id" :server="s" /></div>
+      </section>
+
+      <section class="section" v-if="data.billing && data.billing.count">
+        <div class="section-head"><h2>Upcoming payments</h2><a href="#/billing" class="small">Billing →</a></div>
+        <div class="card table-wrap"><table class="table"><tbody>
+          <tr v-for="b in data.billing.upcoming" :key="b.server_id">
+            <td><a :href="'#/servers/' + b.server_id" class="strong">{{ b.server_name }}</a><div class="tiny muted">{{ b.provider || '' }}</div></td>
+            <td>{{ dateText(b.due_date) }}</td>
+            <td><span class="badge" :class="dueClass(b.days_left, b.auto_renew)">{{ dueLabel(b.days_left) }}</span><span v-if="b.auto_renew" class="tiny muted"> auto-renew</span></td>
+            <td class="strong">{{ money(b.price, b.currency) }}</td>
+            <td class="actions"><a v-if="b.provider_url" class="btn btn-xs" :href="b.provider_url" target="_blank" rel="noopener noreferrer">Open ↗</a></td>
+          </tr>
+        </tbody></table>
+        <div class="card-body small muted" style="border-top:1px solid var(--border)">Total per month: <b>{{ totalsText(data.billing.totals) }}</b></div></div>
       </section>
 
       <section class="section">

@@ -303,6 +303,37 @@ const MIGRATIONS = [
   `
   ALTER TABLE projects ADD COLUMN ci_mode TEXT NOT NULL DEFAULT 'runner';
   `,
+  // v9: server billing (when each rented server must be paid) + payment history
+  `
+  CREATE TABLE billing (
+    server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+    provider TEXT,
+    provider_url TEXT,
+    price REAL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    cycle_months INTEGER NOT NULL DEFAULT 1,
+    due_date TEXT,
+    anchor_day INTEGER,
+    auto_renew INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    reminded TEXT,
+    updated_at TEXT
+  );
+  CREATE TABLE payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    paid_on TEXT NOT NULL,
+    amount REAL,
+    currency TEXT,
+    months INTEGER NOT NULL DEFAULT 1,
+    period_from TEXT,
+    period_to TEXT,
+    user TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_payments_server ON payments (server_id, id);
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

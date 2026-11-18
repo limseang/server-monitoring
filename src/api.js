@@ -41,6 +41,8 @@ import { cloudflareHealth } from './lb/cloudflare.js';
 import { ENGINE_NAMES, dbServerPublic, getDbServer } from './ops/dbserver.js';
 import { planUpgrade } from './ops/osupgrade.js';
 import { detectHostApps, publicHostApps, hostAppScript, hostAppLogsScript } from './ops/hostapps.js';
+import { PROVIDERS, CURRENCIES, isDate, localDate, parseRemindDays, money } from './billingcalc.js';
+import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, remindDays, paymentsOf, recentPayments, recordPayment, deletePayment, checkBilling } from './billing.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron } from './monitor.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
@@ -268,7 +270,7 @@ api.get('/jobs/:id/stream', (req, res) => {
 });
 
 /* ---------- overview ---------- */
-function computeAlerts(projects, servers) {
+function computeAlerts(projects, servers, bills = billingByServer()) {
   const alerts = [];
   const add = (level, message, link) => alerts.push({ level, message, link });
   if (!getSetting('cf_token')) add('info', 'Add your Cloudflare API token so Switchboard can switch DNS for you.', '#/settings');
@@ -276,6 +278,7 @@ function computeAlerts(projects, servers) {
   const diskLimit = Number(getSetting('disk_alert_pct')) || 90;
   const staleHours = Number(getSetting('stale_alert_hours')) || 24;
   const sslDays = Number(getSetting('ssl_alert_days')) || 14;
+  const billWindow = Math.max(7, ...remindDays());
   for (const s of servers) {
     const link = `#/servers/${s.id}`;
     if (s.status === 'down') add('error', `Server ${s.name} is unreachable over SSH — ${s.status_error || ''}`, link);
@@ -283,6 +286,17 @@ function computeAlerts(projects, servers) {
     if (m?.disk_pct >= diskLimit) add('warn', `Server ${s.name}: disk ${m.disk_pct}% full`, link);
     const sick = (m?.containers || []).filter((c) => c.health === 'unhealthy' || c.state === 'restarting');
     if (sick.length) add('warn', `Server ${s.name}: ${sick.map((c) => c.name).join(', ')} unhealthy or restarting`, link);
+    const bill = bills.get(s.id);
+    if (bill?.days_left != null) {
+      const d = bill.days_left;
+      const what = `${bill.provider ? ` (${bill.provider})` : ''}${bill.price ? ` — ${money(bill.price, bill.currency)}` : ''}`;
+      if (d < 0 && !bill.auto_renew) add('error', `Server ${s.name}: payment OVERDUE by ${-d} day${d === -1 ? '' : 's'}${what}`, link);
+      else if (d >= 0 && d <= billWindow) {
+        const when = d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
+        if (bill.auto_renew) add('info', `Server ${s.name}: renews automatically ${when}${what}`, link);
+        else add(d <= 3 ? 'warn' : 'info', `Server ${s.name}: payment due ${when}${what}`, link);
+      }
+    }
   }
   for (const p of projects) {
     const link = `#/projects/${p.id}`;
@@ -310,12 +324,20 @@ function computeAlerts(projects, servers) {
   return alerts.sort((a, b) => rank[a.level] - rank[b.level]);
 }
 
+/** Servers for lists: with a short billing summary (due date, days left) when one is set. */
+function serversWithBilling(bills = billingByServer()) {
+  return all('SELECT * FROM servers ORDER BY name').map((s) => ({ ...serverPublic(s), billing: bills.get(s.id) || null }));
+}
+
 api.get('/overview', (req, res) => {
   const projects = all('SELECT * FROM projects ORDER BY name').map((p) => projectWithDeployments(p));
-  const servers = all('SELECT * FROM servers ORDER BY name').map(serverPublic);
+  const bills = billingByServer();
+  const servers = serversWithBilling(bills);
   const jobs = all('SELECT * FROM jobs ORDER BY id DESC LIMIT 8').map(summary);
   const running = get("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'running')").n;
-  res.json({ projects, servers, jobs, running, alerts: computeAlerts(projects, servers) });
+  const items = allBilling();
+  const billing = { totals: monthlyTotals(items), upcoming: items.filter((b) => b.days_left != null).slice(0, 6), count: items.length };
+  res.json({ projects, servers, jobs, running, billing, alerts: computeAlerts(projects, servers, bills) });
 });
 
 /* ---------- servers ---------- */
@@ -368,7 +390,7 @@ function serverInput(b, existing) {
 }
 
 api.get('/servers', (req, res) => {
-  res.json(all('SELECT * FROM servers ORDER BY name').map(serverPublic));
+  res.json(serversWithBilling());
 });
 
 function uniqueServerName(name, exceptId = 0) {
@@ -455,6 +477,125 @@ api.post('/servers/:id/reset-host-key', (req, res) => {
   update('servers', s.id, { host_key: null });
   audit(req, 'warn', `Pinned SSH host key of ${s.name} was reset (will trust the next key it sees)`, { serverId: s.id });
   res.json({ ok: true });
+});
+
+/* ---------- server billing: when to pay, payment reminders, payment history ---------- */
+const money2 = (v) => {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(String(v).replace(',', '.'));
+  if (!Number.isFinite(n) || n < 0 || n > 1e9) throw bad('Price must be a number like 12.50');
+  return Math.round(n * 100) / 100;
+};
+const currencyInput = (v) => {
+  const c = str(v, 8).toUpperCase() || 'USD';
+  if (!/^[A-Z]{3}$/.test(c)) throw bad('Currency: 3 letters, e.g. USD or EUR');
+  return c;
+};
+const dateInput = (v, label, required = false) => {
+  const d = str(v, 10);
+  if (!d) {
+    if (required) throw bad(`${label} is required`);
+    return null;
+  }
+  if (!isDate(d)) throw bad(`${label}: use a date like 2026-12-31`);
+  return d;
+};
+const urlInput = (v) => {
+  const u = str(v, 500);
+  if (u && !/^https?:\/\/[^\s]+$/i.test(u)) throw bad('Provider link must start with https://');
+  return u || null;
+};
+
+function billingInput(b) {
+  const cycle = int(b.cycle_months, 1, 1, 60);
+  const due = dateInput(b.due_date, 'Next payment date');
+  return {
+    provider: str(b.provider, 80) || null,
+    provider_url: urlInput(b.provider_url),
+    price: money2(b.price),
+    currency: currencyInput(b.currency),
+    cycle_months: cycle,
+    due_date: due,
+    anchor_day: due ? Number(due.slice(8, 10)) : null,
+    auto_renew: bool(b.auto_renew) ? 1 : 0,
+    notes: str(b.notes, 2000) || null,
+  };
+}
+
+api.get('/billing', (req, res) => {
+  const items = allBilling();
+  const have = new Set(items.map((b) => b.server_id));
+  res.json({
+    today: localDate(),
+    providers: PROVIDERS,
+    currencies: CURRENCIES,
+    remind_days: remindDays(),
+    items,
+    totals: monthlyTotals(items),
+    without: all('SELECT id, name, ip FROM servers ORDER BY name').filter((s) => !have.has(s.id)),
+    payments: recentPayments(200),
+  });
+});
+
+api.post('/billing/check', (req, res) => {
+  res.json({ ok: true, ...checkBilling({ force: true }) });
+});
+
+api.get('/servers/:id/billing', (req, res) => {
+  const s = mustServer(req.params.id);
+  res.json({ billing: billingPublic(getBilling(s.id)), payments: paymentsOf(s.id, 100), providers: PROVIDERS, currencies: CURRENCIES, today: localDate() });
+});
+
+api.put('/servers/:id/billing', (req, res) => {
+  const s = mustServer(req.params.id);
+  const row = billingInput(req.body || {});
+  const before = getBilling(s.id);
+  const keys = Object.keys(row);
+  run(
+    `INSERT INTO billing (server_id, ${keys.join(', ')}, updated_at) VALUES (?, ${keys.map(() => '?').join(', ')}, ?)
+     ON CONFLICT(server_id) DO UPDATE SET ${keys.map((k) => `${k} = excluded.${k}`).join(', ')}, updated_at = excluded.updated_at`,
+    s.id,
+    ...keys.map((k) => row[k]),
+    now(),
+  );
+  // a new due date starts a fresh set of reminders
+  if (before && before.due_date !== row.due_date) run('UPDATE billing SET reminded = NULL WHERE server_id = ?', s.id);
+  audit(req, 'info', `Billing of ${s.name} ${before ? 'updated' : 'added'}${row.due_date ? ` — next payment ${row.due_date}` : ''}`, { serverId: s.id });
+  bus.emit('state', { serverId: s.id });
+  res.json(billingPublic(getBilling(s.id)));
+});
+
+api.delete('/servers/:id/billing', (req, res) => {
+  const s = mustServer(req.params.id);
+  run('DELETE FROM billing WHERE server_id = ?', s.id);
+  audit(req, 'warn', `Billing info of ${s.name} removed (payment history kept)`, { serverId: s.id });
+  bus.emit('state', { serverId: s.id });
+  res.json({ ok: true });
+});
+
+api.post('/servers/:id/billing/paid', (req, res) => {
+  const s = mustServer(req.params.id);
+  const b = req.body || {};
+  if (!getBilling(s.id)) throw bad('Add billing info for this server first');
+  const r = recordPayment(s.id, {
+    paid_on: dateInput(b.paid_on, 'Paid on') || localDate(),
+    amount: b.amount === undefined ? undefined : money2(b.amount),
+    currency: b.currency ? currencyInput(b.currency) : undefined,
+    months: b.months ? int(b.months, 1, 1, 60) : undefined,
+    due_date: dateInput(b.due_date, 'Next payment date'),
+    note: str(b.note, 500) || null,
+    user: who(req),
+  });
+  audit(req, 'success', `Payment for ${s.name} recorded — next payment ${r.to}`, { serverId: s.id });
+  res.json({ ok: true, ...r, billing: billingPublic(getBilling(s.id)) });
+});
+
+api.delete('/payments/:id', (req, res) => {
+  const p = deletePayment(toId(req.params.id));
+  if (!p) throw notFound('Payment not found');
+  const s = getServer(p.server_id);
+  audit(req, 'warn', `Payment of ${p.paid_on} for ${s?.name || 'a server'} deleted${p.reverted_to ? ` — next payment back to ${p.reverted_to}` : ''}`, { serverId: p.server_id });
+  res.json({ ok: true, reverted_to: p.reverted_to });
 });
 
 function describeContainer(c) {
@@ -1347,6 +1488,9 @@ const NUMERIC = {
   s3_keep_local: [0, 1],
   traffic_enabled: [0, 1],
   notify_jobs_failed_only: [0, 1],
+  billing_reminders: [0, 1],
+  billing_overdue_daily: [0, 1],
+  billing_remind_hour: [0, 23],
   traffic_spike_x: [2, 100],
   traffic_min_rpm: [5, 100000],
   traffic_5xx_pct: [1, 100],
@@ -1411,6 +1555,10 @@ api.put('/settings', (req, res) => {
     } else if (key === 'notify_jobs') {
       const list = (Array.isArray(b[key]) ? b[key] : []).map((x) => str(x, 40)).filter((x) => /^[a-z0-9-]{1,40}$/.test(x));
       setSetting(key, [...new Set(list)].slice(0, 60));
+    } else if (key === 'billing_remind_days') {
+      const days = parseRemindDays(b[key]);
+      if (!days.length && str(b[key])) throw bad('Payment reminders: days before the due date, e.g. 7,3,1,0');
+      setSetting(key, days.join(','));
     } else if (key === 'dashboard_url') {
       const v = str(b[key], 300).replace(/\/+$/, '');
       if (v && !/^https?:\/\/\S+$/.test(v)) throw bad('Dashboard URL must start with http(s)://');

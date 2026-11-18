@@ -12,6 +12,10 @@ export const DEFAULTS = {
   dashboard_url: '',
   notify_jobs: [], // job types that send a message when they finish
   notify_jobs_failed_only: 0, // 1 = only when such a job fails or is cancelled
+  billing_reminders: 1, // remind before a server's payment is due
+  billing_remind_days: '7,3,1,0', // days before the due date to send a reminder
+  billing_overdue_daily: 1, // 1 = remind every day while a payment is overdue
+  billing_remind_hour: 9, // don't send reminders before this hour (Switchboard's time zone)
   check_interval: 60, // seconds between HTTP health checks
   check_timeout: 10, // seconds
   metrics_interval: 300, // seconds between SSH metrics collection

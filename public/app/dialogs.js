@@ -1,6 +1,7 @@
 import { ref, reactive, computed, onMounted, watch } from '/vendor/vue.js';
 import { store, http, toast, closeDialog, openDialog, go, showJob, freshness, fmtDate, bytes, HEALTH } from './lib.js';
 import { Modal, RecordsPicker, HealthPill, JobLog } from './components.js';
+import { BillingDialog, PaidDialog } from './billing.js';
 import { LbSetupDialog, DbServerDialog, ScaleOutDialog, OsUpgradeDialog } from './lbdialogs.js';
 import { TemplateProjectDialog, StagingDialog } from './cicd.js';
 import { PowerDialog, PasswordDialog, PortDialog, DomainDialog } from './serverctl.js';
@@ -860,6 +861,8 @@ export const ConfirmDialog = {
 };
 
 export const DIALOGS = {
+  billing: BillingDialog,
+  'billing-paid': PaidDialog,
   server: ServerDialog,
   project: ProjectDialog,
   'template-project': TemplateProjectDialog,

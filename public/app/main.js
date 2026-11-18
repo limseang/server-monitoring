@@ -5,6 +5,7 @@ import { DIALOGS, JobModal, ConfirmDialog } from './dialogs.js';
 import Overview from './pages/overview.js';
 import ProjectPage from './pages/project.js';
 import { ServersPage, ServerPage } from './pages/servers.js';
+import { BillingPage } from './billing.js';
 import { JobsPage, JobPage, ActivityPage, SettingsPage, AuthPage } from './pages/misc.js';
 
 const PAGES = {
@@ -16,6 +17,7 @@ const PAGES = {
   job: JobPage,
   activity: ActivityPage,
   settings: SettingsPage,
+  billing: BillingPage,
 };
 
 /* ------------------------------------------------------------------ data + live updates */
@@ -63,6 +65,7 @@ const App = {
     const dialog = computed(() => (store.dialog ? DIALOGS[store.dialog.type] : null));
     const projects = computed(() => store.overview?.projects || []);
     const running = computed(() => store.overview?.running || 0);
+    const billingDue = computed(() => (store.overview?.servers || []).filter((s) => s.billing && s.billing.days_left !== null && s.billing.days_left <= 3 && !(s.billing.auto_renew && s.billing.days_left >= 0)).length);
     const projDot = (p) => {
       const a = p.deployments.find((d) => d.is_active);
       return a ? (HEALTH[a.health] || HEALTH.unknown).cls : 'gray';
@@ -86,7 +89,7 @@ const App = {
       },
       { immediate: true },
     );
-    return { store, route, page, dialog, projects, running, projDot, toggleTheme, logout, dismissToast };
+    return { store, route, page, dialog, projects, running, billingDue, projDot, toggleTheme, logout, dismissToast };
   },
   template: `
   <auth-page v-if="store.ready && !store.user" />
@@ -95,6 +98,7 @@ const App = {
       <a class="brand" href="#/"><span class="brand-logo"><icon name="bolt" :size="17" /></span><span>Switchboard<small>server failover & ops</small></span></a>
       <a class="nav-link" :class="{ active: route.name === 'overview' }" href="#/"><icon name="overview" />Overview</a>
       <a class="nav-link" :class="{ active: route.name === 'servers' || route.name === 'server' }" href="#/servers"><icon name="servers" />Servers</a>
+      <a class="nav-link" :class="{ active: route.name === 'billing' }" href="#/billing"><icon name="card" />Billing<span v-if="billingDue" class="count" :title="billingDue + ' payment(s) due within 3 days or overdue'">{{ billingDue }}</span></a>
       <a class="nav-link" :class="{ active: route.name === 'jobs' || route.name === 'job' }" href="#/jobs"><icon name="jobs" />Jobs<span v-if="running" class="count">{{ running }}</span></a>
       <a class="nav-link" :class="{ active: route.name === 'activity' }" href="#/activity"><icon name="activity" />Activity</a>
       <a class="nav-link" :class="{ active: route.name === 'settings' }" href="#/settings"><icon name="settings" />Settings</a>
