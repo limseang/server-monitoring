@@ -15,6 +15,10 @@ const records = [
   { name: 'api.shop.test', type: 'CNAME', content: 'shop.test', proxied: true, ttl: 1 },
 ].map((r) => ({ id: hid(`rec:${r.name}`), zone_id: zone.id, zone_name: zone.name, ...r }));
 let purges = 0;
+// Zone settings (SSL mode, Always Use HTTPS) per zone id.
+const SETTINGS0 = { ssl: 'flexible', always_use_https: 'off' };
+const settings = {};
+const zoneSettings = (id) => (settings[id] ||= { ...SETTINGS0 });
 // Load Balancing add-on (account-level monitors/pools, zone-level load balancers).
 const ACCOUNT = 'acc0123456789abcdef';
 const lb = { monitors: [], pools: [], lbs: [] };
@@ -32,13 +36,15 @@ const fail = (res, status, code, message) => send(res, status, { success: false,
 http
   .createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
-    if (url.pathname === '/__state') return send(res, 200, { records, purges, telegram, lb });
+    if (url.pathname === '/__state') return send(res, 200, { records, purges, telegram, lb, settings });
     if (url.pathname === '/__reset') {
       lb.monitors.length = 0;
       lb.pools.length = 0;
       lb.lbs.length = 0;
       for (let i = records.length - 1; i >= 4; i--) records.splice(i, 1); // records made by tests
       for (const r of records) if (r.type === 'A' && r.name !== 'mail.shop.test') r.content = IP;
+      for (const r of records) r.proxied = r.name !== 'mail.shop.test';
+      for (const k of Object.keys(settings)) delete settings[k];
       purges = 0;
       telegram.length = 0;
       return send(res, 200, { ok: true });
@@ -93,11 +99,25 @@ http
         if (req.method === 'PATCH') {
           const patch = JSON.parse(body || '{}');
           if (patch.content) r.content = patch.content;
-          console.log(`PATCH ${r.name} -> ${r.content}`);
+          if (typeof patch.proxied === 'boolean') r.proxied = patch.proxied;
+          if (patch.ttl) r.ttl = patch.ttl;
+          console.log(`PATCH ${r.name} -> ${r.content}${r.proxied ? ' (proxied)' : ''}`);
           return ok(res, r);
         }
       }
       const json = () => JSON.parse(body || '{}');
+      if ((m = p.match(/^\/zones\/([^/]+)\/settings\/(ssl|always_use_https)$/))) {
+        if (![zone, zone2].some((x) => x.id === m[1])) return fail(res, 404, 7003, 'Zone not found');
+        const zs = zoneSettings(m[1]);
+        if (req.method === 'PATCH') {
+          const v = json().value;
+          const allowed = m[2] === 'ssl' ? ['off', 'flexible', 'full', 'strict'] : ['on', 'off'];
+          if (!allowed.includes(v)) return fail(res, 400, 1007, `Invalid value for zone setting ${m[2]}`);
+          zs[m[2]] = v;
+          console.log(`ZONE ${m[1].slice(0, 6)} ${m[2]} = ${v}`);
+        }
+        return ok(res, { id: m[2], value: zs[m[2]], editable: true, modified_on: new Date().toISOString() });
+      }
       if ((m = p.match(/^\/zones\/([^/]+)$/)) && req.method === 'GET') {
         const z = [zone, zone2].find((x) => x.id === m[1]);
         return z ? ok(res, { ...z, account: { id: ACCOUNT, name: 'Lab account' } }) : fail(res, 404, 7003, 'Zone not found');

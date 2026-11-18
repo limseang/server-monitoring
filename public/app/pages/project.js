@@ -4,6 +4,7 @@ import { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, RecordsPick
 import { TrafficTab } from './traffic.js';
 import { CicdTab } from '../cicd.js';
 import { DbAccessTab } from '../dbaccess.js';
+import { DnsManage } from '../dnsmanage.js';
 
 const BACKUP_PRESETS = [
   ['Daily 3:00', '0 3 * * *'],
@@ -24,7 +25,7 @@ docker compose exec -T app php artisan optimize`;
 const ProjectSettings = {
   props: { project: Object },
   emits: ['saved'],
-  components: { RecordsPicker, CronField },
+  components: { RecordsPicker, CronField, DnsManage },
   setup(props, { emit }) {
     const p = props.project;
     const f = reactive({
@@ -86,6 +87,8 @@ const ProjectSettings = {
       <p class="hint" style="margin:0">These records are pointed to the live server's IP when you switch. Usually the main domain and <code>www</code>. Proxied (orange cloud) records switch within seconds.</p>
       <records-picker v-if="editDns" v-model="f.dns_records" :domain="f.domain" />
       <div v-else class="chips"><span v-for="r in f.dns_records" :key="r.id" class="chip on">{{ r.type }} {{ r.name }}</span><span v-if="!f.dns_records.length" class="muted small">None linked yet.</span></div>
+      <dns-manage v-if="!editDns && project.dns_records.length" :project="project" :key="'dm' + project.dns_records.map(r => r.id).join()" />
+      <div v-else-if="editDns && f.dns_records.length" class="hint">Save settings to point these records at a server, turn the proxy on/off, or set up SSL.</div>
     </div>
 
     <div class="card card-body form">

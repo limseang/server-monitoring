@@ -26,7 +26,8 @@ import {
 import * as cf from './cloudflare.js';
 import { connect, exec, withSSH } from './ssh.js';
 import { sendNotification, telegramChats } from './notify.js';
-import { refreshDnsState, dnsTargetProblem } from './ops/dns.js';
+import { refreshDnsState, dnsTargetProblem, setRecord } from './ops/dns.js';
+import { sslStatus, sslProblems, applySsl, SSL_MODES } from './ops/cfssl.js';
 import { countTables, backupAbsPath } from './ops/database.js';
 import { ensureLocal, backupAvailable, removeBackupFiles } from './ops/backupstore.js';
 import { s3Config, testS3 } from './s3.js';
@@ -1323,6 +1324,69 @@ api.post('/projects/:id/dns/fix', (req, res) => {
   if (!p.active_deployment_id) throw bad('No active server set');
   const job = enqueue({ type: 'dns', title: `Point DNS to active server (${p.name})`, projectId: p.id, user: who(req) });
   res.json({ job });
+});
+
+/** Change one linked record by hand: point it at another IP and/or turn the proxy (orange cloud) on/off. Admin only. */
+api.post('/projects/:id/dns/records/:record', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const recordId = str(req.params.record, 64);
+  if (!RE.cfId.test(recordId)) throw bad('Invalid record id');
+  const b = req.body || {};
+  const opts = {};
+  if (b.content !== undefined) {
+    const ip = str(b.content, 64);
+    const rec = parseJSON(p.dns_records, []).find((r) => r.id === recordId);
+    if (rec?.type === 'AAAA' ? !net.isIPv6(ip) : !net.isIPv4(ip)) throw bad(`${ip || 'That'} is not an ${rec?.type === 'AAAA' ? 'IPv6' : 'IPv4'} address`);
+    opts.content = ip;
+  }
+  if (b.proxied !== undefined) opts.proxied = bool(b.proxied);
+  let r;
+  try {
+    r = await setRecord(p, recordId, opts);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  if (r.changed) {
+    const what = [];
+    if (r.before.content !== r.after.content) {
+      const dep = deploymentsOf(p.id).find((d) => d.server_ip === r.after.content || d.server_ipv6 === r.after.content);
+      what.push(`${r.before.content} → ${r.after.content}${dep ? ` (${dep.server_name})` : ''}`);
+    }
+    if (!!r.before.proxied !== !!r.after.proxied) what.push(r.after.proxied ? 'proxy ON (orange cloud)' : 'proxy OFF (DNS only)');
+    audit(req, 'warn', `${p.name}: DNS ${r.after.type} ${r.after.name} changed by hand: ${what.join(', ')}`, { projectId: p.id });
+  }
+  res.json({ changed: r.changed, record: r.after, dns_state: await refreshDnsState(p.id) });
+});
+
+/** Cloudflare SSL mode of the project's zone(s) + an HTTPS check of every hostname a change would touch. */
+api.get('/projects/:id/ssl', async (req, res) => {
+  const p = mustProject(req.params.id);
+  res.json(await sslStatus(p));
+});
+
+api.post('/projects/:id/ssl', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const mode = str(req.body?.mode, 20);
+  if (!SSL_MODES.includes(mode)) throw bad(`SSL mode must be one of ${SSL_MODES.join(', ')}`);
+  const alwaysHttps = req.body?.always_https === undefined ? undefined : bool(req.body.always_https) && mode !== 'off';
+  const status = await sslStatus(p);
+  const zoneErr = status.zones.find((z) => z.error);
+  if (zoneErr) throw bad(`${zoneErr.zone_name}: ${zoneErr.error}`);
+  const problems = sslProblems(status, mode);
+  if (problems.length && !bool(req.body?.force)) {
+    return res.status(409).json({ error: `Setting SSL to "${mode}" would break ${problems.length} hostname${problems.length === 1 ? '' : 's'}`, problems });
+  }
+  let out;
+  try {
+    out = await applySsl(p, { mode, alwaysHttps });
+  } catch (e) {
+    throw bad(`${e.message}${/permission|auth|9109|10000/i.test(e.message) ? ' — your Cloudflare token needs "Zone Settings: Edit"' : ''}`);
+  }
+  for (const z of out) {
+    const zn = status.zones.find((x) => x.zone_id === z.zone_id)?.zone_name || z.zone_id;
+    audit(req, problems.length || mode === 'flexible' || mode === 'off' ? 'warn' : 'info', `${p.name}: Cloudflare SSL of ${zn}: ${z.before} → ${z.ssl}${z.always_use_https ? `, Always Use HTTPS ${z.always_use_https}` : ''}${problems.length ? ` (forced despite: ${problems.join('; ')})` : ''}`, { projectId: p.id });
+  }
+  res.json({ zones: out, status: await sslStatus(p) });
 });
 
 /** Mark a server as active WITHOUT touching DNS (e.g. DNS was changed by hand in Cloudflare). */

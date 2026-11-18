@@ -153,3 +153,27 @@ export async function refreshDnsState(projectId) {
   bus.emit('state', { projectId });
   return state;
 }
+
+/**
+ * Change one linked record by hand: point it at another IP and/or turn the Cloudflare proxy on/off.
+ * Returns { before, after } (Cloudflare's record before and after the change).
+ */
+export async function setRecord(project, recordId, { content, proxied }) {
+  const rec = parseJSON(project.dns_records, []).find((r) => r.id === recordId);
+  if (!rec) throw new Error('That record is not linked to this project');
+  const before = await cf.getRecord(rec.zone_id, rec.id);
+  const patch = {};
+  if (content !== undefined && content !== before.content) {
+    if (project.traffic_mode === 'lb') throw new Error('This project is load balanced — its records are managed by the load balancer (Traffic tab), not by hand');
+    if (!config.allowPrivateDns && isPrivateAddress(content)) {
+      throw new Error(`${content} is a private IP — visitors and Cloudflare can't reach it, so ${before.name} would go down. Use the server's public IP.`);
+    }
+    patch.content = content;
+  }
+  if (proxied !== undefined && !!proxied !== !!before.proxied) {
+    patch.proxied = !!proxied;
+  }
+  if (!Object.keys(patch).length) return { before, after: before, changed: false };
+  const after = await cf.updateRecord(rec.zone_id, rec.id, patch);
+  return { before, after, changed: true };
+}
