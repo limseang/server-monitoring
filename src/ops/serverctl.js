@@ -206,6 +206,16 @@ export async function scanPorts(server) {
     if (!row.addresses.includes(addr)) row.addresses.push(addr);
     ports.set(key, row);
   }
+  // Newer Docker can publish ports without a listening process (no docker-proxy), so ss doesn't
+  // show them: add every port a container publishes.
+  for (const c of containers) {
+    for (const pp of c.ports) {
+      const key = `${pp.proto}:${pp.port}`;
+      const row = ports.get(key) || { proto: pp.proto, port: pp.port, addresses: [], process: '', pid: null };
+      if (!row.addresses.includes(pp.host)) row.addresses.push(pp.host);
+      ports.set(key, row);
+    }
+  }
   const rows = [...ports.values()].map((r) => {
     const c = containers.find((x) => x.ports.some((pp) => pp.port === r.port && pp.proto === r.proto));
     const mapping = c?.ports.find((pp) => pp.port === r.port && pp.proto === r.proto);
