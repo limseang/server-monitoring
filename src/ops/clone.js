@@ -750,12 +750,36 @@ export async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, r
   const D1 = rootDocker(src);
   ctx.step(`Stack "${st.project}"${st.dir ? ` (${st.dir})` : ''}: ${st.containers.length} container(s), ${st.volumes.length} volume(s)`);
   if (dstHas && replace) await removeStack(ctx, dstConn, dst, st.project);
-  const toPause = freeze ? st.containers.filter((c) => c.state === 'running').map((c) => c.name) : [];
-  if (toPause.length) {
-    ctx.log(`Pausing ${toPause.join(', ')} on ${src.name} so the data is copied in one consistent state`);
-    await root(ctx, srcConn, src, `${D1} pause ${toPause.map(shq).join(' ')} >/dev/null`);
+  const wanted = freeze ? st.containers.filter((c) => c.state === 'running').map((c) => c.name) : [];
+  // One by one: a container that is restarting (crash loop) or stopped since the scan can't be
+  // paused — skip it instead of failing, and never leave the ones already paused frozen.
+  let toPause = [];
+  let skipped = [];
+  if (wanted.length) {
+    ctx.log(`Pausing ${wanted.join(', ')} on ${src.name} so the data is copied in one consistent state`);
+    let out;
+    try {
+      out = await root(
+        ctx,
+        srcConn,
+        src,
+        `for c in ${wanted.map(shq).join(' ')}; do s=$(${D1} inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+  if [ "$s" = running ] && ${D1} pause "$c" >/dev/null 2>&1; then echo "PAUSED $c"; else echo "SKIP $c $s"; fi; done; true`,
+      );
+    } catch (e) {
+      // Unknown how far it got: unpause all of them (unpausing a running container is harmless).
+      await runRemote(ctx, srcConn, asRoot(src, `for c in ${wanted.map(shq).join(' ')}; do ${D1} unpause "$c" >/dev/null 2>&1; done; true`), { quiet: true, signal: null, timeout: 60000 }).catch(() =>
+        ctx.warn(`Could not make sure ${wanted.join(', ')} are unpaused on ${src.name} — check with "docker ps" there NOW`),
+      );
+      throw e;
+    }
+    toPause = lines(out).filter((l) => l.startsWith('PAUSED ')).map((l) => l.slice(7));
+    skipped = lines(out).filter((l) => l.startsWith('SKIP ')).map((l) => l.slice(5).split(' '));
+    for (const [name, state] of skipped) {
+      ctx.warn(`${name} on ${src.name} could not be paused (it is ${state === 'restarting' ? 'restarting — probably crashing in a loop, check its logs' : state}) — its data is copied live`);
+    }
   }
-  const live = !toPause.length && st.running;
+  const live = (!toPause.length || skipped.length > 0) && st.running;
   try {
     if (st.dir) {
       const r = await streamCopy(ctx, {
