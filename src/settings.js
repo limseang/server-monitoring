@@ -10,6 +10,8 @@ export const DEFAULTS = {
   telegram_chat_id: '',
   webhook_url: '',
   dashboard_url: '',
+  notify_jobs: [], // job types that send a message when they finish
+  notify_jobs_failed_only: 0, // 1 = only when such a job fails or is cancelled
   check_interval: 60, // seconds between HTTP health checks
   check_timeout: 10, // seconds
   metrics_interval: 300, // seconds between SSH metrics collection

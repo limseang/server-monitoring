@@ -25,7 +25,7 @@ import {
 } from './models.js';
 import * as cf from './cloudflare.js';
 import { connect, exec, withSSH } from './ssh.js';
-import { sendNotification } from './notify.js';
+import { sendNotification, telegramChats } from './notify.js';
 import { refreshDnsState, dnsTargetProblem } from './ops/dns.js';
 import { countTables, backupAbsPath } from './ops/database.js';
 import { ensureLocal, backupAvailable, removeBackupFiles } from './ops/backupstore.js';
@@ -1339,6 +1339,7 @@ const NUMERIC = {
   s3_path_style: [0, 1],
   s3_keep_local: [0, 1],
   traffic_enabled: [0, 1],
+  notify_jobs_failed_only: [0, 1],
   traffic_spike_x: [2, 100],
   traffic_min_rpm: [5, 100000],
   traffic_5xx_pct: [1, 100],
@@ -1400,6 +1401,9 @@ api.put('/settings', (req, res) => {
       const v = str(b[key], 200).replace(/^\/+|\/+$/g, '');
       if (v && !/^[A-Za-z0-9._\/-]+$/.test(v)) throw bad('S3 folder: letters, numbers, . _ - and /');
       setSetting(key, v);
+    } else if (key === 'notify_jobs') {
+      const list = (Array.isArray(b[key]) ? b[key] : []).map((x) => str(x, 40)).filter((x) => /^[a-z0-9-]{1,40}$/.test(x));
+      setSetting(key, [...new Set(list)].slice(0, 60));
     } else if (key === 'dashboard_url') {
       const v = str(b[key], 300).replace(/\/+$/, '');
       if (v && !/^https?:\/\/\S+$/.test(v)) throw bad('Dashboard URL must start with http(s)://');
@@ -1415,6 +1419,16 @@ api.post('/settings/cloudflare/test', async (req, res) => {
   try {
     const r = await cf.verifyToken(str(req.body.token, 200) || undefined);
     res.json({ ok: true, ...r });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.post('/settings/telegram/chats', async (req, res) => {
+  const token = str(req.body?.telegram_token, 200) || getSetting('telegram_token');
+  if (!token) return res.json({ ok: false, error: 'Paste the bot token first (from @BotFather)' });
+  try {
+    res.json({ ok: true, ...(await telegramChats(token)) });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }

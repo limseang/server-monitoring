@@ -36,7 +36,7 @@ app.use((req, res, next) => {
 });
 
 app.use('/api', api);
-app.get('/vendor/vue.js', (req, res) => res.type('application/javascript').sendFile(vueFile, { maxAge: '7d' }));
+app.get('/vendor/vue.js', (req, res) => res.type('application/javascript').sendFile(vueFile, { maxAge: '7d', dotfiles: 'allow' }));
 // no-cache: the browser always checks for a newer file, so an update never mixes old and new code.
 app.use(express.static(config.publicDir, { index: 'index.html', setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
 
