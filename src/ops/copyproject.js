@@ -38,6 +38,7 @@ import {
   verifyStacks,
   copyNodeRuntime,
   rootDocker,
+  planBindIps,
 } from './clone.js';
 import { appFolders, pm2Dump, PM2RUN } from './hostapps.js';
 import { installHelper, pushProjectConf, helper, HELPER } from './stack.js';
@@ -399,6 +400,7 @@ export async function makeCopyPlan(ctx, { project, dep, src, dst, srcConn, dstCo
     if (dstScan.docker === 'none' && !opts.installDocker) problems.push(`${dst.name} has no Docker — tick "Install Docker" or install it first`);
     if (dstScan.docker === 'none' && dstScan.os.id === 'alpine') problems.push(`${dst.name} runs Alpine — install Docker there first`);
   }
+  planBindIps({ stacks, src, dst, srcScan, dstScan, problems, warnings });
   const dstProjects = new Set(dstScan.containers.map((c) => c.Config?.Labels?.['com.docker.compose.project']).filter(Boolean));
   const clash = stacks.filter((s) => dstProjects.has(s.project)).map((s) => s.project);
   if (clash.length) {

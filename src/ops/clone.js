@@ -16,7 +16,7 @@
  */
 import { insert, get, now } from '../db.js';
 import { deploymentsOnServer, getServer } from '../models.js';
-import { fmtBytes, sleep } from '../util.js';
+import { fmtBytes, sleep, isPrivateAddress } from '../util.js';
 import { connectTo, runRemote, asRoot, streamCopy, shq, PIPEFAIL } from './remote.js';
 import { detectHostApps, appFolders, pm2Dump, publicHostApps, PM2RUN } from './hostapps.js';
 
@@ -135,6 +135,7 @@ echo @@ufw; if command -v ufw >/dev/null 2>&1; then ufw status 2>/dev/null | hea
 echo @@hostpaths; for p in ${hostList}; do [ -e "$p" ] && echo "$p"; done
 ${CERT_FILES_SH}
 echo @@aptsrc; for f in /etc/apt/sources.list.d/* /etc/apt/trusted.gpg.d/*; do [ -f "$f" ] && echo "$f"; done; grep -rhoE 'signed-by=[^] ]+|^Signed-By: *[^ ]+' /etc/apt/sources.list.d 2>/dev/null | sed -E 's/^(signed-by=|Signed-By: *)//' | while read -r k; do [ -f "$k" ] && echo "$k"; done
+echo @@ips; (hostname -I 2>/dev/null || ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1) | tr ' ' '\\n'
 echo @@units; for f in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do [ -f "$f" ] && [ ! -L "$f" ] && n=$(basename "$f") && echo "$n $(systemctl is-enabled "$n" 2>/dev/null || echo unknown)"; done
 echo @@end
 true`;
@@ -165,6 +166,7 @@ true`;
     ufw: /active/i.test(s.ufw) && !/inactive/i.test(s.ufw) ? 'active' : s.ufw === 'none' ? 'none' : 'inactive',
     hostPaths: lines(s.hostpaths),
     aptSources: [...new Set(lines(s.aptsrc))],
+    ips: [...new Set(lines(s.ips).filter((x) => /^[0-9a-f.:]+$/i.test(x)))],
     units: lines(s.units).map((l) => ({ name: l.split(' ')[0], enabled: l.split(' ')[1] === 'enabled' })),
     containers: [],
     volumes: [],
@@ -233,9 +235,11 @@ export function buildStacks(scan) {
         volumes: new Set(),
         binds: new Set(),
         anon: [],
+        bindIps: new Set(),
       });
     }
     const st = stacks.get(project);
+    for (const arr of Object.values(c.HostConfig?.PortBindings || {})) for (const b of arr || []) if (b.HostIp) st.bindIps.add(b.HostIp);
     const state = c.State?.Status || '';
     st.containers.push({ name, service: labels['com.docker.compose.service'] || name, state, running: state === 'running' || state === 'paused', imageId: c.Image, ref: c.Config?.Image || '' });
     for (const m of c.Mounts || []) {
@@ -257,11 +261,47 @@ export function buildStacks(scan) {
     st.running = st.containers.some((c) => c.running);
     st.volumes = [...st.volumes].filter((n) => volByName.has(n)).map((n) => volByName.get(n));
     st.binds = [...st.binds];
+    st.bindIps = [...st.bindIps];
   }
   const used = new Set([...stacks.values()].flatMap((s) => s.volumes.map((v) => v.Name)));
   const mountedElsewhere = new Set(scan.containers.flatMap((c) => (c.Mounts || []).filter((m) => m.Type === 'volume').map((m) => m.Name)));
   const looseVolumes = scan.volumes.filter((v) => !used.has(v.Name) && !mountedElsewhere.has(v.Name) && !ANON_VOLUME.test(v.Name));
   return { stacks: [...stacks.values()], standalone, looseVolumes };
+}
+
+const ANY_IP = /^(0\.0\.0\.0|::|127\.|::1$|localhost$)/;
+
+/**
+ * Ports bound to one address of the source (e.g. the database server's "104.1.2.3:6379:6379")
+ * can't be opened on the target, which has other addresses. For each such address pick the
+ * target's matching one (public ↔ public, private ↔ private) and remember it on the stack as
+ * st.ipMap; startStack() writes it into the compose files. Never falls back to 0.0.0.0, which
+ * would open e.g. a database to the internet.
+ */
+export function planBindIps({ stacks, src, dst, srcScan, dstScan, problems, warnings }) {
+  const owned = new Set(dstScan.ips || []);
+  const ownedList = [...owned];
+  const pick = (priv) => {
+    const want = priv ? [dst.private_ip, ...ownedList.filter((x) => isPrivateAddress(x) && !x.startsWith('127.') && x !== '::1' && !x.startsWith('172.17.'))] : [dst.ip, ...ownedList.filter((x) => !isPrivateAddress(x))];
+    return want.find((x) => x && owned.has(x)) || null;
+  };
+  for (const st of stacks) {
+    st.ipMap = {};
+    for (const ip of st.bindIps || []) {
+      if (ANY_IP.test(ip) || owned.has(ip) || !dstScan.ips?.length) continue;
+      const priv = isPrivateAddress(ip) || ip === src.private_ip;
+      const to = pick(priv);
+      if (to) {
+        st.ipMap[ip] = to;
+        warnings.push(`${st.project}: its ports listen on ${ip} (an address of ${src.name}); on ${dst.name} they will listen on ${to}`);
+      } else {
+        problems.push(
+          `${st.project}: its ports listen only on ${ip}, an address of ${src.name}. ${dst.name} has no matching ${priv ? 'private' : 'public'} address (it has: ${ownedList.join(', ') || 'none found'})` +
+            (priv ? ` — set ${dst.name}'s private IP in its server settings (Servers → Edit), then scan again.` : ` — check ${dst.name}'s IP in its server settings, then scan again.`),
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -285,6 +325,8 @@ export async function makePlan(ctx, { src, dst, srcConn, srcScan, dstScan, opts 
     if (!st.dir) warnings.push(`${st.project}: no compose folder recorded — only its volumes are copied, it can't be started automatically`);
     if (st.anon.length) warnings.push(`${st.project}: anonymous volumes are not copied (${st.anon.join(', ')}) — give them a name in docker-compose.yml if they hold data`);
   }
+
+  planBindIps({ stacks, src, dst, srcScan, dstScan, problems, warnings });
 
   // Stacks that already exist on the target.
   const dstProjects = new Set(dstScan.containers.map((c) => c.Config?.Labels?.['com.docker.compose.project']).filter(Boolean));
@@ -821,10 +863,57 @@ export async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, r
   }
 }
 
+/**
+ * Swap listen addresses in one file: compose port bindings ("IP:host:container", host_ip: IP)
+ * and, in .env, only variables named like *BIND* / *LISTEN* / *HOST_IP* / *PUBLISH* — never e.g.
+ * DB_HOST, which may point to another server on purpose.
+ */
+export function bindIpText(file, text, ipMap) {
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const isEnv = /(^|\/)\.env$/.test(file);
+  let t = String(text);
+  let n = 0;
+  for (const [from, to] of Object.entries(ipMap)) {
+    const re = isEnv
+      ? new RegExp(`^([A-Za-z0-9_]*(?:BIND|LISTEN|HOST_IP|PUBLISH)[A-Za-z0-9_]*=["']?)${esc(from)}(?=["']?\\s*$)`, 'gm')
+      : new RegExp(`(^|[\\s"'\\[,]|host_ip:\\s*["']?)${esc(from)}(?=(:\\d|["']?\\s*$))`, 'gm');
+    t = t.replace(re, (_, a) => {
+      n++;
+      return `${a}${to}`;
+    });
+  }
+  return { text: t, n };
+}
+
+/** Put the target's addresses into the compose files where the source's were bound (see planBindIps). */
+async function rewriteBindIps(ctx, conn, server, st) {
+  const files = st.configFiles.length ? st.configFiles : [`${st.dir}/docker-compose.yml`];
+  const list = [...files, `${st.dir}/.env`];
+  const out = await root(ctx, conn, server, `for f in ${list.map(shq).join(' ')}; do [ -f "$f" ] && { echo "@@file $f"; base64 < "$f" | tr -d '\\n'; echo; }; done; true`);
+  const got = {};
+  let cur = null;
+  for (const l of String(out).split('\n')) {
+    const m = l.match(/^@@file (.+)$/);
+    if (m) cur = m[1];
+    else if (cur && l.trim()) got[cur] = Buffer.from(l.trim(), 'base64').toString('utf8');
+  }
+  const writes = [];
+  for (const [f, text] of Object.entries(got)) {
+    const { text: t, n } = bindIpText(f, text, st.ipMap);
+    if (n) {
+      writes.push(`printf %s ${shq(Buffer.from(t).toString('base64'))} | base64 -d > ${shq(`${f}.sb-tmp`)} && cat ${shq(`${f}.sb-tmp`)} > ${shq(f)} && rm -f ${shq(`${f}.sb-tmp`)}`);
+      ctx.log(`  ${f}: listen address ${Object.entries(st.ipMap).map(([a, b]) => `${a} → ${b}`).join(', ')} (${n} place(s))`);
+    }
+  }
+  if (writes.length) await root(ctx, conn, server, `set -e\n${writes.join('\n')}`);
+  else ctx.warn(`${st.project}: could not find ${Object.keys(st.ipMap).join(', ')} in its compose files — if it fails to start, change the listen address there by hand`);
+}
+
 /** Start the stack on the target the way it was on the source (running services up, stopped ones created). */
 export async function startStack(ctx, conn, server, st) {
   const D = rootDocker(server);
   if (!st.dir) return;
+  if (st.ipMap && Object.keys(st.ipMap).length) await rewriteBindIps(ctx, conn, server, st);
   const files = st.configFiles.map((f) => `-f ${shq(f)}`).join(' ');
   const base = `cd ${shq(st.dir)} && ${D} compose -p ${shq(st.project)} ${files}`;
   ctx.step(`Start "${st.project}" on ${server.name}`);
