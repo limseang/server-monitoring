@@ -171,6 +171,7 @@ export const JOB_TYPES = {
   'runner-remove': 'Remove runner',
   'preview-down': 'Remove preview',
   'project-copy': 'Copy project',
+  'server-cleanup': 'Clean up',
 };
 
 /* ------------------------------------------------------------------ router (hash based) */

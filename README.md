@@ -30,7 +30,7 @@ Built for people who run apps (Laravel, Node/Nuxt, static sites…) in **Docker*
 | **Monitoring** | Health checks every minute straight to each server, uptime bars, CPU/memory/disk, containers, SSL expiry, DNS drift. |
 | **Traffic & logs** | Requests per minute, errors, top pages/IPs/bots from your nginx logs. Live log viewer (nginx, Laravel, containers, SSH logins). |
 | **Alerts** | Telegram, Discord, Slack or any webhook: server down, failover, failed backup, disk full, finished jobs you pick (deploy, clone…), **traffic spike / attack**, many 5xx errors, SSH brute force… |
-| **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. |
+| **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. **Clean up / free memory** in one click (or weekly). |
 | **Deploys & CI/CD** | Deploy button, or **GitHub Actions with self-hosted runners**: push → tests → deploy server by server. **Staging** copies and **pull-request previews**. |
 | **New apps** | Start a new **Laravel / Node / static** app from a template: Docker, database, web proxy, DNS and a GitHub repo, set up for you. |
 | **More** | Load balancing (own nginx or Cloudflare), shared database server, clone a whole server or copy one project to another server (on other ports if you like), OS upgrades, apps outside Docker (PM2, systemd), users with roles (admin / developer / viewer), 2FA, audit log. |
@@ -175,6 +175,22 @@ Servers → a server:
 </details>
 
 <details>
+<summary><b>Clean up a server / free memory (make it faster)</b></summary>
+
+When a server gets slow or its disk fills up, old Docker leftovers and logs are usually the cause. Switchboard can clear them for you — **without touching your data**.
+
+1. Servers → your server → **More ▾ → Clean up / free memory…** (admins only). When an alert says *disk is 90 % full*, clicking the alert opens the same window.
+2. Switchboard looks at the server first (this changes nothing) and shows how much each part would free:
+   - **Docker**: build cache, dangling images (old layers without a name), stopped containers, unused networks. **Volumes (your databases) are never removed**, running containers keep running, and stopped containers that belong to one of your projects are kept.
+   - **Extra: all unused images** — frees the most, but older versions you might roll back to must be downloaded/built again. Off by default.
+   - **System**: old journal logs (keeps the last 7 days), downloaded package files (`apt-get clean`), and log files of 20 MB or more in `/var/log`, Docker's container logs and your Laravel apps' `storage/logs`. Log files are **emptied, not deleted**, so apps keep writing to them.
+   - **Laravel**: `php artisan optimize:clear` in the app container of each project on the server; apps that were optimized get `php artisan optimize` again right after, so they stay fast. This also empties the app cache.
+   - **Memory**: restart a container that uses too much memory (the top ones are listed with their memory use; the app is offline for a few seconds), move swap back into memory (only when enough RAM is free), or drop the page cache. *Honest note:* the page cache is Linux keeping recently read files in spare memory — it is given back by itself when an app needs it and fills up again quickly, so dropping it rarely makes anything faster.
+3. Tick what you want → **Clean up now**. The job log shows disk and memory **before and after**, and how much each step freed.
+4. **Weekly cleanup** (same window): pick a day and time → **Turn on weekly cleanup**. It runs the parts that are ticked at that moment, never a container restart. **Turn off** to stop it.
+</details>
+
+<details>
 <summary><b>Load balancing, shared database, clone, OS upgrade</b></summary>
 
 - **Load balancing** (project → Traffic tab): your own nginx load balancer or Cloudflare Load Balancing; zero-downtime switches and rolling deploys.
@@ -232,7 +248,7 @@ The `dev/` folder has a complete **test lab** — fake servers, fake Cloudflare,
 ./dev/setup.sh                       # starts the lab → http://localhost:8090 (admin / admin-password-123)
 node dev/e2e.mjs                     # switch, copy, backup/restore, failover, alerts, deploy
 node dev/e2e-extra.mjs               # PostgreSQL, MariaDB, failed import rollback
-./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-clone-pick.mjs, e2e-copy-project.mjs, e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs)
+./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-clone-pick.mjs, e2e-copy-project.mjs, e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs, e2e-cleanup.mjs)
 ./dev/ci-setup.sh && node dev/e2e-ci.mjs         # templates, CI/CD, staging, previews (also e2e-server.mjs, e2e-traffic.mjs)
 docker compose -f dev/docker-compose.yml --profile s3 up -d s3 && node dev/e2e-s3.mjs   # S3 backups
 docker compose -f dev/docker-compose.yml down -v # remove the lab
