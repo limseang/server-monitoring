@@ -5,6 +5,7 @@ import { TrafficTab } from './traffic.js';
 import { CicdTab } from '../cicd.js';
 import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
+import { StatusHero } from '../statushero.js';
 
 const BACKUP_PRESETS = [
   ['Daily 3:00', '0 3 * * *'],
@@ -152,7 +153,7 @@ const ProjectSettings = {
 /* ------------------------------------------------------------------ page */
 export default {
   props: { id: Number },
-  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab },
+  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
@@ -304,7 +305,7 @@ export default {
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Project not found</div><a href="#/">Back to overview</a></div>
-  <div v-else-if="!p" class="muted">Loading…</div>
+  <div v-else-if="!p" class="skeleton-page" aria-label="Loading…"><i class="sk sk-title"></i><i class="sk sk-hero"></i><div class="dep-grid"><i class="sk sk-card"></i><i class="sk sk-card"></i></div></div>
   <div v-else>
     <div class="page-head">
       <div>
@@ -345,13 +346,15 @@ export default {
         <button v-if="dns.points_to && !lb" class="btn btn-sm" @click="adopt(p.deployments.find(d => d.id === dns.points_to))">Keep DNS, mark {{ (p.deployments.find(d => d.id === dns.points_to) || {}).server_name }} as live</button></span>
     </div>
 
+    <status-hero :p="p" :active="active" :lb="lb" :lb-count="lbCount" :checking="!!busy.check" @check="checkNow" @switch="openSwitch()" @maintenance="toggleMaint(active)" />
+
     <div class="dep-grid">
       <div v-for="d in p.deployments" :key="d.id" class="card dep-card" :class="{ 'dep-live': d.is_active }">
         <div class="dep-head">
           <div style="min-width:0">
             <div class="row gap-8 wrap"><b class="dep-name">{{ d.server_name }}</b>
               <span v-if="lb" class="badge" :class="LB_BADGE[d.lb_state][0]">{{ LB_BADGE[d.lb_state][1] }}</span>
-              <template v-else><span v-if="d.is_active" class="badge badge-green">LIVE</span><span v-else class="badge badge-gray">Standby</span></template>
+              <template v-else><span v-if="d.is_active" class="badge badge-green badge-live">LIVE</span><span v-else class="badge badge-gray">Standby</span><help-tip :term="d.is_active ? 'live' : 'standby'" /></template>
               <span v-if="d.maintenance" class="badge badge-blue">Maintenance</span></div>
             <div class="muted mono small">{{ d.server_ip }}<template v-if="d.server_ipv6"> · {{ d.server_ipv6 }}</template></div>
           </div>
@@ -366,21 +369,21 @@ export default {
           </menu-btn>
         </div>
         <div class="row between wrap gap-8">
-          <health-pill :dep="d" />
+          <span class="row gap-4"><health-pill :dep="d" /><help-tip term="health" /></span>
           <span class="muted small" v-if="d.health_detail">{{ d.health_detail.code ? 'HTTP ' + d.health_detail.code : '' }}{{ d.health_detail.ms != null ? ' · ' + d.health_detail.ms + ' ms' : '' }} · <ago :at="d.checked_at" /></span>
         </div>
         <div v-if="d.health_detail && !d.health_detail.ok && d.health !== 'maintenance'" class="dep-error"><template v-if="d.server_status === 'up'"><b>The server is online</b> (SSH works), <b>but the website doesn't answer</b> at {{ p.health_scheme }}://{{ d.server_ip }}{{ p.health_port ? ':' + p.health_port : '' }}{{ p.health_path }} — </template>{{ d.health_detail.error }}</div>
         <div v-if="isPrivateIp(d.server_ip) && !lb && !privateOk" class="dep-warn">⚠ <b>Private IP</b> — visitors and Cloudflare can't reach {{ d.server_ip }}, so switching traffic here is blocked. Set the server's public IP (keep this one as "SSH host") and forward ports 80/443 to it.</div>
         <div>
           <uptime-bar :bars="d.bars" />
-          <div class="row between tiny muted mt-8"><span>24h ago</span><span>{{ d.uptime != null ? d.uptime + '% up' : 'no data yet' }}{{ d.ms_avg ? ' · avg ' + d.ms_avg + ' ms' : '' }}</span><span>now</span></div>
+          <div class="row between tiny muted mt-8"><span class="row gap-4">24h ago<help-tip term="uptime" /></span><span>{{ d.uptime != null ? d.uptime + '% up' : 'no data yet' }}{{ d.ms_avg ? ' · avg ' + d.ms_avg + ' ms' : '' }}</span><span>now</span></div>
         </div>
         <div class="kv">
-          <div><span>Data</span><span :class="freshness(d, staleHours).cls" :title="d.data_note || ''">{{ freshness(d, staleHours).text }}<template v-if="d.data_note && !d.is_active"><br><span class="tiny muted">{{ d.data_note }}</span></template></span></div>
+          <div><span>Data <help-tip term="data" /></span><span :class="freshness(d, staleHours).cls" :title="d.data_note || ''">{{ freshness(d, staleHours).text }}<template v-if="d.data_note && !d.is_active"><br><span class="tiny muted">{{ d.data_note }}</span></template></span></div>
           <div v-if="p.traffic && p.traffic[d.server_id]"><span>Traffic</span><span class="small"><a :href="'#/servers/' + d.server_id" :class="p.traffic[d.server_id].err >= 5 ? 'text-red' : ''">{{ p.traffic[d.server_id].rpm }} req/min · {{ p.traffic[d.server_id].err }}% errors</a></span></div>
-          <div><span>Database</span><span class="small">{{ dbLabel(d) }}<span v-if="d.skip_backup && d.db_type !== 'none'" class="tiny muted"> · no backup before copy</span></span></div>
-          <div><span>App</span><span class="mono small">{{ d.app_container || '—' }}</span></div>
-          <div><span>Folder</span><span class="mono small">{{ d.app_dir || '—' }}</span></div>
+          <div><span>Database <help-tip term="database" /></span><span class="small">{{ dbLabel(d) }}<span v-if="d.skip_backup && d.db_type !== 'none'" class="tiny muted"> · no backup before copy</span></span></div>
+          <div><span>App <help-tip term="app" /></span><span class="mono small">{{ d.app_container || '—' }}</span></div>
+          <div><span>Folder <help-tip term="folder" /></span><span class="mono small">{{ d.app_dir || '—' }}</span></div>
           <div v-if="sslFor(d) && sslFor(d).ok"><span>SSL</span><span class="small" :class="sslFor(d).days_left < 15 ? 'text-amber' : ''">{{ sslFor(d).days_left }} days left · {{ sslFor(d).issuer }}</span></div>
         </div>
         <div class="dep-actions">
@@ -393,8 +396,8 @@ export default {
             <button v-if="!d.is_active" class="admin-only btn btn-primary btn-sm" @click="openSwitch(d)" :disabled="!p.dns_records.length || (isPrivateIp(d.server_ip) && !privateOk)">Switch traffic here</button>
             <button v-if="!d.is_active && active && !p.db_server_id" class="admin-only btn btn-sm" @click="openSync(active, d)" :disabled="d.db_type === 'none'">Copy data from live</button>
           </template>
-          <button v-if="!p.db_server_id" class="dev-only btn btn-sm" @click="backup(d)" :disabled="d.db_type === 'none'">Backup</button>
-          <button class="dev-only btn btn-sm" @click="toggleMaint(d)">{{ d.maintenance ? 'Maintenance off' : 'Maintenance' }}</button>
+          <button v-if="!p.db_server_id" class="dev-only btn btn-sm" @click="backup(d)" :disabled="d.db_type === 'none'" title="Save a copy of the database now">Backup</button>
+          <button class="dev-only btn btn-sm" @click="toggleMaint(d)" title="Show visitors a 'back soon' page while you work">{{ d.maintenance ? 'Maintenance off' : 'Maintenance' }}</button>
           <button class="dev-only btn btn-sm" @click="deploy(d)" :disabled="!p.deploy_script" :title="p.deploy_script ? '' : 'Set a deploy script in Settings'">Deploy</button>
         </div>
       </div>
@@ -414,7 +417,7 @@ export default {
 
     <div v-if="tab === 'dns'" class="stack">
       <div class="card">
-        <div class="card-head"><h3>Cloudflare DNS</h3>
+        <div class="card-head"><h3 class="row gap-6">Cloudflare DNS <help-tip term="dns" /></h3>
           <div class="row gap-6"><span class="muted small" v-if="dns">checked <ago :at="dns.checked_at" /></span>
             <button class="btn btn-sm" @click="refreshDns" :disabled="busy.dns"><span v-if="busy.dns" class="spinner"></span>Check now</button>
             <button class="admin-only btn btn-sm" @click="openTab('settings')">Change records</button></div></div>
@@ -435,7 +438,7 @@ export default {
         </template>
       </div>
       <div class="card" v-if="ssl">
-        <div class="card-head"><h3>SSL certificates</h3><span class="muted small">checked <ago :at="ssl.checked_at" /></span></div>
+        <div class="card-head"><h3 class="row gap-6">SSL certificates <help-tip term="ssl" /></h3><span class="muted small">checked <ago :at="ssl.checked_at" /></span></div>
         <div class="table-wrap"><table class="table">
           <thead><tr><th>Where</th><th>Issuer</th><th>Expires</th><th>Days left</th></tr></thead>
           <tbody>
