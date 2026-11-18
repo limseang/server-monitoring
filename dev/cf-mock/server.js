@@ -43,11 +43,17 @@ http
       telegram.length = 0;
       return send(res, 200, { ok: true });
     }
+    // Fake bot: getMe / getUpdates (one private chat wrote to it); chat 404404 does not exist.
+    if (/^\/bot[^/]+\/getMe$/.test(url.pathname)) return send(res, 200, { ok: true, result: { id: 999, is_bot: true, username: 'lab_switchboard_bot' } });
+    if (/^\/bot[^/]+\/getUpdates$/.test(url.pathname)) {
+      return send(res, 200, { ok: true, result: [{ update_id: 1, message: { message_id: 1, text: '/start', chat: { id: 111222333, type: 'private', first_name: 'Lab', last_name: 'User', username: 'labuser' } } }] });
+    }
     if (/^\/bot[^/]+\/sendMessage$/.test(url.pathname) && req.method === 'POST') {
       let b = '';
       req.on('data', (c) => (b += c));
       req.on('end', () => {
         const msg = JSON.parse(b || '{}');
+        if (String(msg.chat_id) === '404404') return send(res, 400, { ok: false, error_code: 400, description: 'Bad Request: chat not found' });
         telegram.push({ chat_id: msg.chat_id, text: msg.text, at: new Date().toISOString() });
         console.log(`TELEGRAM → ${msg.chat_id}: ${String(msg.text).split('\n')[0]}`);
         send(res, 200, { ok: true, result: { message_id: telegram.length } });

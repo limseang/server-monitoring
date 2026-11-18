@@ -29,7 +29,7 @@ Built for people who run apps (Laravel, Node/Nuxt, static sites…) in **Docker*
 | **Backups** | Scheduled + one-click database backups (MySQL, MariaDB, PostgreSQL). Restore into any server (with a safety backup first). Store them in **S3** (AWS, MinIO, Wasabi, R2, Spaces…). |
 | **Monitoring** | Health checks every minute straight to each server, uptime bars, CPU/memory/disk, containers, SSL expiry, DNS drift. |
 | **Traffic & logs** | Requests per minute, errors, top pages/IPs/bots from your nginx logs. Live log viewer (nginx, Laravel, containers, SSH logins). |
-| **Alerts** | Telegram, Discord, Slack or any webhook: server down, failover, failed backup, disk full, **traffic spike / attack**, many 5xx errors, SSH brute force… |
+| **Alerts** | Telegram, Discord, Slack or any webhook: server down, failover, failed backup, disk full, finished jobs you pick (deploy, clone…), **traffic spike / attack**, many 5xx errors, SSH brute force… |
 | **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. |
 | **Deploys & CI/CD** | Deploy button, or **GitHub Actions with self-hosted runners**: push → tests → deploy server by server. **Staging** copies and **pull-request previews**. |
 | **New apps** | Start a new **Laravel / Node / static** app from a template: Docker, database, web proxy, DNS and a GitHub repo, set up for you. |
@@ -86,7 +86,7 @@ Switchboard sees which server Cloudflare points to and marks it **LIVE**. Done! 
 From then on, every push to that branch is deployed by itself within a minute (after its tests pass on GitHub, if you add tests in the CI/CD tab). Nothing is installed on the server for this and nothing has to reach it from the internet — Switchboard only needs to reach the server over SSH. Only commits that are really on the branch are ever deployed.
 
 ### 6. (Recommended) Get alerts
-**Settings → Alerts**: a Telegram bot token (from **@BotFather**) and your chat id (from **@userinfobot**) → **Send test message**.
+**Settings → Alerts**: create a bot with **@BotFather** (`/newbot`), open your bot in Telegram and press **Start** (a bot can only message people who wrote to it first — for a group, add the bot to it), paste the token, click **Find my chat id**, then **Save** and **Send test message**. Tick **Message me when these jobs finish** (deploy, clone, backup…) to get the result of each job — or only failures.
 
 ---
 

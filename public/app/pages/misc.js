@@ -121,6 +121,18 @@ export const SettingsPage = {
       ghTest.value = { loading: true };
       ghTest.value = await http.post('/settings/github/test', { token: f.github_token }).catch((e) => ({ ok: false, error: e.message }));
     }
+    const tgChats = ref(null);
+    async function findChats() {
+      tgChats.value = { loading: true };
+      tgChats.value = await http.post('/settings/telegram/chats', { telegram_token: f.telegram_token }).catch((e) => ({ ok: false, error: e.message }));
+      if (tgChats.value.ok && tgChats.value.chats.length === 1) f.telegram_chat_id = tgChats.value.chats[0].id;
+    }
+    const JOB_CHOICES = [
+      ['deploy', 'Deploy (also auto-deploy from GitHub)'], ['switch', 'Switch server'], ['sync', 'Copy data'], ['backup', 'Backup'], ['restore', 'Restore'],
+      ['clone', 'Clone server'], ['project-copy', 'Copy project'], ['os-upgrade', 'Upgrade OS'], ['server-reset', 'Reset server'], ['server-reinstall', 'Reinstall OS'],
+      ['provision', 'Template setup'], ['staging-data', 'Copy to staging'], ['remove-deployment', 'Remove from server'], ['project-delete', 'Delete project'],
+      ['container', 'Container start/stop/delete'], ['command', 'Command'], ['maintenance', 'Maintenance on/off'], ['port-change', 'Port change'], ['domain-connect', 'Connect domain'], ['power', 'Restart / turn off server'],
+    ];
     async function testNotify() {
       nTest.value = { loading: true };
       nTest.value = await http.post('/settings/notify/test', { telegram_token: f.telegram_token, telegram_chat_id: f.telegram_chat_id, webhook_url: f.webhook_url }).catch((e) => ({ ok: false, error: e.message }));
@@ -183,7 +195,7 @@ export const SettingsPage = {
         toast(e.message, 'error');
       }
     }
-    return { s, f, saving, save, clearSecret, cfTest, testCf, ghTest, testGh, s3Test, s3Stat, testS3, uploadAll, nTest, testNotify, users, roles, isAdmin, setRole, newUser, addUser, delUser, pw, changePw, totp, totpCode, startTotp, enableTotp, totpOffPw, disableTotp, store, fmtDate };
+    return { s, f, saving, save, clearSecret, cfTest, testCf, ghTest, testGh, s3Test, s3Stat, testS3, uploadAll, nTest, testNotify, tgChats, findChats, JOB_CHOICES, users, roles, isAdmin, setRole, newUser, addUser, delUser, pw, changePw, totp, totpCode, startTotp, enableTotp, totpOffPw, disableTotp, store, fmtDate };
   },
   template: `
   <div v-if="!s" class="muted">Loading…</div>
@@ -247,15 +259,27 @@ export const SettingsPage = {
 
         <div class="card card-body form" ref="notify">
           <h3>Alerts (Telegram / webhook)</h3>
-          <p class="hint" style="margin:0">Get a message when a server goes down or comes back, after every switch, failover, failed backup, full disk, expiring SSL… Telegram: talk to <b>@BotFather</b> → <code>/newbot</code> to get a token, send your bot a message, then get your chat id from <b>@userinfobot</b> (for a group, add the bot to it and use the group id, it starts with -100).</p>
+          <p class="hint" style="margin:0">Get a message when a server goes down or comes back, after every switch, failover, failed backup, full disk, expiring SSL… Telegram: 1) talk to <b>@BotFather</b> → <code>/newbot</code> to get a token; 2) open your new bot and press <b>Start</b> (a bot can only message people who wrote to it first — for a group, add the bot to the group); 3) paste the token and click <b>Find my chat id</b>.</p>
           <div class="form-row">
             <div class="field"><label>Telegram bot token</label><input v-model="f.telegram_token" type="password" autocomplete="off" class="code" :placeholder="s.has_telegram_token ? 'saved (' + s.telegram_token_hint + ')' : '123456:ABC-DEF…'"></div>
-            <div class="field"><label>Telegram chat id</label><input v-model="f.telegram_chat_id" class="code" placeholder="123456789"></div>
+            <div class="field"><label>Telegram chat id</label><div class="row gap-8"><input v-model="f.telegram_chat_id" class="code" placeholder="123456789"><button class="btn" @click="findChats" :disabled="tgChats && tgChats.loading"><span v-if="tgChats && tgChats.loading" class="spinner"></span>Find my chat id</button></div></div>
+          </div>
+          <div v-if="tgChats && !tgChats.loading">
+            <div v-if="!tgChats.ok" class="result err">✖ {{ tgChats.error }}</div>
+            <div v-else-if="!tgChats.chats.length" class="alert alert-warn"><span class="alert-icon">⚠</span><span>No one has written to <b>@{{ tgChats.bot }}</b> in the last 24 hours. Open <a :href="'https://t.me/' + tgChats.bot" target="_blank" rel="noopener">t.me/{{ tgChats.bot }}</a>, press <b>Start</b> (or send any message; for a group, add the bot and send a message there), then click <b>Find my chat id</b> again.</span></div>
+            <div v-else class="small">Chats that wrote to <b>@{{ tgChats.bot }}</b> — click one to use it:
+              <div class="row gap-8 wrap mt-8"><button v-for="c in tgChats.chats" :key="c.id" class="btn btn-sm" :class="f.telegram_chat_id === c.id ? 'btn-primary' : ''" @click="f.telegram_chat_id = c.id">{{ c.name }} <span class="muted mono">{{ c.id }}</span> <span class="muted">({{ c.type }})</span></button></div>
+            </div>
           </div>
           <div class="field"><label>Webhook URL <span class="muted">(Discord, Slack or any URL that accepts JSON)</span></label>
             <div class="row gap-8"><input v-model="f.webhook_url" type="password" autocomplete="off" class="code" :placeholder="s.has_webhook_url ? 'saved (' + s.webhook_url_hint + ')' : 'https://discord.com/api/webhooks/…'"><button v-if="s.has_webhook_url" class="btn btn-ghost" @click="clearSecret('webhook_url')">Remove</button></div></div>
           <div class="field"><label>Dashboard address <span class="muted">(optional, adds a link to alerts)</span></label><input v-model="f.dashboard_url" class="code" placeholder="https://ops.example.com"></div>
-          <div class="row gap-8"><button class="btn" @click="testNotify">Send test message</button><button v-if="s.has_telegram_token" class="btn btn-ghost" @click="clearSecret('telegram_token')">Remove Telegram token</button></div>
+          <div class="field"><label>Message me when these jobs finish <span class="muted">(with the result and how long it took; save to apply)</span></label>
+            <div class="row gap-8 wrap"><label v-for="j in JOB_CHOICES" :key="j[0]" class="check" style="min-width:210px"><input type="checkbox" :value="j[0]" v-model="f.notify_jobs"><span class="check-text">{{ j[1] }}</span></label></div>
+            <label class="check mt-8"><input type="checkbox" v-model="f.notify_jobs_failed_only" :true-value="1" :false-value="0"><span class="check-text">Only when the job fails or is cancelled</span></label>
+            <span class="hint">Failed deploys, clones, backups… already send an alert; you get one message per job, never two.</span>
+          </div>
+          <div class="row gap-8"><button class="btn btn-primary" @click="save" :disabled="saving">Save</button><button class="btn" @click="testNotify">Send test message</button><button v-if="s.has_telegram_token" class="btn btn-ghost" @click="clearSecret('telegram_token')">Remove Telegram token</button></div>
           <div v-if="nTest && !nTest.loading" class="result" :class="nTest.ok ? 'ok' : 'err'">{{ nTest.ok ? '✔ Sent via ' + nTest.sent.join(' + ') : '✖ ' + (nTest.error || nTest.errors.join('; ')) }}</div>
         </div>
 
