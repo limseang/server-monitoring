@@ -80,3 +80,21 @@ export async function createRecord(zoneId, { type = 'A', name, content, proxied 
 export async function deleteRecord(zoneId, recordId) {
   await cfFetch('DELETE', `/zones/${enc(zoneId)}/dns_records/${enc(recordId)}`);
 }
+
+/** A zone setting such as "ssl" (off / flexible / full / strict) or "always_use_https" (on / off). */
+export async function getZoneSetting(zoneId, name) {
+  return (await cfFetch('GET', `/zones/${enc(zoneId)}/settings/${enc(name)}`)).result?.value;
+}
+
+export async function setZoneSetting(zoneId, name, value) {
+  return (await cfFetch('PATCH', `/zones/${enc(zoneId)}/settings/${enc(name)}`, { body: { value } })).result?.value;
+}
+
+/**
+ * Have Cloudflare's Origin CA sign a certificate request (CSR) — the certificate for HTTPS between
+ * Cloudflare and a server. Trusted by Cloudflare only (not browsers); valid for 15 years.
+ * Token permission: Zone · SSL and Certificates · Edit.
+ */
+export async function createOriginCert(csr, hostnames, days = 5475) {
+  return (await cfFetch('POST', '/certificates', { body: { csr, hostnames, request_type: 'origin-rsa', requested_validity: days } })).result;
+}

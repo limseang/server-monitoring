@@ -35,7 +35,12 @@ export async function api(method, url, body) {
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   const data = isJson ? await res.json().catch(() => null) : await res.text();
   if (res.status === 401 && !url.startsWith('/auth/')) store.user = null;
-  if (!res.ok) throw new ApiError((data && data.error) || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new ApiError((data && data.error) || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 

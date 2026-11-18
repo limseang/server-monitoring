@@ -20,6 +20,8 @@ import { setupDbServer, moveDatabase, sharedDbDep, refreshDbFirewall } from './d
 import { ensureLocal } from './backupstore.js';
 import { runOsUpgrade } from './osupgrade.js';
 import { closeForSwitch, openForSwitch, dbAccessOn } from './dbaccess.js';
+import { installOriginCert, certHostnames } from './origincert.js';
+import { sslStatus, sslProblems, applySsl } from './cfssl.js';
 
 function mustProject(id) {
   const p = getProject(id);
@@ -637,6 +639,47 @@ defineJob('clone', async (ctx, p) => {
   } finally {
     bus.emit('state', { serverId: dst?.id });
   }
+});
+
+/* --------------------------------------------------------------------------- Cloudflare Origin Certificate */
+defineJob('origin-cert', async (ctx, params) => {
+  const project = mustProject(ctx.job.project_id);
+  const hostnames = certHostnames(project);
+  if (!hostnames.length) throw new Error('Link the Cloudflare DNS records to this project first');
+  const deps = deploymentsOf(project.id);
+  if (!deps.length) throw new Error('This project has no servers yet');
+  const done = [];
+  const failed = [];
+  for (const d of deps) {
+    const server = getServer(d.server_id);
+    ctx.step(`Origin Certificate on ${d.server_name}`);
+    try {
+      const r = await installOriginCert(ctx, project, d, server, hostnames);
+      done.push({ name: d.server_name, ...r });
+    } catch (e) {
+      if (ctx.signal?.aborted) throw e;
+      ctx.warn(`${d.server_name}: ${e.message}`);
+      failed.push(`${d.server_name}: ${e.message}`);
+    }
+  }
+  const msg = `${project.name}: Cloudflare Origin Certificate installed on ${done.map((x) => `${x.name}${x.where === 'files' ? ' (files only — set up your web server)' : ''}`).join(', ') || 'no server'}`;
+  if (done.length) logEvent(failed.length ? 'warn' : 'success', msg, { projectId: project.id, jobId: ctx.id, user: ctx.user });
+  if (params?.strict && !failed.length) {
+    ctx.step('Switch Cloudflare SSL to "Full (strict)"');
+    const st = await sslStatus(project);
+    const problems = sslProblems(st, 'strict');
+    if (problems.length) {
+      ctx.warn(`SSL mode NOT changed — strict would break: ${problems.join('; ')}`);
+    } else {
+      const out = await applySsl(project, { mode: 'strict', alwaysHttps: true });
+      for (const z of out) {
+        const zn = st.zones.find((x) => x.zone_id === z.zone_id)?.zone_name || z.zone_id;
+        ctx.log(`Cloudflare SSL of ${zn}: ${z.before} → strict, Always Use HTTPS on`);
+        logEvent('info', `${project.name}: Cloudflare SSL of ${zn}: ${z.before} → strict, Always Use HTTPS on`, { projectId: project.id, jobId: ctx.id, user: ctx.user });
+      }
+    }
+  }
+  if (failed.length) throw new Error(`Not installed on ${failed.length} server${failed.length === 1 ? '' : 's'}: ${failed.join('; ')}`);
 });
 
 /* --------------------------------------------------------------------------- DNS (fix drift) */
