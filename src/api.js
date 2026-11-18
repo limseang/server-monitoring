@@ -44,7 +44,6 @@ import { detectHostApps, publicHostApps, hostAppScript, hostAppLogsScript } from
 import { PROVIDERS, CURRENCIES, isDate, localDate, parseRemindDays, money } from './billingcalc.js';
 import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, remindDays, paymentsOf, recentPayments, recordPayment, deletePayment, checkBilling } from './billing.js';
 import { dbAccessOf, dbAccessProblem, dbAccessIssues, dbDeps, zoneOf, DEFAULT_PORTS, PROXY_IMAGE } from './ops/dbaccess.js';
-import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron } from './monitor.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron, nextCleanup } from './monitor.js';
 import { previewCleanup, cleanupOptions, cleanupLabel, getSchedule, setSchedule } from './ops/cleanup.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
