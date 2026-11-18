@@ -223,6 +223,7 @@ If another app connects **straight to the database** (its `.env` has `DB_HOST=` 
 How it works and what it protects:
 
 - On every server of the project, a tiny proxy container (`sb-dbaccess-<id>`, image `alpine/socat`) publishes the database on the port. Your `docker-compose.yml` is not changed.
+- If your database container **already publishes its port** (e.g. `ports: ["3306:3306"]` — then it is open to the whole internet!), Switchboard uses that port instead of a proxy and puts the firewall on it. Set the same port in the tab; a different one is refused with a message telling you which port to use. The port is closed over IPv6 too.
 - A firewall allow-list (iptables `DOCKER-USER`, because Docker ignores ufw) lets **only your IPs** in. Your own containers still reach the database as before.
 - **Only the live server is open.** Standbys are closed, so the other service can never write into a database that is about to be overwritten.
 - **When you switch with a database copy**, the old server is closed **before** the copy starts, so nothing written from outside gets lost; after DNS moves, the new server opens. Your other service gets a few seconds of "can't connect" during the switch — Laravel retries on the next request. Run `php artisan queue:restart` there after a switch so long-running workers connect to the new server.
