@@ -71,22 +71,77 @@ export const Modal = {
     </div>`,
 };
 
+/** Only one dropdown is open at a time across the whole page. */
+const openMenu = ref(null);
+
+/**
+ * Dropdown button. The panel is moved to <body> (so cards, tables and scroll
+ * boxes never clip or cover it), placed with fixed coordinates under the
+ * button, and flipped/shifted to stay on screen. Closes on a tap/click
+ * outside (pointer events, so it works on iPad), Escape, picking an item,
+ * or when another menu opens.
+ */
 export const MenuBtn = {
   props: { label: { type: String, default: '⋯' }, align: { type: String, default: 'right' }, small: Boolean },
-  setup() {
-    const open = ref(false);
-    const close = () => (open.value = false);
-    const toggle = () => {
-      open.value = !open.value;
-      if (open.value) setTimeout(() => document.addEventListener('click', close, { once: true }));
+  setup(props) {
+    const id = Symbol('menu');
+    const open = computed(() => openMenu.value === id);
+    const btn = ref(null);
+    const pop = ref(null);
+    const pos = ref({ top: '0px', left: '0px', visibility: 'hidden' });
+    const up = ref(false);
+
+    const place = () => {
+      if (!open.value || !btn.value || !pop.value) return;
+      const b = btn.value.getBoundingClientRect();
+      const vw = document.documentElement.clientWidth, vh = window.innerHeight, m = 8;
+      const w = pop.value.offsetWidth, h = pop.value.offsetHeight;
+      let left = props.align === 'left' ? b.left : b.right - w;
+      left = Math.max(m, Math.min(left, vw - w - m));
+      let top = b.bottom + 6;
+      up.value = top + h > vh - m && b.top - 6 - h >= m; // not enough room below → open upwards
+      if (up.value) top = b.top - 6 - h;
+      pos.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px`, maxHeight: `${vh - 2 * m}px` };
     };
-    onUnmounted(() => document.removeEventListener('click', close));
-    return { open, toggle };
+    const close = () => { if (open.value) openMenu.value = null; };
+    const toggle = () => {
+      openMenu.value = open.value ? null : id;
+      if (open.value) { pos.value = { ...pos.value, visibility: 'hidden' }; nextTick(place); }
+    };
+    const onDown = (e) => {
+      if (!open.value) return;
+      if (pop.value?.contains(e.target) || btn.value?.contains(e.target)) return;
+      close();
+    };
+    const onKey = (e) => { if (open.value && e.key === 'Escape') { close(); btn.value?.focus(); } };
+    const onPick = (e) => {
+      const item = e.target.closest('button, a');
+      if (item && !item.disabled) close();
+    };
+    const onMove = () => open.value && place();
+    onMounted(() => {
+      document.addEventListener('pointerdown', onDown, true);
+      document.addEventListener('keydown', onKey);
+      window.addEventListener('resize', onMove);
+      window.addEventListener('scroll', onMove, true);
+    });
+    onUnmounted(() => {
+      close();
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onMove);
+      window.removeEventListener('scroll', onMove, true);
+    });
+    return { open, toggle, btn, pop, pos, up, onPick };
   },
   template: `
     <div class="menu">
-      <button class="btn" :class="small ? 'btn-ghost btn-sm' : ''" @click.stop="toggle" :aria-expanded="open">{{ label }}</button>
-      <div v-if="open" class="menu-pop" :class="'menu-' + align"><slot /></div>
+      <button ref="btn" class="btn" :class="[small ? 'btn-ghost btn-sm' : '', { 'is-open': open }]" @click="toggle" aria-haspopup="menu" :aria-expanded="open">{{ label }}</button>
+      <teleport to="body">
+        <transition name="menu-fade">
+          <div v-if="open" ref="pop" class="menu-pop" :class="{ 'menu-up': up }" :style="pos" role="menu" @click="onPick"><slot /></div>
+        </transition>
+      </teleport>
     </div>`,
 };
 

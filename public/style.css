@@ -308,7 +308,9 @@ tr.clickable { cursor: pointer; }
 .tab:hover { color: var(--text); }
 .tab.on { color: var(--text); border-bottom-color: var(--accent); }
 .menu { position: relative; display: inline-block; }
-.menu-pop { position: absolute; top: calc(100% + 6px); min-width: 230px; background: var(--panel); border: 1px solid var(--border-2); border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 5px; z-index: 50; }
+/* The panel is teleported to <body> and placed with fixed coordinates by MenuBtn. */
+.menu-pop { position: fixed; top: 0; left: 0; min-width: 230px; max-width: calc(100vw - 16px); overflow-y: auto; overscroll-behavior: contain; background: var(--panel); border: 1px solid var(--border-2); border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 5px; z-index: 150; transform-origin: top right; }
+.menu-pop.menu-up { transform-origin: bottom right; }
 .menu-right { right: 0; }
 .menu-left { left: 0; }
 .menu-item { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 7px 10px; border-radius: 6px; font: inherit; font-size: 13.5px; cursor: pointer; }
@@ -569,7 +571,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .tab.on .ico { color: var(--accent); }
 
 /* menus, modals, toasts */
-.menu-pop { border-radius: 12px; padding: 6px; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(16px); }
+.menu-pop { border-radius: 12px; padding: 6px; background: var(--panel); } /* solid: never see-through */
 .menu-item { border-radius: 8px; padding: 8px 11px; }
 .modal-backdrop { background: rgba(3, 4, 8, 0.66); backdrop-filter: blur(6px); }
 .modal { border-radius: 20px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 30%), var(--panel); }
@@ -577,7 +579,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .modal-head h3 { font-size: 17px; }
 .modal-body { padding: 4px 24px 20px; }
 .modal-foot { padding: 16px 24px; }
-.toast { border-radius: 12px; backdrop-filter: blur(12px); background: color-mix(in srgb, var(--panel) 92%, transparent); }
+.toast { border-radius: 12px; background: var(--panel); }
 .alert { border-radius: 12px; padding: 12px 14px; }
 
 /* page hero (server page) */
@@ -630,7 +632,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .tchart-y span { position: absolute; left: 0; transform: translateY(-50%); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tchart-x { position: absolute; left: 0; right: 0; bottom: 0; height: 18px; }
 .tchart-x span { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; }
-.tchart-tip { position: absolute; top: 4px; transform: translateX(-50%); background: color-mix(in srgb, var(--panel-2) 95%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--border-2); border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 190px; pointer-events: none; box-shadow: var(--shadow); z-index: 5; }
+.tchart-tip { position: absolute; top: 4px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 190px; pointer-events: none; box-shadow: var(--shadow); z-index: 5; }
 .tchart-tip-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 3px; color: var(--text-2); }
 .uchart-band { fill: var(--red); opacity: 0.1; }
 .uchart-band-key { background: color-mix(in srgb, var(--red) 25%, transparent) !important; }
@@ -661,3 +663,123 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .folder-row:hover { background: var(--accent-bg); }
 .folder-list > .hint { padding: 8px 10px; }
 .folder-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* =========================================================================
+   Older Safari (iPad on iOS 15 / Safari < 16.2) has no color-mix(). A rule
+   that uses it is thrown away there, which made menus see-through and gave
+   the live card a black border. Plain stand-ins for the rules that matter.
+   ========================================================================= */
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+  .sidebar { background: var(--bg-2); }
+  .tabs { background: var(--panel); }
+  input[type='text'], input[type='password'], input[type='number'], input[type='url'], input[type='time'], input[type='date'], input:not([type]), select, textarea { background: var(--bg-2); }
+  input::placeholder, textarea::placeholder { color: var(--muted); }
+  .fieldset { background: transparent; }
+  .table th { background: var(--panel-2); }
+  .table tbody tr:hover td { background: var(--hover); }
+  .proj-dep.active { background: var(--green-bg); }
+  .dep-card.dep-live { border-color: var(--green); box-shadow: var(--card-shadow); }
+  .tile-bad, .danger-zone, .btn-danger, .alert-error { border-color: var(--red); }
+  .alert-warn { border-color: var(--amber); }
+  .alert-success, .detect-box { border-color: var(--green); }
+  .btn:hover { border-color: var(--border-2); }
+  .power-card:hover { border-color: var(--accent); }
+  .power-card.danger:hover { border-color: var(--red); }
+  .port-chip, .domain-preview { border-color: var(--border-2); }
+  .badge { box-shadow: none; }
+  .ub-ok { background: var(--green); }
+  .uchart-band-key { background: var(--red-bg) !important; }
+}
+.sidebar { -webkit-backdrop-filter: blur(14px); }
+.modal-backdrop { -webkit-backdrop-filter: blur(6px); }
+
+/* =========================================================================
+   Touch (iPad / phone): bigger tap targets, no double-tap zoom delay, no
+   input zoom-in on focus (iOS zooms when the font is under 16px).
+   ========================================================================= */
+button, a, .tab, .menu-item, .chip, .target, label.check { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+@media (pointer: coarse) {
+  .btn { height: 40px; }
+  .btn-sm { height: 38px; padding: 0 12px; }
+  .btn-xs { height: 34px; }
+  .icon-btn { width: 40px; height: 40px; }
+  .menu-item { padding: 11px 12px; font-size: 14.5px; }
+  .tab { padding: 10px 15px; }
+  .nav-link { padding: 10px 12px; }
+  .seg button { padding: 8px 13px; }
+  .chip { padding: 6px 12px; }
+  .check input { width: 20px; height: 20px; margin-top: 1px; }
+  input[type='text'], input[type='password'], input[type='number'], input[type='url'], input[type='time'], input[type='date'], input:not([type]), select, textarea { font-size: 16px; height: 42px; }
+  textarea { height: auto; }
+  .logs-bar select, .logs-bar input { height: 40px; }
+}
+
+/* Narrow screens: the sidebar becomes one sticky top bar (never wraps). */
+@media (max-width: 980px) {
+  .sidebar { position: sticky; top: 0; z-index: 90; flex-wrap: nowrap; gap: 2px; padding: 8px 12px; overflow-x: auto; scrollbar-width: none; border-right: 0; border-bottom: 1px solid var(--border); }
+  .sidebar::-webkit-scrollbar { display: none; }
+  .sidebar > * { flex: none; }
+  .brand { padding: 0 8px 0 0; }
+  .brand > span:last-child, .sidebar-foot .avatar { display: none; } /* logo only, so every link fits */
+  .nav-link { white-space: nowrap; }
+  .sidebar-foot { margin-left: auto; padding-left: 8px; }
+}
+@media (max-width: 640px) {
+  .nav-link { font-size: 0; gap: 0; } /* icons only; the text stays for screen readers */
+  .nav-link .ico { width: 20px; height: 20px; }
+  .nav-link .count { font-size: 11px; margin-left: 4px; }
+  .main { padding: 16px 16px 60px; }
+  h1 { font-size: 22px; }
+  .dep-grid { grid-template-columns: minmax(0, 1fr); }
+  .toasts { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+  .modal-backdrop { padding: 12px; }
+  .modal-head, .modal-body, .modal-foot { padding-left: 16px; padding-right: 16px; }
+}
+
+/* =========================================================================
+   Motion — short and purposeful. Turned off for prefers-reduced-motion by
+   the rule further up.
+   ========================================================================= */
+:root { --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1); }
+.menu-fade-enter-active { transition: opacity 0.15s var(--ease-out), transform 0.15s var(--ease-out); }
+.menu-fade-leave-active { transition: opacity 0.1s ease-in, transform 0.1s ease-in; }
+.menu-fade-enter-from, .menu-fade-leave-to { opacity: 0; transform: translateY(-4px) scale(0.96); }
+.menu-up.menu-fade-enter-from, .menu-up.menu-fade-leave-to { transform: translateY(4px) scale(0.96); }
+.btn.is-open { background: var(--hover); border-color: var(--border-2); }
+
+/* dialogs */
+.modal-backdrop { animation: fadein 0.16s ease-out; }
+.modal { animation: pop 0.18s var(--ease-out); }
+@keyframes pop { from { transform: translateY(8px) scale(0.96); opacity: 0; } }
+@keyframes fadein { from { opacity: 0; } }
+
+/* toasts slide in from the right */
+.toast { animation: toastin 0.24s var(--ease-out); transition: transform 0.15s, box-shadow 0.15s; }
+@keyframes toastin { from { transform: translateX(32px); opacity: 0; } }
+@media (max-width: 640px) { @keyframes toastin { from { transform: translateY(16px); opacity: 0; } } }
+
+/* tabs: the active pill eases in, and the new tab's content fades up */
+.tab { transition: background 0.2s var(--ease-out), color 0.2s, box-shadow 0.2s; }
+.tab.on { animation: tabon 0.22s var(--ease-out); }
+@keyframes tabon { from { box-shadow: 0 0 0 0 transparent; background: transparent; } }
+.tabs ~ * { animation: fadeup 0.22s var(--ease-out); }
+@keyframes fadeup { from { opacity: 0; transform: translateY(6px); } }
+
+/* pages fade in on navigation */
+.main > * { animation: fadeup 0.2s var(--ease-out); }
+
+/* cards lift a little under a mouse — not on touch, where hover sticks */
+@media (hover: hover) and (pointer: fine) {
+  .dep-card:hover, .tile:hover { transform: translateY(-2px); border-color: var(--border-2); box-shadow: var(--card-shadow), 0 16px 40px rgba(0, 0, 0, 0.22); }
+  .dep-card.dep-live:hover { box-shadow: var(--card-shadow), 0 16px 40px rgba(52, 211, 153, 0.12); }
+  .toast:hover { transform: translateX(-3px); }
+}
+@media (hover: none) {
+  a.server-card:hover, .proj-card:hover, .power-card:hover, .tile:hover { transform: none; }
+}
+.btn:active:not(:disabled), .tab:active, .menu-item:active:not(:disabled) { transform: scale(0.97); }
+.menu-item { transition: background 0.12s; }
+/* tabs wrap onto a second line instead of hiding off the edge (phones still scroll) */
+@media (min-width: 641px) { .tabs, .tabs:is(*) { flex-wrap: wrap; overflow-x: visible; } }
+/* cards side by side in a grid line up (".card + .card" spacing is for stacked cards) */
+.dep-grid > .card + .card, .grid > .card + .card, .power-grid > .card + .card { margin-top: 0; }
