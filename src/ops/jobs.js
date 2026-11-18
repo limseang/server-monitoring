@@ -6,13 +6,14 @@ import { defineJob } from '../jobs.js';
 import { getProject, getServer, getDeployment, deploymentsOf } from '../models.js';
 import { probe } from '../health.js';
 import { fmtBytes, sleep } from '../util.js';
-import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot } from './remote.js';
+import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, gitHint } from './remote.js';
 import { syncDatabase, backupDeployment, importFromFile, countTables, backupAbsPath, pruneBackups, requireDb } from './database.js';
 import { syncFiles, parseSyncPaths } from './files.js';
 import { setMaintenance } from './app.js';
 import { pointDnsTo, purgeProjectCache, refreshDnsState, dnsTargetProblem } from './dns.js';
 import { runClone } from './clone.js';
 import { hostAppScript } from './hostapps.js';
+import { ownContainerId } from './wipe.js';
 import { checkProjectNow, collectMetrics } from '../monitor.js';
 import { isLb, addMember, drainMember, moveTraffic, whileDrained, enableLb, disableLb, applyLb, saveRuntime } from './lb.js';
 import { setupDbServer, moveDatabase, sharedDbDep, refreshDbFirewall } from './dbserver.js';
@@ -348,7 +349,17 @@ defineJob('deploy', async (ctx, p) => {
           // A deploy started from GitHub (pull mode) passes the exact commit, like the runner does.
           const env = /^[0-9a-f]{7,40}$/.test(String(p.commit || '')) ? `export SB_COMMIT=${p.commit}; export SB_BRANCH=${shq(project.git_branch || 'main')}\n` : '';
           if (env) ctx.log(`Commit ${p.commit.slice(0, 7)} (${project.git_branch})`);
-          await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true }), { timeout: 60 * 60000 });
+          // git never waits for a login/passphrase/host-key answer or a dead network (it fails with a hint instead).
+          try {
+            await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true, prelude: GIT_NO_WAIT }), { timeout: 60 * 60000 });
+          } catch (e) {
+            const hint = gitHint(`${e.result?.stderr || ''}\n${e.result?.stdout || ''}\n${e.message}`);
+            if (hint) {
+              ctx.warn(hint);
+              e.message = `${e.message} — ${hint}`;
+            }
+            throw e;
+          }
         } finally {
           conn.end();
         }
@@ -405,17 +416,32 @@ defineJob('command', async (ctx, p) => {
 defineJob('container', async (ctx, p) => {
   const server = getServer(Number(p.server));
   if (!server) throw new Error('Server not found');
-  const verbs = { restart: 'restarted', stop: 'stopped', start: 'started' };
+  const verbs = { restart: 'restarted', stop: 'stopped', start: 'started', rm: 'deleted' };
   if (!verbs[p.action]) throw new Error('Unknown container action');
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(String(p.container || ''))) throw new Error('Invalid container name');
-  ctx.step(`docker ${p.action} ${p.container} on ${server.name}`);
+  const D = dockerBin(server);
   const conn = await connectTo(ctx, server);
   try {
-    await runRemote(ctx, conn, `${dockerBin(server)} ${p.action} ${shq(p.container)}`, { timeout: 180000 });
+    if (p.action === 'rm') {
+      ctx.step(`Delete container ${p.container} on ${server.name} (docker rm -f — its data volumes are kept)`);
+      const info = await runRemote(ctx, conn, `${D} inspect -f '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}}' ${shq(p.container)}`, { quiet: true, timeout: 30000 });
+      const [id, project] = info.stdout.trim().split(' ');
+      const me = ownContainerId();
+      if (me && (id === me || (me.length === 12 && id.startsWith(me)))) throw new Error(`${p.container} is this Switchboard itself — it can't delete its own container`);
+      await runRemote(ctx, conn, `${D} rm -f ${shq(p.container)}`, { timeout: 180000 });
+      if (project) ctx.log(`It belonged to the Docker Compose project "${project}": "docker compose up" (or Deploy) creates it again. To remove it for good, take the service out of its docker-compose.yml.`);
+    } else {
+      ctx.step(`docker ${p.action} ${p.container} on ${server.name}`);
+      await runRemote(ctx, conn, `${D} ${p.action} ${shq(p.container)}`, { timeout: 180000 });
+    }
   } finally {
     conn.end();
   }
-  logEvent('info', `${server.name}: container ${p.container} ${verbs[p.action]}`, { serverId: server.id, jobId: ctx.id, user: ctx.user });
+  logEvent(p.action === 'rm' ? 'warn' : 'info', `${server.name}: container ${p.container} ${verbs[p.action]}`, { serverId: server.id, jobId: ctx.id, user: ctx.user });
+  if (p.action === 'rm') {
+    await collectMetrics(getServer(server.id)).catch(() => {});
+    bus.emit('state', { serverId: server.id });
+  }
 });
 
 /* --------------------------------------------------------------------------- MAINTENANCE */

@@ -5,6 +5,7 @@ import { LbSetupDialog, DbServerDialog, ScaleOutDialog, OsUpgradeDialog } from '
 import { TemplateProjectDialog, StagingDialog } from './cicd.js';
 import { PowerDialog, PasswordDialog, PortDialog, DomainDialog } from './serverctl.js';
 import { RemoveDeploymentDialog, DeleteProjectDialog, ResetServerDialog, ReinstallDialog } from './wipedialogs.js';
+import { CopyProjectDialog } from './copydialog.js';
 
 /* ======================================================================= SERVER */
 export const ServerDialog = {
@@ -834,6 +835,7 @@ export const DIALOGS = {
   switch: SwitchDialog,
   sync: SyncDialog,
   clone: CloneDialog,
+  'project-copy': CopyProjectDialog,
   'server-reset': ResetServerDialog,
   'server-reinstall': ReinstallDialog,
   'remove-deployment': RemoveDeploymentDialog,

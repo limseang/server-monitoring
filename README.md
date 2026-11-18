@@ -33,7 +33,7 @@ Built for people who run apps (Laravel, Node/Nuxt, static sites…) in **Docker*
 | **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. |
 | **Deploys & CI/CD** | Deploy button, or **GitHub Actions with self-hosted runners**: push → tests → deploy server by server. **Staging** copies and **pull-request previews**. |
 | **New apps** | Start a new **Laravel / Node / static** app from a template: Docker, database, web proxy, DNS and a GitHub repo, set up for you. |
-| **More** | Load balancing (own nginx or Cloudflare), shared database server, clone a whole server, OS upgrades, apps outside Docker (PM2, systemd), users with roles (admin / developer / viewer), 2FA, audit log. |
+| **More** | Load balancing (own nginx or Cloudflare), shared database server, clone a whole server or copy one project to another server (on other ports if you like), OS upgrades, apps outside Docker (PM2, systemd), users with roles (admin / developer / viewer), 2FA, audit log. |
 
 ---
 
@@ -117,6 +117,8 @@ If a secret ever leaks: change the server passwords / SSH keys, database passwor
 | See what's happening on a server | Servers → a server → **Traffic** and **Logs** tabs. |
 | Point a subdomain at an app | Servers → a server → **Connect domain** (or Ports & domains tab). |
 | Deploy | Server card → **Deploy**, or push to GitHub when CI/CD is set up. |
+| Run a project on another server too | Project → server card **⋯** → **Copy to another server…** (or Servers → a server → **More → Copy a project to another server…**). Pick the server and, if you like, new ports. **Check both servers** shows what will be copied first. |
+| Delete a broken container (e.g. one stuck restarting) | Servers → a server → **Containers** tab → **Delete** (type its name to confirm). Data volumes are kept; a live project's app/database container is refused. A compose container comes back on the next `docker compose up` / Deploy — take it out of `docker-compose.yml` to remove it for good. |
 | Take a project off one server | Project → server card **⋯** → **Remove from project…** → "Also delete it from the server" (backs up the database first). |
 | Delete a project for good | Project → Settings → **Delete project** → "Also delete it from all servers". A final DB backup is kept in `backups/_deleted/`. |
 | Clean a server but keep its OS | Servers → a server → **More → Reset server…**. **Scan** shows what will be deleted first. |
@@ -178,6 +180,7 @@ Servers → a server:
 - **Load balancing** (project → Traffic tab): your own nginx load balancer or Cloudflare Load Balancing; zero-downtime switches and rolling deploys.
 - **Shared database server**: MySQL / MariaDB / PostgreSQL + Redis on one server, reachable only by your app servers.
 - **Clone a server** (server → Clone): Docker, images, compose stacks with volumes and databases, host setup (packages, users, cron, nginx, certificates, firewall…). "Scan" shows what will be copied first.
+- **Copy one project to another server** (project → server card ⋯ → Copy to another server, or server → More): only that project — its Docker Compose stack (folder, exact images, volumes with the database, paused while copied for an exact snapshot) and/or its apps outside Docker (PM2 apps, systemd services, its nginx server blocks, the app folder, the user that runs it and its Node.js). Each port the project uses is listed: keep it, or type a new one. A port already used on the target (or 22) is refused. A new port is written into the copied `docker-compose.yml` / `.env`, the PM2 env (`PORT`) or systemd `Environment=`, nginx `proxy_pass`/`listen` and Switchboard's web proxy site, so the copy really runs there. The target is then added to the project as a standby (traffic is not moved). Nothing on the target is overwritten unless you tick **Replace**. Note: the project's health check uses one port for every server — if you change that port, check through the domain (port 80/443) instead.
 - **Upgrade OS**: Ubuntu LTS / Debian, one release at a time, containers restarted and health-checked afterwards.
 - **Reset a server** (server → More → Reset server): deletes every container, volume, image and compose folder, plus (optional) PM2/systemd apps, nginx sites and crontabs, GitHub runners and Switchboard's files. Keeps the OS, users, SSH and Docker, and saves the old configs to `/root/switchboard-reset-<date>.tar.gz`. Refused while the server is live for a project, a load balancer, a database server, or runs Switchboard itself.
 - **Reinstall OS** (server → More → Reinstall OS): erases the **whole disk** and installs a fresh Debian 12/13 or Ubuntu 22.04/24.04/26.04 over SSH, on any provider (DigitalOcean, AWS, home servers). Uses the open-source [bin456789/reinstall](https://github.com/bin456789/reinstall) tool pinned to one commit (`REINSTALL_REF` to change it). Afterwards: user root with the same SSH key or password, same SSH port, new host key pinned, Docker installed. Takes 5–20 minutes. If it is cancelled before the reboot, the prepared installer is cancelled again. If the installer can't bring the network up (rare), you need the provider's web console (or a screen and keyboard for a home server) — try it on a spare server first.
@@ -228,7 +231,7 @@ The `dev/` folder has a complete **test lab** — fake servers, fake Cloudflare,
 ./dev/setup.sh                       # starts the lab → http://localhost:8090 (admin / admin-password-123)
 node dev/e2e.mjs                     # switch, copy, backup/restore, failover, alerts, deploy
 node dev/e2e-extra.mjs               # PostgreSQL, MariaDB, failed import rollback
-./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs)
+./dev/clone-setup.sh && node dev/e2e-clone.mjs   # clone a server (also e2e-copy-project.mjs, e2e-lb.mjs, e2e-os.mjs, e2e-wipe.mjs, e2e-reinstall.mjs)
 ./dev/ci-setup.sh && node dev/e2e-ci.mjs         # templates, CI/CD, staging, previews (also e2e-server.mjs, e2e-traffic.mjs)
 docker compose -f dev/docker-compose.yml --profile s3 up -d s3 && node dev/e2e-s3.mjs   # S3 backups
 docker compose -f dev/docker-compose.yml down -v # remove the lab

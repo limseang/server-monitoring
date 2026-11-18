@@ -107,9 +107,23 @@ export const ServerPage = {
     const edit = () => openDialog('server', { server: s.value });
     const command = () => openDialog('command', { server: s.value });
     const clone = () => openDialog('clone', { server: s.value });
+    const copyProject = () => openDialog('project-copy', { server: s.value });
     const osUpgrade = () => openDialog('os-upgrade', { server: s.value });
     const logs = (c) => openDialog('logs', { server: s.value, container: c.name });
     async function action(c, act) {
+      if (act === 'rm') {
+        const ok = await confirmBox({
+          title: `Delete container ${c.name}?`,
+          message:
+            'The container is removed (docker rm -f), also when it is restarting or running. Its data volumes are kept.' +
+            (c.project ? `\n\nIt is part of the compose project "${c.project}": "docker compose up" or a Deploy creates it again. To remove it for good, take the service out of docker-compose.yml.` : ''),
+          confirmText: 'Delete container',
+          danger: true,
+          typeToConfirm: c.name,
+        });
+        if (ok) runJob(http.post(`/servers/${props.id}/containers/${encodeURIComponent(c.name)}/rm`, { confirm: c.name }));
+        return;
+      }
       if (act !== 'start') {
         const ok = await confirmBox({ title: `${act === 'stop' ? 'Stop' : 'Restart'} ${c.name}?`, message: c.project ? `Part of compose project "${c.project}".` : '', confirmText: act === 'stop' ? 'Stop' : 'Restart', danger: act === 'stop' });
         if (!ok) return;
@@ -141,7 +155,7 @@ export const ServerPage = {
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -174,6 +188,7 @@ export const ServerPage = {
         <menu-btn label="More ▾">
           <button class="admin-only menu-item" @click="edit">Edit server</button>
           <button class="admin-only menu-item" @click="clone">Clone to another server…</button>
+          <button class="admin-only menu-item" @click="copyProject">Copy a project to another server…</button>
           <button class="admin-only menu-item" @click="osUpgrade">Upgrade OS (Ubuntu / Debian)…</button>
           <button class="admin-only menu-item" @click="resetKey">Reset SSH host key</button>
           <div class="menu-sep"></div>
@@ -241,7 +256,8 @@ export const ServerPage = {
             <td class="actions"><button class="btn btn-xs" @click="logs(c)">Logs</button>
               <button class="admin-only btn btn-xs" @click="action(c, 'restart')">Restart</button>
               <button v-if="c.state === 'running'" class="admin-only btn btn-xs btn-danger" @click="action(c, 'stop')">Stop</button>
-              <button v-else class="admin-only btn btn-xs" @click="action(c, 'start')">Start</button></td>
+              <button v-else class="admin-only btn btn-xs" @click="action(c, 'start')">Start</button>
+              <button class="admin-only btn btn-xs btn-danger" @click="action(c, 'rm')">Delete</button></td>
           </tr></tbody>
         </table>
         <div v-else class="empty">{{ m ? 'No containers.' : 'No data yet.' }}</div>

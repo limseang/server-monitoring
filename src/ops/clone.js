@@ -198,7 +198,7 @@ async function scanDocker(ctx, conn, server, scan) {
 }
 
 /** Sizes (bytes) of paths on a server, via du. */
-async function sizes(ctx, conn, server, paths) {
+export async function sizes(ctx, conn, server, paths) {
   const res = {};
   if (!paths.length) return res;
   const out = await root(ctx, conn, server, `du -sk -- ${paths.map(shq).join(' ')} 2>/dev/null; true`, { timeout: 600000 });
@@ -497,7 +497,7 @@ for p in docker-compose-plugin docker-buildx-plugin; do apt-get install -y -q "$
   return conn;
 }
 
-async function installPackages(ctx, conn, server, packages) {
+export async function installPackages(ctx, conn, server, packages) {
   if (!packages.length) {
     ctx.log('No extra packages to install');
     return;
@@ -515,7 +515,7 @@ async function installPackages(ctx, conn, server, packages) {
   }
 }
 
-async function copyUsers(ctx, conn, server, srcScan, dstScan) {
+export async function copyUsers(ctx, conn, server, srcScan, dstScan) {
   const haveGroups = new Set(dstScan.groups.map((g) => g.name));
   const haveUsers = new Set(dstScan.users.map((u) => u.name));
   const script = [];
@@ -571,7 +571,7 @@ async function copyCrontabs(ctx, conn, server, srcScan) {
 }
 
 /** Copy host files (configs + extra paths) with owner names kept. sudoers.d is validated first. */
-async function copyHostFiles(ctx, { src, dst, srcConn, dstConn, paths, quiet = false, title }) {
+export async function copyHostFiles(ctx, { src, dst, srcConn, dstConn, paths, quiet = false, title }) {
   const list = [...new Set(paths)].filter((p) => p.startsWith('/') && p !== '/');
   if (!list.length) return false;
   if (!quiet) ctx.step(title || `Copy host files to ${dst.name}: ${list.join(', ')}`);
@@ -682,7 +682,7 @@ async function enableFirewall(ctx, conn, server) {
   }
 }
 
-async function copyImages(ctx, { src, dst, srcConn, dstConn, plan }) {
+export async function copyImages(ctx, { src, dst, srcConn, dstConn, plan }) {
   const D1 = rootDocker(src);
   const D2 = rootDocker(dst);
   if (plan.toCopy.length) {
@@ -746,16 +746,40 @@ async function removeStack(ctx, conn, server, project) {
   await root(ctx, conn, server, `ids=$(${D} ps -aq --filter label=com.docker.compose.project=${shq(project)}); [ -n "$ids" ] && ${D} rm -f $ids >/dev/null; true`);
 }
 
-async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, replace, dstHas }) {
+export async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, replace, dstHas }) {
   const D1 = rootDocker(src);
   ctx.step(`Stack "${st.project}"${st.dir ? ` (${st.dir})` : ''}: ${st.containers.length} container(s), ${st.volumes.length} volume(s)`);
   if (dstHas && replace) await removeStack(ctx, dstConn, dst, st.project);
-  const toPause = freeze ? st.containers.filter((c) => c.state === 'running').map((c) => c.name) : [];
-  if (toPause.length) {
-    ctx.log(`Pausing ${toPause.join(', ')} on ${src.name} so the data is copied in one consistent state`);
-    await root(ctx, srcConn, src, `${D1} pause ${toPause.map(shq).join(' ')} >/dev/null`);
+  const wanted = freeze ? st.containers.filter((c) => c.state === 'running').map((c) => c.name) : [];
+  // One by one: a container that is restarting (crash loop) or stopped since the scan can't be
+  // paused — skip it instead of failing, and never leave the ones already paused frozen.
+  let toPause = [];
+  let skipped = [];
+  if (wanted.length) {
+    ctx.log(`Pausing ${wanted.join(', ')} on ${src.name} so the data is copied in one consistent state`);
+    let out;
+    try {
+      out = await root(
+        ctx,
+        srcConn,
+        src,
+        `for c in ${wanted.map(shq).join(' ')}; do s=$(${D1} inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+  if [ "$s" = running ] && ${D1} pause "$c" >/dev/null 2>&1; then echo "PAUSED $c"; else echo "SKIP $c $s"; fi; done; true`,
+      );
+    } catch (e) {
+      // Unknown how far it got: unpause all of them (unpausing a running container is harmless).
+      await runRemote(ctx, srcConn, asRoot(src, `for c in ${wanted.map(shq).join(' ')}; do ${D1} unpause "$c" >/dev/null 2>&1; done; true`), { quiet: true, signal: null, timeout: 60000 }).catch(() =>
+        ctx.warn(`Could not make sure ${wanted.join(', ')} are unpaused on ${src.name} — check with "docker ps" there NOW`),
+      );
+      throw e;
+    }
+    toPause = lines(out).filter((l) => l.startsWith('PAUSED ')).map((l) => l.slice(7));
+    skipped = lines(out).filter((l) => l.startsWith('SKIP ')).map((l) => l.slice(5).split(' '));
+    for (const [name, state] of skipped) {
+      ctx.warn(`${name} on ${src.name} could not be paused (it is ${state === 'restarting' ? 'restarting — probably crashing in a loop, check its logs' : state}) — its data is copied live`);
+    }
   }
-  const live = !toPause.length && st.running;
+  const live = (!toPause.length || skipped.length > 0) && st.running;
   try {
     if (st.dir) {
       const r = await streamCopy(ctx, {
@@ -798,7 +822,7 @@ async function copyStack(ctx, { src, dst, srcConn, dstConn, st, freeze, replace,
 }
 
 /** Start the stack on the target the way it was on the source (running services up, stopped ones created). */
-async function startStack(ctx, conn, server, st) {
+export async function startStack(ctx, conn, server, st) {
   const D = rootDocker(server);
   if (!st.dir) return;
   const files = st.configFiles.map((f) => `-f ${shq(f)}`).join(' ');
@@ -818,7 +842,7 @@ async function startStack(ctx, conn, server, st) {
   }
 }
 
-async function verifyStacks(ctx, conn, server, stacks) {
+export async function verifyStacks(ctx, conn, server, stacks) {
   const D = rootDocker(server);
   await sleep(8000);
   let bad = 0;
@@ -868,7 +892,7 @@ function addToProjects(ctx, src, dst) {
 }
 
 /** Same Node.js setup as the source: nvm folders / manual /usr/local install, then global npm packages. */
-async function copyNodeRuntime(ctx, { src, dst, srcConn, dstConn, plan }) {
+export async function copyNodeRuntime(ctx, { src, dst, srcConn, dstConn, plan }) {
   if (plan.nodePaths.length) {
     // nvm needs its lines in the shell startup files too.
     const rc = [];

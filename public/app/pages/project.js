@@ -272,6 +272,7 @@ export default {
       runJob(http.post(`/projects/${props.id}/deploy`));
     }
     const removeDep = (d) => openDialog('remove-deployment', { project: p.value, deployment: d, onDone: load });
+    const copyDep = (d) => openDialog('project-copy', { project: p.value, deployment: d, onDone: load });
     const restore = (b) => openDialog('restore', { project: p.value, backup: b });
     async function reprovision() {
       if (!(await confirmBox({ title: 'Run the template setup again?', message: 'Safe to repeat: finished steps are skipped, existing .env files and data are kept. Use it after fixing a problem that stopped the first setup.', confirmText: 'Run setup' }))) return;
@@ -294,7 +295,7 @@ export default {
     return {
       store, isPrivateIp, privateOk, p, notFound, tab, backups, jobs, events, busy, active, staleHours, dns, dnsRows, ssl, dbLabel, freshness, fmtDate, bytes, HEALTH,
       openTab, load, openSwitch, openSync, addDep, editDep, openCommand, checkNow, refreshDns, fixDns, adopt, toggleMaint, backup, backupLive,
-      deploy, deployAll, removeDep, restore, reprovision, delBackup, keepBackup, kindBadge, kindLabel, sslFor, lb, lbCount, LB_BADGE, scaleOut, moveHere, lbMember,
+      deploy, deployAll, removeDep, copyDep, restore, reprovision, delBackup, keepBackup, kindBadge, kindLabel, sslFor, lb, lbCount, LB_BADGE, scaleOut, moveHere, lbMember,
     };
   },
   template: `
@@ -354,6 +355,7 @@ export default {
             <button class="admin-only menu-item" @click="editDep(d)">Edit containers / database</button>
             <button class="dev-only menu-item" :disabled="store.user.role !== 'admin' && !d.app_container" @click="openCommand(d)">Run a command…</button>
             <a class="menu-item" :href="'#/servers/' + d.server_id">Open server page</a>
+            <button class="admin-only menu-item" @click="copyDep(d)">Copy to another server…</button>
             <div class="menu-sep"></div>
             <button v-if="!d.is_active" class="admin-only menu-item" @click="adopt(d)">Mark as live (no DNS change)</button>
             <button class="admin-only menu-item danger" :disabled="d.is_active" @click="removeDep(d)">Remove from project…</button>
