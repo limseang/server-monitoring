@@ -670,6 +670,8 @@ export const CloneDialog = {
       addToProjects: true,
       extraPaths: '',
       confirm: '',
+      stacks: null, // picked compose projects (null = all, until the first scan lists them)
+      folders: null, // picked app folders outside Docker
     });
     const plan = ref(null);
     const scanError = ref('');
@@ -679,8 +681,8 @@ export const CloneDialog = {
     const body = () => ({ ...f, confirm: undefined });
     // Any option change makes the old scan stale.
     const stamp = computed(() => JSON.stringify(body()));
-    let scannedStamp = '';
-    const stale = computed(() => !!plan.value && scannedStamp !== stamp.value);
+    const scannedStamp = ref('');
+    const stale = computed(() => !!plan.value && scannedStamp.value !== stamp.value);
     async function scan() {
       if (!f.target) return;
       scanning.value = true;
@@ -690,7 +692,10 @@ export const CloneDialog = {
         const r = await http.post(`/servers/${s.id}/clone/preview`, body());
         if (r.ok) {
           plan.value = r.plan;
-          scannedStamp = stamp.value;
+          // First scan: everything is picked; the boxes start ticked.
+          if (f.stacks === null) f.stacks = r.plan.stacks.filter((x) => x.selected).map((x) => x.project);
+          if (f.folders === null) f.folders = (r.plan.hostApps?.folders || []).filter((x) => x.selected).map((x) => x.path);
+          scannedStamp.value = JSON.stringify(body());
         } else scanError.value = r.error;
       } catch (e) {
         scanError.value = e.message;
@@ -698,7 +703,27 @@ export const CloneDialog = {
         scanning.value = false;
       }
     }
-    const canStart = computed(() => plan.value && !plan.value.problems.length && !stale.value && target.value && f.confirm === target.value.name);
+    const canStart = computed(() => plan.value && !plan.value.problems.length && !stale.value && !scanning.value && target.value && f.confirm === target.value.name);
+    // Picking projects: tick boxes, all / none; the plan is checked again shortly after a change.
+    const toggle = (key, v) => {
+      const list = f[key] || [];
+      f[key] = list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+    };
+    const pickAll = (on) => {
+      f.stacks = on ? plan.value.stacks.map((x) => x.project) : [];
+      f.folders = on ? (plan.value.hostApps?.folders || []).map((x) => x.path) : [];
+    };
+    let again = null;
+    watch(
+      () => stamp.value,
+      () => {
+        if (!plan.value || !stale.value) return;
+        clearTimeout(again);
+        again = setTimeout(() => stale.value && !scanning.value && scan(), 700);
+      },
+    );
+    const pickedCount = computed(() => (f.stacks?.length || 0) + (f.folders?.length || 0));
+    const totalCount = computed(() => (plan.value?.stacks.length || 0) + (plan.value?.hostApps?.folders.length || 0));
     async function submit() {
       busy.value = true;
       try {
@@ -711,7 +736,7 @@ export const CloneDialog = {
         busy.value = false;
       }
     }
-    return { s, others, f, plan, scanError, scanning, busy, target, stale, canStart, scan, submit, bytes, closeDialog };
+    return { s, others, f, plan, scanError, scanning, busy, target, stale, canStart, scan, submit, bytes, closeDialog, toggle, pickAll, pickedCount, totalCount };
   },
   template: `
   <modal :title="'Clone ' + s.name + ' to another server'" size="lg" @close="closeDialog">
@@ -730,13 +755,13 @@ export const CloneDialog = {
         <div v-if="f.host" class="field" style="margin-left:26px"><label>Extra paths to copy <span class="muted">(optional, one per line)</span></label><textarea v-model="f.extraPaths" rows="2" class="code" placeholder="/opt/scripts&#10;/home/deploy/.config"></textarea></div>
         <label class="check"><input type="checkbox" v-model="f.hostApps"><span class="check-text"><b>Copy apps outside Docker</b><span class="hint">Vue/Nuxt/Node apps run by PM2 or systemd, and static sites served by nginx: their folders, the same Node.js (apt/NodeSource, nvm or /usr/local) and global npm packages like pm2 — then started the same way.</span></span></label>
         <label class="check"><input type="checkbox" v-model="f.freeze"><span class="check-text"><b>Pause each stack while its data is copied</b><span class="hint">Gives an exact snapshot of the databases. Each app on {{ s.name }} is frozen for the time its files and volumes take to copy (seconds to minutes), then resumes. Untick to copy live with no pause — then refresh the databases afterwards with "Copy data" on each project.</span></span></label>
-        <label class="check"><input type="checkbox" v-model="f.addToProjects"><span class="check-text"><b>Add the new server to the same projects as a standby</b><span class="hint">Ready to switch to. Same containers and database settings as {{ s.name }}.</span></span></label>
+        <label class="check"><input type="checkbox" v-model="f.addToProjects"><span class="check-text"><b>Add the new server to the same projects as a standby</b><span class="hint">Ready to switch to. Same containers and database settings as {{ s.name }}. Only the projects whose files you picked below.</span></span></label>
         <label class="check"><input type="checkbox" v-model="f.replace"><span class="check-text"><b>Replace existing stacks on the target</b><span class="hint">Only needed to re-run a clone. Removes the target's containers of the same compose projects and replaces their volumes.</span></span></label>
       </div>
 
       <div class="row gap-8"><button class="btn" @click="scan" :disabled="!f.target || scanning"><span v-if="scanning" class="spinner"></span>{{ plan ? 'Scan again' : 'Scan both servers' }}</button><span class="muted small">Reads both servers, changes nothing.</span></div>
       <div v-if="scanError" class="result err">{{ scanError }}</div>
-      <div v-if="stale" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Options changed — scan again.</span></div>
+      <div v-if="stale" class="alert alert-warn"><span class="alert-icon">⚠</span><span>{{ plan ? 'Picks or options changed — checking again…' : 'Options changed — scan again.' }}</span></div>
 
       <template v-if="plan">
         <div class="flow small">
@@ -747,9 +772,12 @@ export const CloneDialog = {
         <div v-for="p in plan.problems" :key="p" class="result err">✖ {{ p }}</div>
         <div v-for="w in plan.warnings" :key="w" class="alert alert-warn"><span class="alert-icon">⚠</span><span>{{ w }}</span></div>
 
-        <div><div class="label mb-8">Docker stacks ({{ plan.stacks.length }})</div>
+        <div class="row between wrap gap-8"><div class="label">What to copy — {{ pickedCount }} of {{ totalCount }} picked</div>
+          <div class="row gap-8"><button class="btn btn-xs" @click="pickAll(true)">All</button><button class="btn btn-xs" @click="pickAll(false)">None</button></div></div>
+        <div><div class="label mb-8">Docker projects (stacks)</div>
           <div class="card table-wrap"><table class="table"><tbody>
-            <tr v-for="st in plan.stacks" :key="st.project">
+            <tr v-for="st in plan.stacks" :key="st.project" :style="f.stacks && !f.stacks.includes(st.project) ? 'opacity:.55' : ''">
+              <td style="width:28px"><input type="checkbox" :checked="!f.stacks || f.stacks.includes(st.project)" @change="toggle('stacks', st.project)" :aria-label="'Copy ' + st.project"></td>
               <td><span class="strong">{{ st.project }}</span> <span class="badge" :class="st.running ? 'badge-green' : 'badge-gray'">{{ st.running ? 'running' : 'stopped' }}</span><div class="tiny muted mono">{{ st.dir || 'no folder' }}</div></td>
               <td class="small muted">{{ st.containers.length }} containers · {{ st.volumes.length }} volumes<span v-if="st.binds.length"> · {{ st.binds.length }} outside paths</span></td>
               <td class="small">{{ bytes(st.bytes) }}</td>
@@ -758,13 +786,22 @@ export const CloneDialog = {
           </tbody></table></div>
           <div class="tiny muted mt-8" v-if="plan.looseVolumes.length">Also {{ plan.looseVolumes.length }} unused volume(s): {{ plan.looseVolumes.join(', ') }}</div>
         </div>
-        <div v-if="plan.hostApps && (plan.hostApps.pm2.length || plan.hostApps.services.length || plan.hostApps.sites.length || plan.hostApps.folders.length)"><div class="label mb-8">Apps outside Docker</div>
+        <div v-if="plan.hostApps && plan.hostApps.folders.length"><div class="label mb-8">Apps outside Docker (by folder)</div>
+          <div class="card table-wrap"><table class="table"><tbody>
+            <tr v-for="d in plan.hostApps.folders" :key="d.path" :style="f.folders && !f.folders.includes(d.path) ? 'opacity:.55' : ''">
+              <td style="width:28px"><input type="checkbox" :checked="!f.folders || f.folders.includes(d.path)" @change="toggle('folders', d.path)" :aria-label="'Copy ' + d.path"></td>
+              <td class="mono small">{{ d.path }}</td>
+              <td class="small muted">{{ d.apps.join(', ') || 'files only' }}</td>
+              <td class="small">{{ bytes(d.bytes) }}</td>
+            </tr>
+          </tbody></table></div>
+        </div>
+        <div v-if="plan.hostApps && (plan.hostApps.pm2.length || plan.hostApps.services.length || plan.hostApps.sites.length)"><div class="label mb-8">Found outside Docker</div>
           <div class="small" style="display:flex;flex-direction:column;gap:4px">
             <div v-if="plan.hostApps.pm2.length"><b>PM2:</b> <span v-for="(a, i) in plan.hostApps.pm2" :key="a.user + a.name">{{ i ? ', ' : '' }}{{ a.name }} <span class="muted">({{ a.user }}, {{ a.status }})</span></span></div>
             <div v-if="plan.hostApps.services.length"><b>systemd:</b> {{ plan.hostApps.services.join(', ') }}</div>
             <div v-if="plan.hostApps.sites.length"><b>nginx sites:</b> {{ plan.hostApps.sites.map((x) => (x.names[0] || 'default') + ' (' + x.kind + ')').join(', ') }}</div>
             <div><b>Node.js:</b> <template v-if="plan.hostApps.node">{{ plan.hostApps.node.version }} ({{ plan.hostApps.node.kind }})</template><template v-for="n in plan.hostApps.nvm" :key="n.user"> · nvm {{ n.user }}: {{ n.versions.join(', ') }}</template><template v-if="!plan.hostApps.node && !plan.hostApps.nvm.length">none</template><template v-if="plan.hostApps.npmGlobals.length"> · npm -g: {{ plan.hostApps.npmGlobals.join(' ') }}</template></div>
-            <div v-if="plan.hostApps.folders.length"><b>Folders:</b> <span class="mono">{{ plan.hostApps.folders.join(', ') }}</span> ({{ bytes(plan.hostApps.bytes) }})</div>
           </div>
         </div>
         <div class="small"><b>Images:</b> {{ plan.images.count }} in use, {{ plan.images.toCopy }} to copy ({{ bytes(plan.bytes.images) }})</div>

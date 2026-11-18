@@ -315,11 +315,16 @@ export async function makePlan(ctx, { src, dst, srcConn, srcScan, dstScan, opts 
   if (dstScan.uid !== 0) problems.push(`${dst.name}: needs root or passwordless sudo for ${dst.ssh_user}`);
   if (srcScan.docker === 'none') problems.push(`${src.name} has no working Docker — nothing to clone`);
   if (srcScan.arch !== dstScan.arch) problems.push(`CPU types differ (${src.name} is ${srcScan.arch}, ${dst.name} is ${dstScan.arch}) — the copied images would not run`);
-  if (dstScan.docker === 'none' && !opts.installDocker) problems.push(`${dst.name} has no Docker — tick "Install Docker" or install it first`);
+  if (dstScan.docker === 'none' && !opts.installDocker && (opts.stacks === null || opts.stacks.length)) problems.push(`${dst.name} has no Docker — tick "Install Docker" or install it first`);
   if (dstScan.docker === 'none' && dstScan.os.id === 'alpine') problems.push(`${dst.name} runs Alpine — Docker's installer doesn't support it; install Docker there first`);
 
-  const { stacks, standalone, looseVolumes } = buildStacks(srcScan);
-  if (!stacks.length) warnings.push(`No Docker Compose stacks found on ${src.name}`);
+  const { stacks: allStacks, standalone, looseVolumes: allLoose } = buildStacks(srcScan);
+  if (!allStacks.length) warnings.push(`No Docker Compose stacks found on ${src.name}`);
+  // Only the stacks the admin picked (all when nothing was picked yet).
+  const stacks = opts.stacks ? allStacks.filter((s) => opts.stacks.includes(s.project)) : allStacks;
+  const someStacks = stacks.length < allStacks.length;
+  const looseVolumes = someStacks ? [] : allLoose;
+  if (someStacks && allLoose.length) warnings.push(`Not copied because you picked only some projects: ${allLoose.length} volume(s) no container uses (${allLoose.map((v) => v.Name).join(', ')})`);
   if (standalone.length) warnings.push(`Not cloned (not started by Docker Compose): ${standalone.join(', ')} — recreate those by hand`);
   for (const st of stacks) {
     if (!st.dir) warnings.push(`${st.project}: no compose folder recorded — only its volumes are copied, it can't be started automatically`);
@@ -327,6 +332,7 @@ export async function makePlan(ctx, { src, dst, srcConn, srcScan, dstScan, opts 
   }
 
   planBindIps({ stacks, src, dst, srcScan, dstScan, problems, warnings });
+  if (opts.stacks && opts.folders && !stacks.length && !appDirs.length && !opts.host) problems.push('Nothing picked to copy — tick at least one project, or "Copy host setup"');
 
   // Stacks that already exist on the target.
   const dstProjects = new Set(dstScan.containers.map((c) => c.Config?.Labels?.['com.docker.compose.project']).filter(Boolean));
@@ -340,38 +346,46 @@ export async function makePlan(ctx, { src, dst, srcConn, srcScan, dstScan, opts 
   if (missingImgs.length) warnings.push(`${missingImgs.length} image(s) used by containers were not found on ${src.name}`);
   const toCopy = images.filter((i) => !dstScan.images.has(i.id));
 
-  // Apps outside Docker (PM2 / systemd / nginx sites) and the Node.js they need.
+  // Apps outside Docker (PM2 / systemd / nginx sites) and the Node.js they need — only in the picked folders.
   const ha = srcScan.hostApps;
-  const appDirs = opts.hostApps ? appFolders(ha, { exclude: stacks.map((s) => s.dir).filter(Boolean) }) : [];
+  const allAppDirs = opts.hostApps ? appFolders(ha, { exclude: allStacks.map((s) => s.dir).filter(Boolean) }) : [];
+  const appDirs = opts.folders ? allAppDirs.filter((d) => opts.folders.includes(d)) : allAppDirs;
+  const someApps = appDirs.length < allAppDirs.length;
+  const inPicked = (p) => appDirs.some((d) => isUnder(p, d));
+  const appOf = (p) => inPicked(p.pm2_env?.pm_cwd || '') || inPicked(p.pm2_env?.pm_exec_path || '');
+  const pm2 = someApps ? ha.pm2.map((u) => ({ ...u, list: u.list.filter(appOf) })).filter((u) => u.list.length || !u.alive) : ha.pm2;
+  // systemd services of folders that were NOT picked are neither copied nor started.
+  const skipUnits = someApps ? ha.services.filter((s) => s.cwd && allAppDirs.some((d) => isUnder(s.cwd, d)) && !inPicked(s.cwd)).map((s) => s.name) : [];
+  const needNode = !someApps || pm2.some((u) => u.list.length) || ha.services.some((s) => inPicked(s.cwd || '') && /node|npm|pm2|nuxt/.test(s.exec));
   const nodePaths = [];
   let npmGlobals = [];
-  if (opts.hostApps) {
+  if (opts.hostApps && needNode) {
     for (const n of ha.nvm) nodePaths.push(`${n.home}/.nvm`);
     if (ha.node?.kind === 'manual') nodePaths.push('/usr/local/bin', '/usr/local/lib/node_modules', '/usr/local/include/node');
     if (ha.node && ha.node.kind !== 'manual') {
       const have = new Set((dstScan.hostApps?.npmGlobals || []).map((g) => `${g.name}@${g.version}`));
       npmGlobals = ha.npmGlobals.filter((g) => !have.has(`${g.name}@${g.version}`));
     }
-    for (const u of ha.pm2) if (!u.alive) nodePaths.push(`${u.home}/.pm2/dump.pm2`);
+    if (!someApps) for (const u of ha.pm2) if (!u.alive) nodePaths.push(`${u.home}/.pm2/dump.pm2`);
     if (ha.node?.kind === 'apt' && ha.node.pkg && !opts.host) warnings.push(`Node.js on ${src.name} comes from apt (${ha.node.pkg}) — tick "Copy host setup" so it gets installed`);
     if (ha.node && ha.node.kind === 'other') warnings.push(`Node.js on ${src.name} is at ${ha.node.path} (not apt, nvm or /usr/local) — install it on ${dst.name} by hand`);
     for (const u of ha.pm2) if (!u.alive) warnings.push(`PM2 of ${u.user} is not running on ${src.name} — only its saved list is copied (start it with "pm2 resurrect")`);
   }
 
   // Sizes on the source.
-  const allVolumes = [...stacks.flatMap((s) => s.volumes), ...looseVolumes];
-  const pathList = [
-    ...stacks.map((s) => s.dir).filter(Boolean),
-    ...stacks.flatMap((s) => s.binds),
-    ...allVolumes.map((v) => v.Mountpoint).filter(Boolean),
+  const stackPaths = (list) => [...list.map((s) => s.dir).filter(Boolean), ...list.flatMap((s) => s.binds), ...list.flatMap((s) => s.volumes).map((v) => v.Mountpoint).filter(Boolean)];
+  const picked = new Set([
+    ...stackPaths(stacks),
+    ...looseVolumes.map((v) => v.Mountpoint).filter(Boolean),
     ...(opts.host ? srcScan.hostPaths : []),
     ...opts.extraPaths,
     ...appDirs,
     ...nodePaths.filter((p) => !p.endsWith('dump.pm2')),
-  ];
-  const sz = await sizes(ctx, srcConn, src, [...new Set(pathList)]);
+  ]);
+  // Sizes of everything (so unticked projects show theirs too); the total counts only what is picked.
+  const sz = await sizes(ctx, srcConn, src, [...new Set([...picked, ...stackPaths(allStacks), ...allAppDirs])]);
   const imgBytes = toCopy.reduce((n, i) => n + i.size, 0);
-  const dataBytes = Object.values(sz).reduce((n, b) => n + b, 0);
+  const dataBytes = [...picked].reduce((n, p) => n + (sz[p] || 0), 0);
   const need = imgBytes + dataBytes;
   const free = dstScan.diskFreeKb * 1024;
   if (free && need * 1.15 > free) problems.push(`${dst.name} has ${fmtBytes(free)} free but the clone needs about ${fmtBytes(need * 1.15)}`);
@@ -385,7 +399,7 @@ export async function makePlan(ctx, { src, dst, srcConn, srcScan, dstScan, opts 
       if (srcScan.crontabs.length && !dstScan.installed.has('cron') && !packages.includes('cron')) packages.push('cron');
       const nodePkg = opts.hostApps && ha.node?.kind === 'apt' ? ha.node.pkg : null;
       if (nodePkg && !dstScan.installed.has(nodePkg) && !packages.includes(nodePkg)) packages.push(nodePkg);
-      if (ha.sites.length && srcScan.installed.has('nginx') && !dstScan.installed.has('nginx') && !packages.some((p) => p.startsWith('nginx'))) packages.push('nginx');
+      if (ha.sites.length && (!someApps || appDirs.length) && srcScan.installed.has('nginx') && !dstScan.installed.has('nginx') && !packages.some((p) => p.startsWith('nginx'))) packages.push('nginx');
     } else if (srcScan.pkgmgr !== 'none') {
       warnings.push(`Packages are only copied between apt-based systems (Ubuntu/Debian). ${src.name}: ${srcScan.os.pretty}, ${dst.name}: ${dstScan.os.pretty} — install extra packages by hand`);
     }
@@ -398,10 +412,21 @@ export async function makePlan(ctx, { src, dst, srcConn, srcScan, dstScan, opts 
     }
   }
 
+  if (opts.host && (someStacks || someApps)) {
+    warnings.push(
+      `"Copy host setup" copies nginx, cron, logrotate… configs as a whole — settings of projects you did not pick come along (e.g. their nginx sites, which won't work on ${dst.name}). Remove those there afterwards, or untick "Copy host setup".`,
+    );
+  }
+
   return {
     problems,
     warnings,
     stacks,
+    allStacks,
+    allAppDirs,
+    pm2,
+    skipUnits,
+    partial: someStacks || someApps,
     looseVolumes,
     standalone,
     images,
@@ -424,8 +449,9 @@ export function planSummary(plan, srcScan, dstScan, src, dst, opts) {
     target: { name: dst.name, os: dstScan.os.pretty, arch: dstScan.arch, docker: dstScan.docker, free: plan.bytes.free },
     problems: plan.problems,
     warnings: plan.warnings,
-    stacks: plan.stacks.map((s) => ({
+    stacks: plan.allStacks.map((s) => ({
       project: s.project,
+      selected: plan.stacks.includes(s),
       dir: s.dir,
       running: s.running,
       containers: s.containers.map((c) => c.name),
@@ -444,7 +470,17 @@ export function planSummary(plan, srcScan, dstScan, src, dst, opts) {
             pm2: pub.pm2.map((p) => ({ user: p.user, name: p.name, status: p.status })),
             services: pub.services.map((x) => x.name),
             sites: pub.sites.map((x) => ({ names: x.names, kind: x.kind })),
-            folders: plan.appDirs,
+            // Each app folder with what runs from it, so it can be picked or left out.
+            folders: plan.allAppDirs.map((d) => ({
+              path: d,
+              selected: plan.appDirs.includes(d),
+              bytes: plan.sizes[d] || 0,
+              apps: [
+                ...pub.pm2.filter((p) => isUnder(p.cwd, d) || isUnder(p.script, d)).map((p) => `PM2 ${p.name}`),
+                ...pub.services.filter((x) => x.cwd && isUnder(x.cwd, d)).map((x) => x.name),
+                ...pub.sites.filter((x) => x.roots.some((r) => isUnder(r, d))).map((x) => `site ${x.names[0] || ''}`.trim()),
+              ],
+            })),
             bytes: plan.appDirs.reduce((n, d) => n + (plan.sizes[d] || 0), 0),
           };
         })()
@@ -459,10 +495,11 @@ export function planSummary(plan, srcScan, dstScan, src, dst, opts) {
           ufw: srcScan.ufw,
           crontabs: srcScan.crontabs.map((c) => c.user),
           paths: [...srcScan.hostPaths, ...opts.extraPaths],
-          units: srcScan.units.filter((u) => !UNIT_SKIP.test(u.name)).map((u) => u.name),
+          units: srcScan.units.filter((u) => !UNIT_SKIP.test(u.name) && !plan.skipUnits.includes(u.name)).map((u) => u.name),
         }
       : null,
     bytes: plan.bytes,
+    partial: plan.partial,
   };
 }
 
@@ -950,10 +987,22 @@ export async function verifyStacks(ctx, conn, server, stacks) {
   return bad;
 }
 
-/** Add the new server to every project the source server is part of, as a standby. */
-function addToProjects(ctx, src, dst) {
+/** Does this deployment belong to what was picked (its folder or containers)? */
+function depPicked(d, plan) {
+  if (!plan.partial) return true;
+  const dir = String(d.app_dir || '').replace(/\/+$/, '');
+  const names = new Set([d.app_container, d.db_container].filter(Boolean));
+  return plan.stacks.some((s) => (dir && s.dir === dir) || s.containers.some((c) => names.has(c.name))) || (!!dir && plan.appDirs.some((a) => isUnder(dir, a) || isUnder(a, dir)));
+}
+
+/** Add the new server as a standby to every project the source is part of (only picked ones when some were picked). */
+function addToProjects(ctx, src, dst, plan) {
   const added = [];
   for (const d of deploymentsOnServer(src.id)) {
+    if (!depPicked(d, plan)) {
+      ctx.log(`Project #${d.project_id}: not picked for this clone — ${dst.name} not added`);
+      continue;
+    }
     if (get('SELECT id FROM deployments WHERE project_id = ? AND server_id = ?', d.project_id, dst.id)) {
       ctx.log(`Project #${d.project_id}: ${dst.name} is already part of it — left as is`);
       continue;
@@ -1065,6 +1114,9 @@ export function cloneOptions(p = {}) {
     freeze: p.freeze !== false,
     replace: !!p.replace,
     addToProjects: p.addToProjects !== false,
+    // Pick what to copy: compose project names / app folders. null = everything (the default).
+    stacks: Array.isArray(p.stacks) ? p.stacks.map(String) : null,
+    folders: Array.isArray(p.folders) ? p.folders.map(String) : null,
     extraPaths: (Array.isArray(p.extraPaths) ? p.extraPaths : String(p.extraPaths || '').split('\n'))
       .map((x) => String(x).trim())
       .filter((x) => /^\/[^\0\n\r]+$/.test(x) && x !== '/'),
@@ -1106,6 +1158,12 @@ export async function runClone(ctx, p, { onProjectsAdded } = {}) {
     for (const w of plan.warnings) ctx.warn(w);
     if (plan.problems.length) throw new Error(plan.problems.join(' · '));
     ctx.log(`Plan: ${plan.stacks.length} stack(s), ${plan.toCopy.length} image(s) to copy, about ${fmtBytes(plan.bytes.total)} of data`);
+    if (plan.partial) {
+      const left = [...plan.allStacks.filter((s) => !plan.stacks.includes(s)).map((s) => s.project), ...plan.allAppDirs.filter((d) => !plan.appDirs.includes(d))];
+      ctx.log(`Picked: ${[...plan.stacks.map((s) => s.project), ...plan.appDirs].join(', ') || 'nothing'} — left out: ${left.join(', ')}`);
+    }
+    // PM2: only the apps of the picked folders.
+    const pm2Scan = { ...srcScan, hostApps: { ...srcScan.hostApps, pm2: plan.pm2 } };
     ctx.throwIfCancelled();
 
     // 1. Docker
@@ -1122,7 +1180,7 @@ export async function runClone(ctx, p, { onProjectsAdded } = {}) {
       await copyUsers(ctx, dstConn, dst, srcScan, dstScan);
       await copyKeys(ctx, dstConn, dst, srcScan);
       await setTimezone(ctx, dstConn, dst, srcScan.timezone, dstScan.timezone);
-      const unitPaths = srcScan.units.filter((u) => !UNIT_SKIP.test(u.name)).map((u) => `/etc/systemd/system/${u.name}`);
+      const unitPaths = srcScan.units.filter((u) => !UNIT_SKIP.test(u.name) && !plan.skipUnits.includes(u.name)).map((u) => `/etc/systemd/system/${u.name}`);
       const copied = await copyHostFiles(ctx, { src, dst, srcConn, dstConn, paths: [...srcScan.hostPaths, ...unitPaths, ...opts.extraPaths] });
       await copySudoers(ctx, { src, dst, srcConn, dstConn });
       if (opts.hostApps) await copyNodeRuntime(ctx, { src, dst, srcConn, dstConn, plan });
@@ -1163,27 +1221,27 @@ export async function runClone(ctx, p, { onProjectsAdded } = {}) {
       if (plan.appDirs.length) {
         await copyHostFiles(ctx, { src, dst, srcConn, dstConn, paths: plan.appDirs, title: `Copy app folders (not in Docker): ${plan.appDirs.join(', ')}` });
       }
-      await restorePm2(ctx, { dst, dstConn, srcScan });
+      await restorePm2(ctx, { dst, dstConn, srcScan: pm2Scan });
     }
 
     // 7. Host services that depend on the apps (cron, units, nginx, firewall last)
     if (opts.host) {
       await copyCrontabs(ctx, dstConn, dst, srcScan);
-      await enableUnits(ctx, dstConn, dst, srcScan.units);
+      await enableUnits(ctx, dstConn, dst, srcScan.units.filter((u) => !plan.skipUnits.includes(u.name)));
       await reloadHostServices(ctx, dstConn, dst);
       if (srcScan.ufw === 'active') await enableFirewall(ctx, dstConn, dst);
     }
-    if (opts.hostApps && srcScan.hostApps.pm2.some((u) => u.alive && u.list.length)) {
+    if (opts.hostApps && plan.pm2.some((u) => u.alive && u.list.length)) {
       ctx.step(`Check PM2 apps on ${dst.name}`);
       await sleep(3000);
-      badApps = await verifyPm2(ctx, dstConn, dst, srcScan);
+      badApps = await verifyPm2(ctx, dstConn, dst, pm2Scan);
       if (badApps) ctx.warn(`${badApps} PM2 app(s) are not in the same state as on ${src.name} — check their logs`);
     }
 
     // 8. Projects
     let added = [];
     if (opts.addToProjects) {
-      added = addToProjects(ctx, src, dst);
+      added = addToProjects(ctx, src, dst, plan);
       if (added.length) {
         ctx.step(`Added ${dst.name} as a standby to ${added.length} project(s)`);
         await onProjectsAdded?.(added);
