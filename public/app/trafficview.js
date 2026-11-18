@@ -1,6 +1,6 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from '/vendor/vue.js';
 import { store, http, toast, openDialog, bytes, fmtDate } from './lib.js';
-import { useLive, LivePill } from './live.js';
+import { useLive, LivePill, LiveNum } from './live.js';
 
 /* ------------------------------------------------------------------ stacked bar chart */
 const CLASSES = [
@@ -57,11 +57,11 @@ export const TrafficChart = {
   <div class="tchart">
     <div class="tchart-legend"><span v-for="c in CLASSES" :key="c.k"><i :style="{ background: c.color }"></i>{{ c.label }}</span></div>
     <div class="tchart-wrap" @mouseleave="hover = null">
-      <svg :viewBox="'0 0 ' + W + ' ' + H" preserveAspectRatio="none" class="tchart-svg" role="img" aria-label="Requests per time slot, stacked by response status">
+      <svg :viewBox="'0 0 ' + W + ' ' + H" preserveAspectRatio="none" class="tchart-svg tchart-bars" role="img" aria-label="Requests per time slot, stacked by response status">
         <g v-for="t in ticks" :key="t.v"><line :x1="PAD.l" :x2="W - PAD.r" :y1="t.y" :y2="t.y" class="tchart-grid" /></g>
-        <g v-for="bar in bars" :key="bar.i" @mouseenter="hover = bar">
+        <g v-for="bar in bars" :key="bar.b.t" @mouseenter="hover = bar">
           <rect :x="PAD.l + bar.i * bw" :y="PAD.t" :width="bw" :height="H - PAD.t - PAD.b" fill="transparent" />
-          <rect v-for="(s, j) in bar.segs" :key="j" :x="bar.x" :y="s.y" :width="bar.w" :height="s.h" :fill="s.color" rx="1.5" :opacity="hover && hover.i !== bar.i ? 0.45 : 1" />
+          <rect v-for="(s, j) in bar.segs" :key="j" class="tbar" :x="bar.x" :y="s.y" :width="bar.w" :height="s.h" :fill="s.color" rx="1.5" :opacity="hover && hover.i !== bar.i ? 0.45 : 1" />
         </g>
       </svg>
       <div class="tchart-y"><span v-for="t in ticks" :key="t.v" :style="{ top: (t.y / H * 100) + '%' }">{{ t.v }}</span></div>
@@ -78,7 +78,7 @@ export const TrafficChart = {
 /* ------------------------------------------------------------------ Traffic tab */
 export const TrafficTab = {
   props: { server: Object },
-  components: { TrafficChart, LivePill },
+  components: { TrafficChart, LivePill, LiveNum },
   setup(props) {
     const minutes = ref(60);
     const t = ref(null);
@@ -140,10 +140,10 @@ export const TrafficTab = {
     </div>
 
     <div class="tiles">
-      <div class="tile"><div class="tile-label">Requests / min now</div><div class="tile-value">{{ t.rpm_now }}</div><div class="tile-sub">last 5 minutes</div></div>
-      <div class="tile" :class="{ 'tile-bad': t.err_now >= 5 }"><div class="tile-label">Server errors now</div><div class="tile-value">{{ t.err_now }}<span class="muted">%</span></div><div class="tile-sub">5xx in the last 5 minutes</div></div>
-      <div class="tile"><div class="tile-label">Requests</div><div class="tile-value">{{ fmt(t.total.req) }}</div><div class="tile-sub">{{ errPct }}% 5xx · {{ notFound }}% 4xx · {{ bytes(t.total.bytes) }} sent</div></div>
-      <div class="tile"><div class="tile-label">Visitors (IPs)</div><div class="tile-value">{{ fmt(t.unique_ips) }}</div><div class="tile-sub">{{ t.avg_ms != null ? 'avg ' + t.avg_ms + ' ms · ' : '' }}{{ t.total.ssh_fail }} failed SSH logins</div></div>
+      <div class="tile"><div class="tile-label">Requests / min now</div><div class="tile-value"><live-num :value="t.rpm_now" /></div><div class="tile-sub">last 5 minutes</div></div>
+      <div class="tile" :class="{ 'tile-bad': t.err_now >= 5 }"><div class="tile-label">Server errors now</div><div class="tile-value"><live-num :value="t.err_now" /><span class="muted">%</span></div><div class="tile-sub">5xx in the last 5 minutes</div></div>
+      <div class="tile"><div class="tile-label">Requests</div><div class="tile-value"><live-num :value="t.total.req" :fmt="(v) => fmt(Math.round(v))" /></div><div class="tile-sub">{{ errPct }}% 5xx · {{ notFound }}% 4xx · {{ bytes(t.total.bytes) }} sent</div></div>
+      <div class="tile"><div class="tile-label">Visitors (IPs)</div><div class="tile-value"><live-num :value="t.unique_ips" :fmt="(v) => fmt(Math.round(v))" /></div><div class="tile-sub">{{ t.avg_ms != null ? 'avg ' + t.avg_ms + ' ms · ' : '' }}{{ t.total.ssh_fail }} failed SSH logins</div></div>
     </div>
 
     <div class="card card-body">
@@ -192,6 +192,7 @@ export const LogsTab = {
     const atBottom = ref(true); // auto-scroll only while the user is at the bottom
     const unseen = ref(0); // new lines that came in while scrolled up
     const skipped = ref(0);
+    let lineId = 0; // stable keys, so only lines that are really new get the fade-in
     async function loadSources() {
       try {
         sources.value = await http.get(`/servers/${props.server.id}/log-sources`);
@@ -222,13 +223,14 @@ export const LogsTab = {
       {
         lines(d) {
           err.value = '';
+          const wrap = (arr, fresh) => arr.map((text) => ({ id: ++lineId, text, fresh }));
           if (d.first) {
-            out.value = d.lines;
+            out.value = wrap(d.lines, false);
             skipped.value = 0;
             unseen.value = 0;
             atBottom.value = true;
           } else {
-            const next = out.value.concat(d.lines);
+            const next = out.value.concat(wrap(d.lines, true));
             out.value = next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
             if (!atBottom.value) unseen.value += d.lines.length;
           }
@@ -268,7 +270,7 @@ export const LogsTab = {
     </div>
     <div v-if="err" class="alert alert-warn"><span class="alert-icon">⚠</span><span>{{ err }}</span></div>
     <div class="log-wrap">
-      <div class="log tall" ref="box" @scroll="onScroll"><div v-for="(l, i) in out" :key="i" :class="cls(l)">{{ l }}</div><div v-if="!out.length" class="log-empty">{{ sources && !sources.length ? 'No logs found on this server.' : live.state.value === 'connecting' ? 'Connecting…' : 'No lines' + (q ? ' match the filter' : '') + ' yet — new lines show up here as they are written.' }}</div></div>
+      <div class="log tall" ref="box" @scroll="onScroll"><div v-for="l in out" :key="l.id" :class="[cls(l.text), { 'l-new': l.fresh }]">{{ l.text }}</div><div v-if="!out.length" class="log-empty">{{ sources && !sources.length ? 'No logs found on this server.' : live.state.value === 'connecting' ? 'Connecting…' : 'No lines' + (q ? ' match the filter' : '') + ' yet — new lines show up here as they are written.' }}</div></div>
       <button v-if="!atBottom && out.length" class="btn btn-sm log-jump" @click="jump">↓ Jump to latest<template v-if="unseen"> · {{ unseen }} new</template></button>
     </div>
     <div class="hint">Red = server errors (5xx) and error messages · amber = 4xx and warnings. New lines appear as they are written; scroll up to stop following, Pause to freeze.<template v-if="skipped"> {{ skipped }} lines were skipped because the log was very fast.</template></div>

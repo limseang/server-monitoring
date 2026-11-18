@@ -4,7 +4,7 @@ import { MeterBar, MenuBtn, JobsTable, Ago, HealthPill } from '../components.js'
 import { PortsTab, PowerTab } from '../serverctl.js';
 import { TrafficTab, LogsTab } from '../trafficview.js';
 import { UsageTab } from '../usageview.js';
-import { useLive, LivePill } from '../live.js';
+import { useLive, LivePill, useTween } from '../live.js';
 import { ServerCard } from './overview.js';
 import { BillingCard } from '../billing.js';
 
@@ -133,6 +133,11 @@ export const ServerPage = {
         collected_at: l.t,
       };
     });
+    // meters glide to each new reading
+    const twCpu = useTween(() => m.value?.cpu_pct);
+    const twMem = useTween(() => m.value?.mem_pct);
+    const twDisk = useTween(() => m.value?.disk_pct);
+    const pctText = (v) => `${v == null ? '—' : Math.round(v * 10) / 10}%`;
     const containers = computed(() => {
       const q = filter.value.toLowerCase();
       return (m.value?.containers || []).filter((c) => !q || `${c.name} ${c.image} ${c.project || ''}`.toLowerCase().includes(q));
@@ -203,7 +208,7 @@ export const ServerPage = {
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { meters, liveM, tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { twCpu, twMem, twDisk, pctText, meters, liveM, tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -266,10 +271,10 @@ export const ServerPage = {
     </div>
 
     <template v-if="tab === 'overview'">
-    <div class="tiles" v-if="m">
-      <div class="tile"><meter-bar label="CPU" :value="m.cpu_pct" :text="(m.cpu_pct ?? '—') + '%'" /><div class="tile-sub mt-8">load {{ (m.load || []).join(' · ') }} · {{ m.cpus }} cores</div></div>
-      <div class="tile"><meter-bar label="Memory" :value="m.mem_pct" :text="(m.mem_pct ?? '—') + '%'" /><div class="tile-sub mt-8">{{ bytes(m.mem_used) }} of {{ bytes(m.mem_total) }}<template v-if="m.swap_total"> · swap {{ bytes(m.swap_used) }}</template></div></div>
-      <div class="tile"><meter-bar label="Disk /" :value="m.disk_pct" :text="(m.disk_pct ?? '—') + '%'" /><div class="tile-sub mt-8">{{ bytes(m.disk_avail) }} free of {{ bytes(m.disk_total) }}</div></div>
+    <div class="tiles" :class="{ 'tiles-live': liveM }" v-if="m">
+      <div class="tile"><meter-bar label="CPU" :value="twCpu" :text="pctText(twCpu)" /><div class="tile-sub mt-8">load {{ (m.load || []).join(' · ') }} · {{ m.cpus }} cores</div></div>
+      <div class="tile"><meter-bar label="Memory" :value="twMem" :text="pctText(twMem)" /><div class="tile-sub mt-8">{{ bytes(m.mem_used) }} of {{ bytes(m.mem_total) }}<template v-if="m.swap_total"> · swap {{ bytes(m.swap_used) }}</template></div></div>
+      <div class="tile"><meter-bar label="Disk /" :value="twDisk" :text="pctText(twDisk)" /><div class="tile-sub mt-8">{{ bytes(m.disk_avail) }} free of {{ bytes(m.disk_total) }}</div></div>
       <div class="tile"><div class="tile-label">System</div><div class="strong mt-8">{{ m.os || '—' }}</div><div class="tile-sub">up {{ uptimeStr(m.uptime_s) }} · kernel {{ m.kernel }}</div></div>
     </div>
     <div v-else class="empty-card">No stats yet — <button class="link-btn" @click="refresh">collect now</button>.</div>
