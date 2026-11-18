@@ -129,7 +129,7 @@ export const SettingsPage = {
     }
     const JOB_CHOICES = [
       ['deploy', 'Deploy (also auto-deploy from GitHub)'], ['switch', 'Switch server'], ['sync', 'Copy data'], ['backup', 'Backup'], ['restore', 'Restore'],
-      ['clone', 'Clone server'], ['project-copy', 'Copy project'], ['os-upgrade', 'Upgrade OS'], ['server-reset', 'Reset server'], ['server-reinstall', 'Reinstall OS'],
+      ['clone', 'Clone server'], ['project-copy', 'Copy project'], ['os-upgrade', 'Upgrade OS'], ['server-reset', 'Reset server'], ['server-reinstall', 'Reinstall OS'], ['server-cleanup', 'Clean up server'],
       ['provision', 'Template setup'], ['staging-data', 'Copy to staging'], ['remove-deployment', 'Remove from server'], ['project-delete', 'Delete project'],
       ['container', 'Container start/stop/delete'], ['command', 'Command'], ['maintenance', 'Maintenance on/off'], ['port-change', 'Port change'], ['domain-connect', 'Connect domain'], ['power', 'Restart / turn off server'],
     ];

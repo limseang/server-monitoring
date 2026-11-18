@@ -19,6 +19,7 @@ import { getServer } from './models.js';
 import { pollAllCi } from './ops/ci.js';
 import { collectAllTraffic, pruneTraffic } from './ops/traffic.js';
 import { cleanupLocal } from './ops/backupstore.js';
+import { getSchedules, scheduledCleanup } from './ops/cleanup.js';
 import { humanDuration, isoAgo } from './util.js';
 import { checkBilling } from './billing.js';
 
@@ -287,7 +288,7 @@ export async function collectMetrics(server) {
     }
 
     const limit = Number(getSetting('disk_alert_pct')) || 90;
-    if (m.disk_pct >= limit && !(prev?.disk_pct >= limit)) alert('warn', `Server ${server.name}: disk is ${m.disk_pct}% full`, ctx);
+    if (m.disk_pct >= limit && !(prev?.disk_pct >= limit)) alert('warn', `Server ${server.name}: disk is ${m.disk_pct}% full — free up space with More → Clean up`, { ...ctx, link: `#/servers/${server.id}?cleanup=1` });
     if (prev?.containers) {
       const before = new Map(prev.containers.map((c) => [c.name, c]));
       for (const c of m.containers) {
@@ -359,6 +360,7 @@ export async function checkAllSsl() {
 /* ============================== SCHEDULES ============================== */
 
 const crons = new Map();
+const cleanupCrons = new Map(); // serverId -> Cron
 
 function scheduledBackup(projectId) {
   const p = getProject(projectId);
@@ -415,7 +417,20 @@ export function reloadSchedules() {
     }
     crons.set(p.id, set);
   }
+  // Weekly server cleanup (server page → More → Clean up / free memory).
+  for (const c of cleanupCrons.values()) c.stop();
+  cleanupCrons.clear();
+  for (const [id, sch] of Object.entries(getSchedules())) {
+    if (!sch?.cron) continue;
+    try {
+      cleanupCrons.set(Number(id), new Cron(sch.cron, { protect: true }, () => scheduledCleanup(Number(id))));
+    } catch (e) {
+      console.warn(`[schedule] invalid cleanup schedule for server ${id}: ${e.message}`);
+    }
+  }
 }
+
+export const nextCleanup = (serverId) => cleanupCrons.get(Number(serverId))?.nextRun()?.toISOString() || null;
 
 export function nextRuns(projectId) {
   const set = crons.get(projectId) || {};
@@ -484,4 +499,5 @@ export function startMonitor() {
 export function stopMonitor() {
   for (const t of Object.values(timers)) clearTimeout(t);
   for (const set of crons.values()) Object.values(set).forEach((c) => c.stop());
+  for (const c of cleanupCrons.values()) c.stop();
 }

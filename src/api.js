@@ -45,6 +45,8 @@ import { PROVIDERS, CURRENCIES, isDate, localDate, parseRemindDays, money } from
 import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, remindDays, paymentsOf, recentPayments, recordPayment, deletePayment, checkBilling } from './billing.js';
 import { dbAccessOf, dbAccessProblem, dbAccessIssues, dbDeps, zoneOf, DEFAULT_PORTS, PROXY_IMAGE } from './ops/dbaccess.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron } from './monitor.js';
+import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron, nextCleanup } from './monitor.js';
+import { previewCleanup, cleanupOptions, cleanupLabel, getSchedule, setSchedule } from './ops/cleanup.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
 import { TEMPLATES, DB_NAMES } from './ops/stack.js';
@@ -284,7 +286,7 @@ function computeAlerts(projects, servers, bills = billingByServer()) {
     const link = `#/servers/${s.id}`;
     if (s.status === 'down') add('error', `Server ${s.name} is unreachable over SSH — ${s.status_error || ''}`, link);
     const m = s.metrics;
-    if (m?.disk_pct >= diskLimit) add('warn', `Server ${s.name}: disk ${m.disk_pct}% full`, link);
+    if (m?.disk_pct >= diskLimit) add('warn', `Server ${s.name}: disk ${m.disk_pct}% full — click to clean up`, `${link}?cleanup=1`);
     const sick = (m?.containers || []).filter((c) => c.health === 'unhealthy' || c.state === 'restarting');
     if (sick.length) add('warn', `Server ${s.name}: ${sick.map((c) => c.name).join(', ')} unhealthy or restarting`, link);
     const bill = bills.get(s.id);
@@ -459,6 +461,10 @@ api.delete('/servers/:id', (req, res) => {
   const activeIn = all('SELECT p.name FROM projects p JOIN deployments d ON d.id = p.active_deployment_id WHERE d.server_id = ?', s.id);
   if (activeIn.length) throw bad(`${s.name} is the ACTIVE server of: ${activeIn.map((p) => p.name).join(', ')}. Switch those projects to another server first.`);
   run('DELETE FROM servers WHERE id = ?', s.id);
+  if (getSchedule(s.id)) {
+    setSchedule(s.id, null);
+    reloadSchedules();
+  }
   audit(req, 'warn', `Server ${s.name} (${s.ip}) removed`);
   bus.emit('state', {});
   res.json({ ok: true });
@@ -966,6 +972,54 @@ api.post('/servers/:id/reset', (req, res) => {
   const job = enqueue({ type: 'server-reset', title: `Reset ${s.name} (delete everything)`, serverId: s.id, params: { server: s.id, ...resetOptions(req.body) }, user: who(req) });
   audit(req, 'warn', `Reset of ${s.name} (${s.ip}) started — all containers, volumes and apps will be deleted`, { serverId: s.id, jobId: job.id });
   res.json({ job });
+});
+
+/* Clean up / free memory: preview (changes nothing), run now, weekly schedule. Admin only (POST). */
+function cleanupBusy(id) {
+  return all("SELECT params FROM jobs WHERE type = 'server-cleanup' AND status IN ('queued', 'running')").some((r) => parseJSON(r.params, {}).server === id);
+}
+
+api.post('/servers/:id/cleanup/preview', async (req, res) => {
+  const s = mustServer(req.params.id);
+  try {
+    res.json({ ok: true, plan: { ...(await previewCleanup(s)), next_run: nextCleanup(s.id) } });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.post('/servers/:id/cleanup', (req, res) => {
+  const s = mustServer(req.params.id);
+  const opts = cleanupOptions(req.body);
+  const what = cleanupLabel(opts);
+  if (!what) throw bad('Tick at least one thing to clean up');
+  if (cleanupBusy(s.id)) throw bad('A cleanup of this server is already running');
+  if (serverBusy(s.id) || cloneBusy(s.id) || resetBusy(s.id)) throw bad('A clone, copy, OS upgrade, reset or reinstall involving this server is running — try again when it is done');
+  const job = enqueue({ type: 'server-cleanup', title: `Clean up ${s.name}`, serverId: s.id, params: { server: s.id, ...opts }, user: who(req) });
+  audit(req, 'info', `Cleanup of ${s.name} started: ${what}`, { serverId: s.id, jobId: job.id });
+  res.json({ job });
+});
+
+api.get('/servers/:id/cleanup/schedule', (req, res) => {
+  const s = mustServer(req.params.id);
+  res.json({ schedule: getSchedule(s.id), next_run: nextCleanup(s.id) });
+});
+
+api.put('/servers/:id/cleanup/schedule', (req, res) => {
+  const s = mustServer(req.params.id);
+  const cron = cronInput(req.body?.cron, 'Cleanup schedule');
+  if (!cron) {
+    setSchedule(s.id, null);
+    audit(req, 'info', `Weekly cleanup of ${s.name} turned off`, { serverId: s.id });
+  } else {
+    // A schedule never restarts containers: that is only done by hand.
+    const options = { ...cleanupOptions(req.body?.options), restart: [] };
+    if (!cleanupLabel(options)) throw bad('Tick at least one thing for the scheduled cleanup');
+    setSchedule(s.id, { cron, options });
+    audit(req, 'info', `Cleanup schedule of ${s.name}: ${cron} (${cleanupLabel(options)})`, { serverId: s.id });
+  }
+  reloadSchedules();
+  res.json({ schedule: getSchedule(s.id), next_run: nextCleanup(s.id) });
 });
 
 api.post('/servers/:id/clone/preview', async (req, res) => {

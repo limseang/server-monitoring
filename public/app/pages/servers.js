@@ -153,10 +153,18 @@ export const ServerPage = {
     const power = (action) => openDialog('power', { server: s.value, action });
     const reset = () => openDialog('server-reset', { server: s.value });
     const reinstall = () => openDialog('server-reinstall', { server: s.value });
+    const cleanup = () => openDialog('server-cleanup', { server: s.value });
+    // Link from a "disk full" alert: #/servers/<id>?cleanup=1 opens the cleanup dialog once.
+    watch(s, (v) => {
+      if (v && store.user?.role === 'admin' && /[?&]cleanup=1/.test(location.hash)) {
+        history.replaceState(null, '', `#/servers/${v.id}`);
+        cleanup();
+      }
+    });
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { tab, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { tab, cleanup, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -190,6 +198,7 @@ export const ServerPage = {
           <button class="admin-only menu-item" @click="edit">Edit server</button>
           <button class="admin-only menu-item" @click="clone">Clone to another server…</button>
           <button class="admin-only menu-item" @click="copyProject">Copy a project to another server…</button>
+          <button class="admin-only menu-item" @click="cleanup">Clean up / free memory…</button>
           <button class="admin-only menu-item" @click="osUpgrade">Upgrade OS (Ubuntu / Debian)…</button>
           <button class="admin-only menu-item" @click="resetKey">Reset SSH host key</button>
           <div class="menu-sep"></div>
