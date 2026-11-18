@@ -1437,7 +1437,7 @@ api.post('/settings/telegram/chats', async (req, res) => {
 api.post('/settings/notify/test', async (req, res) => {
   const o = {};
   for (const k of ['telegram_token', 'telegram_chat_id', 'webhook_url']) if (str(req.body[k], 500)) o[k] = str(req.body[k], 500);
-  const r = await sendNotification('info', `Test message from Switchboard (sent by ${who(req)}) — notifications work!`, o);
+  const r = await sendNotification('info', `Test message from Switchboard (sent by ${who(req)}) — notifications work!`, o, { retry: [2000] });
   if (!r.sent.length && !r.errors.length) return res.json({ ok: false, error: 'Nothing configured yet — fill in Telegram or a webhook URL' });
   res.json({ ok: r.errors.length === 0, ...r });
 });

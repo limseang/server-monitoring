@@ -3,14 +3,47 @@ import { getSetting } from './settings.js';
 
 const ICON = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '🚨' };
 
+/** An error worth trying again: the network, or the other side is busy/down (429, 5xx). */
+const again = (err) => Object.assign(err, { retry: true });
+const busy = (status) => status === 429 || status >= 500;
+
+function netError(what, e) {
+  const code = e?.cause?.code || e?.cause?.errors?.find((x) => x?.code)?.code || e?.code || '';
+  if (/EAI_AGAIN|ENOTFOUND/.test(code)) {
+    return again(new Error(`Could not look up ${what} (${code}) — the Switchboard machine/container has no working DNS. On a home server: use the latest docker-compose.yml (it sets DNS servers) and run "docker compose up -d".`));
+  }
+  if (e?.name === 'TimeoutError' || /abort/i.test(e?.message || '')) return again(new Error(`${what} did not answer within 15 seconds (slow or blocked network)`));
+  return again(new Error(`Could not reach ${what} (${code || e?.message}) — is the internet reachable from the Switchboard machine?`));
+}
+
 async function postJson(url, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    throw netError(new URL(url).host, e);
+  }
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    throw busy(res.status) ? again(err) : err;
+  }
+}
+
+/** Run `fn`; on a network/busy error wait and try again (delays in ms). Wrong token etc. fail at once. */
+export async function withRetry(fn, delays = []) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!e?.retry || i >= delays.length) throw e;
+      await new Promise((r) => setTimeout(r, delays[i]));
+    }
+  }
 }
 
 /** Call the Telegram Bot API; errors come back in plain words with what to do. */
@@ -27,11 +60,12 @@ async function telegramApi(token, method, body) {
       signal: AbortSignal.timeout(15000),
     });
   } catch (e) {
-    throw new Error(`Could not reach Telegram (${e.cause?.code || e.message}) — is the internet reachable from the Switchboard machine?`);
+    throw netError('Telegram (api.telegram.org)', e);
   }
   const data = await res.json().catch(() => ({}));
   if (res.ok && data.ok) return data.result;
-  throw new Error(telegramHint(res.status, data.description || `HTTP ${res.status}`, body?.chat_id));
+  const err = new Error(telegramHint(res.status, data.description || `HTTP ${res.status}`, body?.chat_id));
+  throw busy(res.status) ? again(err) : err;
 }
 
 export function telegramHint(status, description, chatId) {
@@ -76,18 +110,21 @@ export async function sendWebhook(url, level, text) {
   await postJson(url, body);
 }
 
+/** Alerts are tried again after 5 s, 30 s and 2 min when the network blips — a failover message must not get lost. */
+export const ALERT_RETRY = [5000, 30000, 120000];
+
 /**
- * Push a message to every configured channel (Telegram, webhook).
+ * Push a message to every configured channel (Telegram, webhook), each retried on network errors.
  * `overrides` lets the settings page test values before saving them.
  */
-export async function sendNotification(level, message, overrides = {}) {
+export async function sendNotification(level, message, overrides = {}, { retry = ALERT_RETRY } = {}) {
   const tgToken = overrides.telegram_token ?? getSetting('telegram_token');
   const tgChat = overrides.telegram_chat_id ?? getSetting('telegram_chat_id');
   const hook = overrides.webhook_url ?? getSetting('webhook_url');
   const text = `${ICON[level] || '•'} ${message}`;
   const tasks = [];
-  if (tgToken && tgChat) tasks.push(sendTelegram(tgToken, tgChat, text).then(() => 'telegram'));
-  if (hook) tasks.push(sendWebhook(hook, level, text).then(() => 'webhook'));
+  if (tgToken && tgChat) tasks.push(withRetry(() => sendTelegram(tgToken, tgChat, text), retry).then(() => 'telegram'));
+  if (hook) tasks.push(withRetry(() => sendWebhook(hook, level, text), retry).then(() => 'webhook'));
   const results = await Promise.allSettled(tasks);
   const errors = results.filter((r) => r.status === 'rejected').map((r) => r.reason?.message || String(r.reason));
   if (errors.length) console.warn('[notify]', errors.join('; '));

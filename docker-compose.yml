@@ -10,6 +10,12 @@ services:
     image: switchboard:latest
     container_name: switchboard
     restart: unless-stopped
+    # DNS servers the container uses to find Telegram, GitHub, Cloudflare… Docker's own lookup is often
+    # broken on home servers ("EAI_AGAIN"). Using your own/router DNS (e.g. for local server names)?
+    # Set DNS_1 / DNS_2 in .env.
+    dns:
+      - ${DNS_1:-1.1.1.1}
+      - ${DNS_2:-8.8.8.8}
     ports:
       # Behind a reverse proxy / Cloudflare Tunnel? Use "127.0.0.1:8080:8080" instead.
       - "8080:8080"
