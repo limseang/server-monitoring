@@ -56,6 +56,7 @@ import { templateProjectRow } from './ops/provision.js';
 import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, listFolders, makeFolder, cleanFolder } from './ops/serverctl.js';
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
+import { watchServer, tailLog } from './live.js';
 import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
@@ -273,6 +274,43 @@ api.get('/jobs/:id/stream', (req, res) => {
     return s.end();
   }
   bus.on(key, onMsg); // same tick as the snapshot above, so no log line is missed
+});
+
+/* ---------- live server views (only watched while a page is open) ---------- */
+// One channel per view. A heartbeat every 15 s lets the browser notice a dead connection.
+function liveChannel(req, res, onClose) {
+  let hb = null;
+  const s = sse(req, res, () => {
+    clearInterval(hb);
+    onClose();
+  });
+  hb = setInterval(() => s.send('hb', { at: Date.now() }), 15000);
+  return s;
+}
+
+api.get('/servers/:id/live', (req, res) => {
+  const server = mustServer(req.params.id);
+  const topics = { metrics: bool(req.query.metrics), traffic: bool(req.query.traffic) };
+  if (!topics.metrics && !topics.traffic) throw bad('Ask for metrics=1 and/or traffic=1');
+  let stop = () => {};
+  const s = liveChannel(req, res, () => stop());
+  stop = watchServer(server, topics, s.send);
+});
+
+api.get('/servers/:id/logs/live', (req, res) => {
+  const server = mustServer(req.params.id);
+  const opts = { source: str(req.query.source, 500), lines: int(req.query.lines, 200, 10, 2000), q: str(req.query.q, 200) };
+  let stop = () => {};
+  const s = liveChannel(req, res, () => stop());
+  try {
+    stop = tailLog(server, opts, (event, data) => {
+      s.send(event, data);
+      if (event === 'end') s.end();
+    });
+  } catch (e) {
+    s.send('end', { error: e.message, fatal: true });
+    s.end();
+  }
 });
 
 /* ---------- overview ---------- */

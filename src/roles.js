@@ -50,7 +50,7 @@ function match(list, req) {
 }
 
 // Logs can hold personal data (IPs, emails): developers and admins only.
-const NO_VIEWER_GET = [/^\/servers\/\d+\/(logs|log-sources)$/, /^\/servers\/\d+\/containers\/[^/]+\/logs$/, /^\/servers\/\d+\/apps\/logs$/];
+const NO_VIEWER_GET = [/^\/servers\/\d+\/(logs|log-sources|logs\/live)$/, /^\/servers\/\d+\/containers\/[^/]+\/logs$/, /^\/servers\/\d+\/apps\/logs$/];
 
 export function allowed(req) {
   const role = req.user?.role || 'viewer';

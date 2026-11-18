@@ -4,6 +4,7 @@ import { MeterBar, MenuBtn, JobsTable, Ago, HealthPill } from '../components.js'
 import { PortsTab, PowerTab } from '../serverctl.js';
 import { TrafficTab, LogsTab } from '../trafficview.js';
 import { UsageTab } from '../usageview.js';
+import { useLive, LivePill } from '../live.js';
 import { ServerCard } from './overview.js';
 import { BillingCard } from '../billing.js';
 
@@ -27,7 +28,7 @@ export const ServersPage = {
 
 export const ServerPage = {
   props: { id: Number },
-  components: { BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab, UsageTab },
+  components: { LivePill, BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab, UsageTab },
   setup(props) {
     const s = ref(null);
     const tab = ref('overview');
@@ -100,7 +101,38 @@ export const ServerPage = {
     watch(() => store.live, load);
     watch(() => store.jobsLive, () => http.get(`/jobs?server=${props.id}&limit=15`).then((j) => (jobs.value = j)).catch(() => {}));
 
-    const m = computed(() => s.value?.metrics);
+    // Overview tab: the meters follow a live reading every 2 seconds while the tab is open.
+    const liveM = ref(null);
+    const meters = useLive(() => (tab.value === 'overview' ? `/servers/${props.id}/live?metrics=1` : null), {
+      init: (d) => (liveM.value = d.samples?.[d.samples.length - 1] || null),
+      sample: (x) => (liveM.value = x),
+      status: () => {},
+    });
+    watch([tab, () => props.id], () => {
+      liveM.value = null;
+      meters.restart();
+    });
+    const m = computed(() => {
+      const base = s.value?.metrics;
+      const l = liveM.value;
+      if (!base || !l) return base;
+      const pick = (v, old) => (v == null ? old : v);
+      return {
+        ...base,
+        cpu_pct: pick(l.cpu, base.cpu_pct),
+        mem_pct: pick(l.mem, base.mem_pct),
+        mem_used: pick(l.mem_used, base.mem_used),
+        mem_total: pick(l.mem_total, base.mem_total),
+        swap_used: pick(l.swap_used, base.swap_used),
+        swap_total: pick(l.swap_total, base.swap_total),
+        load: l.load?.length ? l.load : base.load,
+        disk_pct: pick(l.disk_pct, base.disk_pct),
+        disk_avail: pick(l.disk_avail, base.disk_avail),
+        disk_total: pick(l.disk_total, base.disk_total),
+        uptime_s: pick(l.uptime_s, base.uptime_s),
+        collected_at: l.t,
+      };
+    });
     const containers = computed(() => {
       const q = filter.value.toLowerCase();
       return (m.value?.containers || []).filter((c) => !q || `${c.name} ${c.image} ${c.project || ''}`.toLowerCase().includes(q));
@@ -171,7 +203,7 @@ export const ServerPage = {
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { meters, liveM, tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -241,7 +273,7 @@ export const ServerPage = {
       <div class="tile"><div class="tile-label">System</div><div class="strong mt-8">{{ m.os || '—' }}</div><div class="tile-sub">up {{ uptimeStr(m.uptime_s) }} · kernel {{ m.kernel }}</div></div>
     </div>
     <div v-else class="empty-card">No stats yet — <button class="link-btn" @click="refresh">collect now</button>.</div>
-    <div class="muted small mt-8" v-if="m">Stats from <ago :at="m.collected_at" /> · host key <span class="mono">{{ s.host_key || 'not pinned yet' }}</span></div>
+    <div class="muted small mt-8 row gap-8 wrap" v-if="m"><live-pill :state="meters.state.value" :every="2" /><span v-if="!liveM">Stats from <ago :at="m.collected_at" /></span><span v-else>CPU, memory and disk update every 2 s while this page is open</span><span>· host key <span class="mono">{{ s.host_key || 'not pinned yet' }}</span></span></div>
 
     <section class="section" v-if="s.deployments.length">
       <div class="section-head"><h2>Projects on this server</h2></div>

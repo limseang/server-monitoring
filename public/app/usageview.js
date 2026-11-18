@@ -1,5 +1,6 @@
 import { ref, computed, watch, onMounted } from '/vendor/vue.js';
 import { store, http, toast, bytes, fmtDate } from './lib.js';
+import { useLive, LivePill } from './live.js';
 
 /* ------------------------------------------------------------------ line chart (crosshair + tooltip) */
 const niceMax = (v) => {
@@ -8,7 +9,9 @@ const niceMax = (v) => {
   return [1, 2, 2.5, 5, 10].map((m) => m * p).find((m) => m >= v);
 };
 const timeLabel = (t, spanMin) =>
-  spanMin > 1440 ? new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }) : new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  spanMin <= 15
+    ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : spanMin > 1440 ? new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }) : new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 export const LineChart = {
   props: {
@@ -71,7 +74,7 @@ export const LineChart = {
       const i = Math.round(((px - PAD.l) / (W - PAD.l - PAD.r)) * (n.value - 1));
       hover.value = i >= 0 && i < n.value ? { i, p: props.series[i], x: x(i) } : null;
     }
-    const per = computed(() => (props.perPoint > 1 ? `avg of ${props.perPoint >= 60 ? props.perPoint / 60 + ' h' : props.perPoint + ' min'}` : 'per minute'));
+    const per = computed(() => (props.perPoint === 0 ? 'live reading' : props.perPoint > 1 ? `avg of ${props.perPoint >= 60 ? props.perPoint / 60 + ' h' : props.perPoint + ' min'}` : 'per minute'));
     return { W, H, PAD, hover, paths, ticks, xlabels, bandRects, y, move, per };
   },
   template: `
@@ -89,7 +92,7 @@ export const LineChart = {
       <div class="tchart-x"><span v-for="l in xlabels" :key="l.x" :style="{ left: (l.x / W * 100) + '%' }">{{ l.t }}</span></div>
       <template v-if="hover"><span v-for="p in paths" :key="'d' + p.k" v-show="hover.p[p.k] != null" class="uchart-dot" :style="{ left: (hover.x / W * 100) + '%', top: (y(hover.p[p.k] ?? 0) / H * 220) + 'px', background: p.color }"></span></template>
       <div v-if="hover" class="tchart-tip" :style="{ left: Math.min(85, Math.max(12, (hover.x / W) * 100)) + '%' }">
-        <b>{{ new Date(hover.p.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }}</b> · {{ per }}
+        <b>{{ new Date(hover.p.t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: perPoint === 0 ? '2-digit' : undefined }) }}</b> · {{ per }}
         <div v-for="l in lines" :key="l.k" class="tchart-tip-row"><span><i :style="{ background: l.color }"></i>{{ l.label }}</span><b>{{ hover.p[l.k] == null ? 'no data' : fmt(hover.p[l.k]) }}<template v-if="hover.p[l.k + '_max'] != null && hover.p[l.k + '_max'] !== hover.p[l.k]"> <span class="muted">(max {{ fmt(hover.p[l.k + '_max']) }})</span></template></b></div>
       </div>
     </div>
@@ -103,9 +106,71 @@ const CAUSE = {
   cpu: { label: 'Heavy work', badge: 'badge-blue', fix: 'Check containers, restart' },
 };
 
+/** Live now: a reading every 2 seconds while this tab is open (not stored). */
+export const LiveUsage = {
+  props: { server: Object },
+  components: { LineChart, LivePill },
+  setup(props) {
+    const samples = ref([]);
+    const every = ref(2);
+    const error = ref('');
+    const live = useLive(() => `/servers/${props.server.id}/live?metrics=1`, {
+      init(d) {
+        every.value = d.every || 2;
+        samples.value = d.samples || [];
+        error.value = d.error || '';
+      },
+      sample(s) {
+        error.value = '';
+        samples.value = [...samples.value.slice(-149), s];
+      },
+      status(d) {
+        error.value = d.ok ? '' : d.error;
+      },
+    });
+    const last = computed(() => samples.value[samples.value.length - 1]);
+    const hasGpu = computed(() => samples.value.some((s) => s.gpu != null));
+    const resLines = computed(() => [
+      { k: 'cpu', label: 'CPU', color: 'var(--series-1)' },
+      { k: 'mem', label: 'Memory', color: 'var(--series-2)' },
+      ...(hasGpu.value ? [{ k: 'gpu', label: 'GPU', color: 'var(--series-3)' }] : []),
+    ]);
+    const netLines = [
+      { k: 'net_rx', label: 'In', color: 'var(--series-1)' },
+      { k: 'net_tx', label: 'Out', color: 'var(--series-2)' },
+    ];
+    const pctFmt = (v) => `${Math.round(v)}%`;
+    const rateFmt = (v) => `${bytes(v)}/s`;
+    const span = computed(() => Math.max(1, Math.round((samples.value.length * every.value) / 60)));
+    return { live, samples, every, error, last, hasGpu, resLines, netLines, pctFmt, rateFmt, span, bytes };
+  },
+  template: `
+  <div class="card card-body live-card">
+    <div class="row between wrap gap-8 mb-12">
+      <div><h3 class="row gap-8">Live now <live-pill :state="live.state.value" :every="every" /></h3><div class="hint">A reading every {{ every }} seconds while this page is open — the last {{ span }} min</div></div>
+      <div class="row gap-6">
+        <button v-if="live.state.value === 'paused'" class="btn btn-xs" @click="live.resume()">▶ Live</button>
+        <button v-else class="btn btn-xs btn-ghost" @click="live.pause()">❚❚ Pause</button>
+      </div>
+    </div>
+    <div v-if="error" class="alert alert-warn mb-12"><span class="alert-icon">⚠</span><span>{{ error }}</span></div>
+    <div class="tiles live-tiles">
+      <div class="tile"><div class="tile-label">CPU</div><div class="tile-value live-num">{{ last?.cpu ?? '—' }}<span class="muted">%</span></div><div class="tile-sub">load {{ (last?.load || []).join(' · ') || '—' }}</div></div>
+      <div class="tile"><div class="tile-label">Memory</div><div class="tile-value live-num">{{ last?.mem ?? '—' }}<span class="muted">%</span></div><div class="tile-sub">{{ last ? bytes(last.mem_used) + ' of ' + bytes(last.mem_total) : '—' }}</div></div>
+      <div class="tile" v-if="hasGpu"><div class="tile-label">GPU</div><div class="tile-value live-num">{{ last?.gpu ?? '—' }}<span class="muted">%</span></div><div class="tile-sub">NVIDIA</div></div>
+      <div class="tile"><div class="tile-label">Network</div><div class="tile-value live-num small-value">↓ {{ last?.net_rx != null ? bytes(last.net_rx) + '/s' : '—' }}</div><div class="tile-sub">↑ {{ last?.net_tx != null ? bytes(last.net_tx) + '/s' : '—' }} out</div></div>
+    </div>
+    <div v-if="samples.length > 1" class="grid grid-2 mt-8">
+      <line-chart :series="samples" :lines="resLines" :fixed-max="100" :fmt="pctFmt" :span-min="5" :per-point="0" :x-ticks="4" label="Live CPU and memory use in percent" />
+      <line-chart :series="samples" :lines="netLines" :fmt="rateFmt" :span-min="5" :per-point="0" :x-ticks="4" label="Live network bytes per second" />
+    </div>
+    <div v-else-if="live.state.value !== 'paused'" class="muted small mt-8">Waiting for the first readings…</div>
+  </div>`,
+};
+
 export const UsageTab = {
   props: { server: Object },
-  components: { LineChart },
+  components: { LineChart, LiveUsage },
   setup(props) {
     const minutes = ref(1440);
     const u = ref(null);
@@ -149,6 +214,7 @@ export const UsageTab = {
   template: `
   <div v-if="!u" class="muted">Loading…</div>
   <div v-else class="stack">
+    <live-usage :server="server" />
     <div class="row between wrap gap-8">
       <div class="seg"><button v-for="r in RANGES" :key="r[0]" :class="{ on: minutes === r[0] }" @click="minutes = r[0]">{{ r[1] }}</button></div>
       <span class="muted small">a reading every {{ everyText }} · busy = CPU ≥ {{ u.thresholds.cpu }}% or memory ≥ {{ u.thresholds.mem }}% for {{ u.thresholds.minutes }} min (Settings → Monitoring)</span>

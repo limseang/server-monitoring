@@ -1,5 +1,6 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from '/vendor/vue.js';
 import { store, http, toast, ago, fmtDate, dur, tick, HEALTH, JOB_TYPES, showJob, confirmBox } from './lib.js';
+import { LivePill } from './live.js';
 
 export const Ago = {
   props: { at: String, prefix: { type: String, default: '' } },
@@ -258,8 +259,10 @@ export const EventsList = {
 export const JobLog = {
   props: { jobId: Number, tall: Boolean },
   emits: ['status'],
-  components: { JobStatus },
+  components: { JobStatus, LivePill },
   setup(props, { emit }) {
+    const conn = ref('connecting'); // live badge while the job runs
+    const away = ref(false); // scrolled up → show "jump to latest"
     const lines = ref([]);
     const status = ref(null);
     const error = ref(null);
@@ -274,7 +277,9 @@ export const JobLog = {
     const onScroll = () => {
       const el = box.value;
       follow = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      away.value = !follow;
     };
+    const jump = () => ((follow = true), (away.value = false), scroll());
     const cls = (l) => (l.includes(' │ ') ? 'l-out' : l.includes('▶') ? 'l-step' : l.includes('✖') ? 'l-err' : l.includes('⚠') ? 'l-warn' : l.includes('✔') ? 'l-ok' : '');
     function open() {
       es?.close();
@@ -283,6 +288,12 @@ export const JobLog = {
       error.value = null;
       http.get(`/jobs/${props.jobId}`).then((j) => (job.value = j)).catch((e) => toast(e.message, 'error'));
       es = new EventSource(`/api/jobs/${props.jobId}/stream`);
+      es.onopen = () => (conn.value = 'live');
+      // the browser reconnects by itself (and gets the whole log again); if it gives up, start over
+      es.onerror = () => {
+        conn.value = 'offline';
+        if (es.readyState === 2 && ['queued', 'running', null].includes(status.value)) setTimeout(() => es?.readyState === 2 && open(), 3000);
+      };
       es.addEventListener('init', (e) => {
         const d = JSON.parse(e.data);
         lines.value = (d.log || '').split('\n').filter(Boolean);
@@ -316,8 +327,11 @@ export const JobLog = {
     }
     onMounted(open);
     watch(() => props.jobId, open);
-    onUnmounted(() => es?.close());
-    return { lines, status, error, job, box, onScroll, cls, cancel, copy };
+    onUnmounted(() => {
+      es?.close();
+      es = null;
+    });
+    return { lines, status, error, job, box, onScroll, cls, cancel, copy, conn, away, jump };
   },
   template: `
     <div class="stack" style="gap:10px">
@@ -326,6 +340,7 @@ export const JobLog = {
           <job-status :status="status || 'queued'" />
           <span class="strong">{{ job?.title }}</span>
           <span class="muted small" v-if="job?.user">by {{ job.user }}</span>
+          <live-pill v-if="status === 'running' || status === 'queued'" :state="conn" />
         </div>
         <div class="row gap-6">
           <button class="btn btn-sm" @click="copy">Copy log</button>
@@ -333,10 +348,10 @@ export const JobLog = {
         </div>
       </div>
       <div v-if="status === 'failed' && error" class="alert alert-error"><span class="alert-icon">✖</span><span>{{ error }}</span></div>
-      <div ref="box" class="log" :class="{ tall }" @scroll="onScroll">
+      <div class="log-wrap"><div ref="box" class="log" :class="{ tall }" @scroll="onScroll">
         <div v-if="!lines.length" class="log-empty">{{ status === 'queued' ? 'Waiting for another job on this project to finish…' : 'Starting…' }}</div>
         <div v-for="(l, i) in lines" :key="i" :class="cls(l)">{{ l }}</div>
-      </div>
+      </div><button v-if="away" class="btn btn-sm log-jump" @click="jump">↓ Jump to latest</button></div>
     </div>`,
 };
 
