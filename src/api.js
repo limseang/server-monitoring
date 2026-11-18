@@ -43,6 +43,7 @@ import { planUpgrade } from './ops/osupgrade.js';
 import { detectHostApps, publicHostApps, hostAppScript, hostAppLogsScript } from './ops/hostapps.js';
 import { PROVIDERS, CURRENCIES, isDate, localDate, parseRemindDays, money } from './billingcalc.js';
 import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, remindDays, paymentsOf, recentPayments, recordPayment, deletePayment, checkBilling } from './billing.js';
+import { dbAccessOf, dbAccessProblem, dbAccessIssues, dbDeps, zoneOf, DEFAULT_PORTS, PROXY_IMAGE } from './ops/dbaccess.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron } from './monitor.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
@@ -312,6 +313,7 @@ function computeAlerts(projects, servers, bills = billingByServer()) {
         else if (age > staleHours) add('warn', `${p.name}: database on standby ${d.server_name} is ${Math.round(age)}h old — copy it before switching`, link);
       }
     }
+    for (const i of dbAccessIssues(p, p.deployments)) add(i.level, `${p.name}: ${i.message}`, link);
     if (p.dns_state?.drift) add('error', `${p.name}: DNS drift — Cloudflare does not point to the active server`, link);
     if (p.dns_state?.error) add('warn', `${p.name}: DNS check failed — ${p.dns_state.error}`, link);
     const ssl = p.ssl_state;
@@ -1137,6 +1139,102 @@ api.put('/projects/:id', (req, res) => {
   if (row.dns_records !== undefined && row.dns_records !== p.dns_records) refreshDnsState(p.id).catch(() => {});
   bus.emit('state', { projectId: p.id });
   res.json(projectPublic(getProject(p.id)));
+});
+
+/* ---------- outside database access (another service uses this project's database) ---------- */
+function dbAccessView(p) {
+  const cfg = dbAccessOf(p);
+  const deps = deploymentsOf(p.id);
+  const active = deps.find((d) => d.id === p.active_deployment_id) || null;
+  const dbDep = active && active.db_type !== 'none' ? active : dbDeps(p)[0] || null;
+  const root = (p.domain || '').split('.').slice(-2).join('.');
+  return {
+    config: cfg,
+    problem: dbAccessProblem(p),
+    issues: dbAccessIssues(p, deps).map((i) => ({ level: i.level, message: i.message, deployment_id: i.dep.id })),
+    suggested_host: root ? `db.${root}` : '',
+    default_port: DEFAULT_PORTS[dbDep?.db_type] || 3306,
+    db_type: dbDep?.db_type || null,
+    env: dbDep ? { database: dbDep.db_name || '', username: dbDep.db_user || '' } : null,
+    proxy_image: PROXY_IMAGE,
+    servers: deps.map((d) => ({
+      id: d.id,
+      server_name: d.server_name,
+      server_ip: d.server_ip,
+      is_active: d.id === p.active_deployment_id,
+      has_db: d.db_type !== 'none' && !!d.db_container,
+      db_container: d.db_container,
+      ...(cfg?.servers?.[d.id] || {}),
+    })),
+  };
+}
+
+api.get('/projects/:id/db-access', (req, res) => {
+  res.json(dbAccessView(mustProject(req.params.id)));
+});
+
+function dbAccessIps(list) {
+  if (!Array.isArray(list)) throw bad('Allowed IPs must be a list');
+  const out = [];
+  for (const x of list.slice(0, 50)) {
+    const ip = str(typeof x === 'string' ? x : x?.ip, 64);
+    if (!ip) continue;
+    const [addr, bits] = ip.split('/');
+    if (!net.isIPv4(addr) || (bits !== undefined && !(/^\d+$/.test(bits) && Number(bits) >= 8 && Number(bits) <= 32))) throw bad(`"${ip}" is not an IPv4 address (like 203.0.113.5, or 203.0.113.0/24 for a range)`);
+    if (addr === '0.0.0.0') throw bad('0.0.0.0 would open the database to the whole internet — enter the IP of your other server');
+    if (out.some((o) => o.ip === ip)) continue;
+    out.push({ ip, label: str(x?.label, 60) || null });
+  }
+  return out;
+}
+
+api.put('/projects/:id/db-access', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const problem = dbAccessProblem(p);
+  if (problem) throw bad(problem);
+  const b = req.body || {};
+  const host = str(b.host, 253).toLowerCase().replace(/\.$/, '');
+  if (!RE.domain.test(host)) throw bad('Host name: a name like db.example.com (without https://)');
+  if (p.domain && host === p.domain.toLowerCase()) throw bad(`${host} is your website — use a separate name, e.g. db.${p.domain}`);
+  const port = int(b.port, 0, 0, 65535);
+  if (!port || port < 1024 && ![3306, 5432].includes(port)) throw bad('Port: 3306 for MySQL, 5432 for PostgreSQL, or any number from 1024 to 65535');
+  const ips = dbAccessIps(b.ips || []);
+  const old = dbAccessOf(p) || {};
+  let zone = old.host === host && old.zone_id ? { zone_id: old.zone_id, zone_name: old.zone_name } : null;
+  if (!zone) {
+    if (!getSetting('cf_token')) throw bad('Add your Cloudflare API token first (Settings)');
+    try {
+      zone = await zoneOf(host);
+    } catch (e) {
+      throw bad(`Cloudflare: ${e.message}`);
+    }
+    if (!zone) throw bad(`${host} is not in any of your Cloudflare zones`);
+  }
+  // A new name: unlink the old record from the project (it is kept in Cloudflare)
+  if (old.record_id && old.host !== host) {
+    update('projects', p.id, { dns_records: JSON.stringify(parseJSON(p.dns_records, []).filter((x) => x.id !== old.record_id)) });
+  }
+  const cfg = { ...old, enabled: true, host, port, ips, ...zone, ...(old.host !== host ? { record_id: null, record_created: false } : {}), servers: old.servers || {} };
+  update('projects', p.id, { db_access: JSON.stringify(cfg) });
+  audit(req, 'warn', `${p.name}: outside database access set to ${host}:${port} for ${ips.map((x) => x.ip).join(', ') || 'nobody'}`, { projectId: p.id });
+  const job = enqueue({ type: 'db-access', title: `Outside database access: ${p.name} (${host}:${port})`, projectId: p.id, params: { action: 'apply' }, user: who(req) });
+  bus.emit('state', { projectId: p.id });
+  res.json({ job, ...dbAccessView(getProject(p.id)) });
+});
+
+api.post('/projects/:id/db-access/apply', (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!dbAccessOf(p)?.enabled) throw bad('Outside database access is off for this project');
+  const job = enqueue({ type: 'db-access', title: `Outside database access: ${p.name} (apply)`, projectId: p.id, params: { action: 'apply' }, user: who(req) });
+  res.json({ job });
+});
+
+api.delete('/projects/:id/db-access', (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!dbAccessOf(p)?.enabled) throw bad('Outside database access is already off');
+  const job = enqueue({ type: 'db-access', title: `Outside database access: ${p.name} (turn off)`, projectId: p.id, params: { action: 'remove', deleteDns: req.body?.delete_dns !== false }, user: who(req) });
+  audit(req, 'warn', `${p.name}: outside database access turned off`, { projectId: p.id });
+  res.json({ job });
 });
 
 api.delete('/projects/:id', (req, res) => {

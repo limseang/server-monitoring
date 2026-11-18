@@ -334,6 +334,10 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_payments_server ON payments (server_id, id);
   `,
+  // v10: outside database access (another service uses the project's database via one host name)
+  `
+  ALTER TABLE projects ADD COLUMN db_access TEXT;
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;
