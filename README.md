@@ -33,6 +33,7 @@ Built for people who run apps (Laravel, Node/Nuxt, static sites…) in **Docker*
 | **Server control** | Restart / turn off a server, change user passwords, see every open port, change a container's port, **connect a domain to a port** in one step. |
 | **Deploys & CI/CD** | Deploy button, or **GitHub Actions with self-hosted runners**: push → tests → deploy server by server. **Staging** copies and **pull-request previews**. |
 | **New apps** | Start a new **Laravel / Node / static** app from a template: Docker, database, web proxy, DNS and a GitHub repo, set up for you. |
+| **Database for other services** | Another app (a media server, a worker…) can use a project's database through **one name** like `db.example.com` that always points to the live server — switching servers never breaks it. Only the IPs you allow can connect, and only to the live server. |
 | **Server bills** | Remember when each rented server must be paid (DigitalOcean, Hetzner, Vultr, home…): price, every 1/3/6/12 months, a one-click link to the provider's billing page, **reminders before the due date** (never twice), "Mark as paid" with payment history, and your total cost per month. |
 | **More** | Load balancing (own nginx or Cloudflare), shared database server, clone a whole server or copy one project to another server (on other ports if you like), OS upgrades, apps outside Docker (PM2, systemd), users with roles (admin / developer / viewer), 2FA, audit log. |
 
@@ -188,6 +189,35 @@ Servers → a server:
 </details>
 
 <details>
+<summary><b>Let another service use a project's database (e.g. a media server)</b></summary>
+
+If another app connects **straight to the database** (its `.env` has `DB_HOST=` an IP of your server), it breaks every time you switch servers. Give it one name that follows the live server instead:
+
+1. Open the project → **Database access** tab → **Turn on…**
+2. **Host name**: keep the suggestion (`db.yourdomain.com`) or type another one. Switchboard creates it in Cloudflare as **DNS only** (grey cloud — a database can't go through Cloudflare's proxy), with a 60-second TTL, and links it to the project so it moves with every switch.
+3. **Port**: 3306 for MySQL, 5432 for PostgreSQL (pick another one if that port is already taken on a server).
+4. **Who may connect**: the public IPv4 of the other server (run `curl -4 ifconfig.me` on it). You can add several, or a range like `203.0.113.0/24`.
+5. **Save and set up on all servers.** Then copy the shown settings into the other service's `.env`:
+   ```
+   DB_HOST=db.yourdomain.com
+   DB_PORT=3306
+   ```
+   (Laravel: `php artisan config:clear` afterwards.)
+
+How it works and what it protects:
+
+- On every server of the project, a tiny proxy container (`sb-dbaccess-<id>`, image `alpine/socat`) publishes the database on the port. Your `docker-compose.yml` is not changed.
+- A firewall allow-list (iptables `DOCKER-USER`, because Docker ignores ufw) lets **only your IPs** in. Your own containers still reach the database as before.
+- **Only the live server is open.** Standbys are closed, so the other service can never write into a database that is about to be overwritten.
+- **When you switch with a database copy**, the old server is closed **before** the copy starts, so nothing written from outside gets lost; after DNS moves, the new server opens. Your other service gets a few seconds of "can't connect" during the switch — Laravel retries on the next request. Run `php artisan queue:restart` there after a switch so long-running workers connect to the new server.
+- Rules come back after a reboot. If your provider has its own firewall (DigitalOcean Cloud Firewall, AWS security group…), allow the port there too, from the same IPs.
+- If something doesn't match (e.g. you marked another server as live by hand, or added a server to the project), the Overview tells you — press **Apply again**.
+- **Turn off** removes the proxy, the firewall rules and (if Switchboard created it) the DNS record from every server.
+
+Not for load-balanced projects or projects on a shared database server — that server has its own allow-list.
+</details>
+
+<details>
 <summary><b>Server bills and payment reminders</b></summary>
 
 So you never pay a server late:
@@ -270,6 +300,8 @@ node dev/cf-mock/server.js &         # fake Telegram on :8787, then run a Switch
 DATA_DIR=/tmp/sb-test PORT=8093 ADMIN_USER=admin ADMIN_PASSWORD=admin-password-123 TELEGRAM_API_BASE=http://127.0.0.1:8787 node src/index.js &
 SB_URL=http://localhost:8093 node dev/e2e-billing.mjs   # server bills, reminders, mark as paid
 ```
+
+`dev/e2e-dbaccess.mjs` tests "Database access" on the clone pair (vps-src / vps-new) — see its first lines for how to start a test Switchboard on the lab network.
 
 The lab needs about 6 GB of memory for Docker when everything runs at once.
 

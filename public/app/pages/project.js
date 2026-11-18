@@ -3,6 +3,7 @@ import { store, http, toast, openDialog, confirmBox, runJob, go, freshness, fmtD
 import { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, RecordsPicker, CronField } from '../components.js';
 import { TrafficTab } from './traffic.js';
 import { CicdTab } from '../cicd.js';
+import { DbAccessTab } from '../dbaccess.js';
 
 const BACKUP_PRESETS = [
   ['Daily 3:00', '0 3 * * *'],
@@ -148,7 +149,7 @@ const ProjectSettings = {
 /* ------------------------------------------------------------------ page */
 export default {
   props: { id: Number },
-  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab },
+  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
@@ -401,6 +402,7 @@ export default {
       <button class="tab" :class="{ on: tab === 'dns' }" @click="openTab('dns')">DNS & SSL</button>
       <button class="tab" :class="{ on: tab === 'cicd' }" @click="openTab('cicd')">CI/CD<span v-if="p.ci_enabled" class="muted"> · on</span></button>
       <button class="admin-only tab" :class="{ on: tab === 'traffic' }" @click="openTab('traffic')">Traffic{{ lb ? ' · LB' : '' }}</button>
+      <button class="tab" :class="{ on: tab === 'dbaccess' }" @click="openTab('dbaccess')">Database access<span v-if="p.db_access && p.db_access.enabled" class="muted"> · on</span></button>
       <button class="tab" :class="{ on: tab === 'backups' }" @click="openTab('backups')">Backups <span class="muted">{{ p.backups_count }}</span></button>
       <button class="tab" :class="{ on: tab === 'jobs' }" @click="openTab('jobs')">Jobs</button>
       <button class="tab" :class="{ on: tab === 'activity' }" @click="openTab('activity')">Activity</button>
@@ -464,6 +466,7 @@ export default {
     </div>
 
     <traffic-tab v-if="tab === 'traffic'" :project="p" @reload="load" />
+ <db-access-tab v-if="tab === 'dbaccess'" :project="p" :key="'dba' + p.id" />
     <cicd-tab v-if="tab === 'cicd'" :project="p" :key="'ci' + p.id" @reload="load" />
     <jobs-table v-if="tab === 'jobs'" :jobs="jobs || []" />
     <events-list v-if="tab === 'activity'" :events="events || []" />
