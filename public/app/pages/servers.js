@@ -3,6 +3,7 @@ import { store, http, toast, openDialog, confirmBox, runJob, go, bytes, uptimeSt
 import { MeterBar, MenuBtn, JobsTable, Ago, HealthPill } from '../components.js';
 import { PortsTab, PowerTab } from '../serverctl.js';
 import { TrafficTab, LogsTab } from '../trafficview.js';
+import { UsageTab } from '../usageview.js';
 import { ServerCard } from './overview.js';
 import { BillingCard } from '../billing.js';
 
@@ -26,7 +27,7 @@ export const ServersPage = {
 
 export const ServerPage = {
   props: { id: Number },
-  components: { BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab },
+  components: { BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab, UsageTab },
   setup(props) {
     const s = ref(null);
     const tab = ref('overview');
@@ -222,6 +223,7 @@ export const ServerPage = {
 
     <div class="tabs">
       <button class="tab" :class="{ on: tab === 'overview' }" @click="tab = 'overview'"><icon name="overview" :size="14" />Overview</button>
+      <button class="tab" :class="{ on: tab === 'usage' }" @click="tab = 'usage'"><icon name="bolt" :size="14" />Usage history</button>
       <button class="tab" :class="{ on: tab === 'traffic' }" @click="tab = 'traffic'"><icon name="activity" :size="14" />Traffic</button>
       <button class="tab dev-only" :class="{ on: tab === 'logs' }" @click="tab = 'logs'"><icon name="terminal" :size="14" />Logs</button>
       <button class="tab" :class="{ on: tab === 'ports' }" @click="tab = 'ports'"><icon name="port" :size="14" />Ports & domains</button>
@@ -258,6 +260,7 @@ export const ServerPage = {
     <section class="section" v-if="s.notes"><div class="section-head"><h2>Notes</h2></div><div class="card card-body" style="white-space:pre-wrap">{{ s.notes }}</div></section>
     </template>
 
+    <usage-tab v-if="tab === 'usage'" :server="s" :key="'u' + s.id" />
     <traffic-tab v-if="tab === 'traffic'" :server="s" :key="'t' + s.id" />
     <logs-tab v-if="tab === 'logs'" :server="s" :key="'l' + s.id" />
     <ports-tab v-if="tab === 'ports'" :server="s" />

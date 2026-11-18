@@ -18,6 +18,7 @@ import { httpCheck } from './health.js';
 import { getServer } from './models.js';
 import { pollAllCi } from './ops/ci.js';
 import { collectAllTraffic, pruneTraffic } from './ops/traffic.js';
+import { recordUsage, pruneUsage } from './ops/usage.js';
 import { cleanupLocal } from './ops/backupstore.js';
 import { getSchedules, scheduledCleanup } from './ops/cleanup.js';
 import { humanDuration, isoAgo } from './util.js';
@@ -161,7 +162,11 @@ export async function checkProjectNow(projectId) {
 
 function metricsScript(server) {
   return [
+    // network counters are read before and after the 1-second CPU sample → bytes per second
+    'echo "@@net1"; cat /proc/net/dev 2>/dev/null',
     'echo "@@cpu"; head -1 /proc/stat; sleep 1; head -1 /proc/stat',
+    'echo "@@net2"; cat /proc/net/dev 2>/dev/null',
+    'echo "@@gpu"; command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null',
     'echo "@@load"; cat /proc/loadavg',
     'echo "@@nproc"; nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo',
     'echo "@@mem"; grep -E "^(MemTotal|MemAvailable|SwapTotal|SwapFree):" /proc/meminfo',
@@ -234,6 +239,38 @@ export function parseMetrics(out) {
     res.disk_avail = Number(d[3]) * 1024;
     res.disk_pct = parseInt(d[4], 10);
   }
+  // Network: real interfaces only (Docker bridges / veth pairs would count the same bytes twice)
+  const VIRTUAL = /^(lo|veth|docker|br-|virbr|cni|flannel|cali|vxlan|kube)/;
+  const netBytes = (lines) => {
+    let rx = 0;
+    let tx = 0;
+    let n = 0;
+    for (const l of lines || []) {
+      const m = l.match(/^\s*([^:\s]+):\s*(.*)$/);
+      if (!m || VIRTUAL.test(m[1])) continue;
+      const f = m[2].trim().split(/\s+/).map(Number);
+      if (f.length < 9) continue;
+      rx += f[0];
+      tx += f[8];
+      n++;
+    }
+    return n ? { rx, tx } : null;
+  };
+  const n1 = netBytes(sec.net1);
+  const n2 = netBytes(sec.net2);
+  if (n1 && n2) {
+    res.net_rx = Math.max(0, n2.rx - n1.rx); // bytes in the ~1 second between the two reads
+    res.net_tx = Math.max(0, n2.tx - n1.tx);
+  }
+  // GPU (NVIDIA only, when nvidia-smi is installed): average use over all cards, memory summed
+  const gpus = (sec.gpu || []).map((l) => l.split(',').map((x) => parseFloat(x))).filter((g) => g.length >= 3 && g.every(Number.isFinite));
+  if (gpus.length) {
+    res.gpus = gpus.length;
+    res.gpu_pct = Math.round((gpus.reduce((s, g) => s + g[0], 0) / gpus.length) * 10) / 10;
+    const used = gpus.reduce((s, g) => s + g[1], 0);
+    const total = gpus.reduce((s, g) => s + g[2], 0);
+    res.gpu_mem_pct = total ? Math.round((used / total) * 1000) / 10 : null;
+  }
   res.uptime_s = Math.round(parseFloat(sec.uptime?.[0]) || 0);
   res.os = (sec.os?.[0] || '').trim();
   res.kernel = (sec.kernel?.[0] || '').trim();
@@ -274,6 +311,7 @@ export async function collectMetrics(server) {
     m.busy_since = hot ? prev?.busy_since || m.collected_at : null;
     m.busy = hot && Date.now() - Date.parse(m.busy_since) >= mins * 60000;
     update('servers', server.id, { metrics: JSON.stringify(m) });
+    recordUsage(server, m, prev, { cpuTh, memTh });
     if (m.busy && !prev?.busy) {
       const lbProjects = deploymentsOnServer(server.id)
         .map((d) => getProject(d.project_id))
@@ -454,6 +492,7 @@ function prune() {
   run("DELETE FROM jobs WHERE status NOT IN ('queued', 'running') AND created_at < ?", isoAgo(90 * 864e5));
   run('DELETE FROM sessions WHERE expires_at < ?', now());
   pruneTraffic();
+  pruneUsage();
   for (const dir of [config.tmpDir, ...fs.readdirSync(config.backupDir).map((d) => path.join(config.backupDir, d))]) {
     try {
       for (const f of fs.readdirSync(dir)) {
