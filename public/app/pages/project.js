@@ -18,8 +18,8 @@ const SYNC_PRESETS = [
   ['Daily 4:00', '0 4 * * *'],
 ];
 // Same as DOCKER_DEPLOY_SCRIPT in src/ops/ci.js
-const DOCKER_SCRIPT = `# Get the new code (the exact commit when CI/CD started the deploy)
-if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi
+const DOCKER_SCRIPT = `# Get the code: the exact commit when one was chosen (newer, or older for a rollback), else the newest
+if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git reset -q --keep "$SB_COMMIT"; else git pull -q --ff-only; fi
 # Rebuild the images that have a build: section and restart what changed
 docker compose up -d --build --remove-orphans
 # Remove old image layers so the disk does not fill up
@@ -280,10 +280,10 @@ export default {
       if (!(await confirmBox({ title: `Deploy on ${d.server_name}?`, message: 'Runs the deploy script of this project on that server.', confirmText: 'Deploy' }))) return;
       runJob(http.post(`/deployments/${d.id}/deploy`));
     }
-    async function deployAll() {
-      if (!(await confirmBox({ title: 'Deploy on all servers?', message: 'Standby servers first, the live server last. Stops at the first failure.', confirmText: 'Deploy all' }))) return;
-      runJob(http.post(`/projects/${props.id}/deploy`));
-    }
+    // Choose which servers update now and which later (the live one can wait for a quiet moment).
+    const deployAll = () => openDialog('deploy-plan', { projectId: Number(props.id) });
+    // Errors after a deploy: put an older commit of the branch back.
+    const rollBack = () => openDialog('deploy-plan', { projectId: Number(props.id), rollback: true });
     const removeDep = (d) => openDialog('remove-deployment', { project: p.value, deployment: d, onDone: load });
     const copyDep = (d) => openDialog('project-copy', { project: p.value, deployment: d, onDone: load });
     const restore = (b) => openDialog('restore', { project: p.value, backup: b });
@@ -308,7 +308,7 @@ export default {
     return {
       store, isPrivateIp, privateOk, p, notFound, tab, backups, jobs, events, busy, active, staleHours, dns, dnsRows, ssl, dbLabel, freshness, fmtDate, bytes, HEALTH,
       openTab, load, openSwitch, openSync, addDep, editDep, openCommand, checkNow, refreshDns, fixDns, adopt, toggleMaint, backup, backupLive,
-      deploy, deployAll, removeDep, copyDep, restore, reprovision, delBackup, keepBackup, kindBadge, kindLabel, sslFor, lb, lbCount, LB_BADGE, scaleOut, moveHere, lbMember,
+      deploy, deployAll, rollBack, removeDep, copyDep, restore, reprovision, delBackup, keepBackup, kindBadge, kindLabel, sslFor, lb, lbCount, LB_BADGE, scaleOut, moveHere, lbMember,
     };
   },
   template: `
@@ -339,7 +339,8 @@ export default {
           <button class="menu-item" @click="checkNow" :disabled="busy.check">Run health check now</button>
           <button class="menu-item" @click="backupLive" :disabled="!p.db_server_id && (!active || active.db_type === 'none')">Back up the live database</button>
           <button class="admin-only menu-item" @click="openTab('traffic')">Load balancing & database server</button>
-          <button class="menu-item" @click="deployAll" :disabled="!p.deploy_script">Deploy to all servers</button>
+          <button class="menu-item" @click="deployAll" :disabled="!p.deploy_script">Deploy to servers…</button>
+          <button class="menu-item" @click="rollBack" :disabled="!p.deploy_script || !p.git_repo">↩ Roll back to an older commit…</button>
           <div class="menu-sep"></div>
           <button class="menu-item" @click="openTab('cicd')">CI/CD, staging & previews</button>
           <button v-if="p.template" class="admin-only menu-item" @click="reprovision">Run the template setup again</button>

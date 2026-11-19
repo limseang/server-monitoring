@@ -57,7 +57,8 @@ import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, list
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
+import { POLICIES, parseQuiet, nextQuietTime, heldOf, releaseHeld, cancelHeld, runPlan } from './ops/deployplan.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -262,13 +263,14 @@ api.get('/jobs/:id/stream', (req, res) => {
   const key = `job:${job.id}`;
   const onMsg = (m) => {
     if (m.type === 'log') s.send('log', { line: m.line });
+    else if (m.type === 'progress') s.send('progress', m.progress);
     else if (m.type === 'end') {
       s.send('end', { status: m.status, error: m.error });
       s.end();
     }
   };
   const s = sse(req, res, () => bus.off(key, onMsg));
-  s.send('init', { log: job.log, status: job.status, error: job.error });
+  s.send('init', { log: job.log, status: job.status, error: job.error, type: job.type, progress: parseJSON(job.progress, null) });
   if (!['queued', 'running'].includes(job.status)) {
     s.send('end', { status: job.status, error: job.error });
     return s.end();
@@ -1756,7 +1758,7 @@ api.get('/jobs', (req, res) => {
 api.get('/jobs/:id', (req, res) => {
   const j = getJob(toId(req.params.id));
   if (!j) throw notFound('Job not found');
-  res.json({ ...summary(j), log: j.log, params: parseJSON(j.params, {}) });
+  res.json({ ...summary(j), log: j.log, params: parseJSON(j.params, {}), progress: parseJSON(j.progress, null) });
 });
 
 api.post('/jobs/:id/cancel', (req, res) => {
@@ -2051,6 +2053,10 @@ api.get('/projects/:id/ci', async (req, res) => {
     own_workflow: ownWorkflow(root),
     runner_access: root.ci_runner_access === 'full' ? 'full' : 'restricted',
     docker_deploy_script: DOCKER_DEPLOY_SCRIPT,
+    live_policy: POLICIES.includes(root.ci_live_policy) ? root.ci_live_policy : 'now',
+    quiet_time: parseQuiet(root.ci_quiet_time)?.time || '',
+    next_quiet: root.ci_quiet_time ? nextQuietTime(root.ci_quiet_time) : null,
+    held: heldOf(root.id),
     up_to_date: ownWorkflow(root) || (!!yaml && st.committed_hash === workflowHash(yaml)),
     committed_at: st.committed_at || null,
     polled_at: st.polled_at || null,
@@ -2089,7 +2095,24 @@ api.put('/projects/:id/ci', (req, res) => {
   if (b.ci_mode !== undefined) row.ci_mode = b.ci_mode === 'pull' ? 'pull' : 'runner';
   if (b.ci_test_cmd !== undefined) row.ci_test_cmd = str(b.ci_test_cmd, 5000) || null;
   if (b.ci_runner_access !== undefined) row.ci_runner_access = b.ci_runner_access === 'full' ? 'full' : 'restricted';
+  if (b.ci_live_policy !== undefined) {
+    row.ci_live_policy = POLICIES.includes(b.ci_live_policy) ? b.ci_live_policy : 'now';
+    if (row.ci_live_policy !== p.ci_live_policy) {
+      // Runs from before this moment never hold the live server.
+      const st = parseJSON(p.ci_state, {}) || {};
+      row.ci_state = JSON.stringify({ ...st, policy_at: now() });
+    }
+  }
+  if (b.ci_quiet_time !== undefined) {
+    const t = str(b.ci_quiet_time, 5);
+    const off = Number.isInteger(b.tz_offset) && Math.abs(b.tz_offset) <= 14 * 60 ? b.tz_offset : 0;
+    if (t && !parseQuiet(t)) throw bad('Quiet time: like 02:00');
+    row.ci_quiet_time = t ? `${t}|${off}` : null;
+  }
+  if ((row.ci_live_policy ?? p.ci_live_policy) === 'quiet' && !(row.ci_quiet_time ?? p.ci_quiet_time)) throw bad('Choose the quiet time (like 02:00)');
   if (b.ci_workflow_path !== undefined) row.ci_workflow_path = b.ci_workflow_path ? workflowPathInput(b.ci_workflow_path) : null;
+  // Another workflow file: the runs list starts again with that file's runs.
+  if (row.ci_workflow_path !== undefined && (row.ci_workflow_path || null) !== (p.ci_workflow_path || null)) run('DELETE FROM ci_runs WHERE project_id = ?', p.id);
   if (b.preview_server_id !== undefined) {
     row.preview_server_id = b.preview_server_id ? mustServer(b.preview_server_id).id : null;
     if (row.preview_server_id && !p.template) throw bad('Pull request previews need a project made from a template (Switchboard must know how to build it)');
@@ -2137,9 +2160,79 @@ api.post('/projects/:id/ci/connect', (req, res) => {
     // Folder given for a server already in the project: set it when none was set.
     for (const { dep } of depsOn(p, server)) if (!dep.app_dir && dep.project_id === p.id) update('deployments', dep.id, { app_dir: str(req.body.app_dir, 500) });
   }
-  const job = enqueue({ type: 'ci-connect', title: `Connect ${server.name} to ${p.git_repo} (${p.name})`, projectId: p.id, serverId: server.id, params: { server: server.id, deploy: req.body.deploy === true }, user: who(req) });
+  const runner = req.body.runner === true;
+  if (runner && !gh.hasToken()) throw bad('A self-hosted runner needs a GitHub token first (Settings → GitHub)');
+  if (req.body.runner_access !== undefined) update('projects', p.id, { ci_runner_access: req.body.runner_access === 'full' ? 'full' : 'restricted' });
+  const job = enqueue({ type: 'ci-connect', title: `Connect ${server.name} to ${p.git_repo}${runner ? ' + self-hosted runner' : ''} (${p.name})`, projectId: p.id, serverId: server.id, params: { server: server.id, deploy: req.body.deploy === true, runner }, user: who(req) });
   bus.emit('state', { projectId: p.id });
   res.json({ job });
+});
+
+/** One run live from GitHub: its jobs and steps, each self-hosted job matched to a server. */
+api.get('/projects/:id/ci/runs/:runId/live', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo || !gh.hasToken()) throw bad('Needs a repository and a GitHub token');
+  const runId = Number(req.params.runId);
+  if (!get('SELECT 1 AS x FROM ci_runs WHERE project_id = ? AND run_id = ?', p.id, runId)) throw notFound('Run not found');
+  res.json(await liveRun(p, runId));
+});
+
+/**
+ * Deploy plan: some servers now, others later (when you click, or at a time) — the same commit for all.
+ * Body: { now: [deploymentId], later: [{ deployment, at? }], commit? ('latest' = newest on the branch) }
+ */
+api.post('/projects/:id/deploy-plan', async (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!str(p.deploy_script)) throw bad('Set a deploy script first (project Settings tab, or CI/CD → "pull from Git + rebuild")');
+  const ids = new Set(deploymentsOf(p.id).map((d) => d.id));
+  const nowIds = (Array.isArray(req.body.now) ? req.body.now : []).map(Number).filter((id) => ids.has(id));
+  const later = (Array.isArray(req.body.later) ? req.body.later : [])
+    .map((l) => ({ deployment: Number(l?.deployment), at: l?.at ? new Date(l.at) : null }))
+    .filter((l) => ids.has(l.deployment) && !nowIds.includes(l.deployment));
+  for (const l of later) if (l.at && (Number.isNaN(l.at.getTime()) || l.at.getTime() < Date.now() - 60000)) throw bad('A "later" time is in the past');
+  if (!nowIds.length && !later.length) throw bad('Choose at least one server');
+  // Pin the commit, so the servers that wait later get exactly what the others get now.
+  const root = rootOf(p);
+  let commit = /^[0-9a-f]{7,40}$/.test(String(req.body.commit || '')) ? req.body.commit : null;
+  if (!commit && later.length && root.git_repo && gh.hasToken()) commit = await gh.branchSha(root.git_repo, p.git_branch || root.git_branch || 'main').catch(() => null);
+  const job = runPlan({ project: p, nowIds, later: later.map((l) => ({ deployment: l.deployment, at: l.at ? l.at.toISOString() : null })), commit, liveFirst: req.body.live_first === true, rollback: req.body.rollback === true, user: who(req) });
+  audit(req, 'info', `${p.name}: deploy plan — now ${nowIds.length}, later ${later.length}${commit ? ` (commit ${commit.slice(0, 7)})` : ''}`, { projectId: p.id });
+  res.json({ job, commit, held: heldOf(root.id) });
+});
+
+/** The newest commits of the project's branch: CI result of each, and which servers are on which commit. */
+api.get('/projects/:id/commits', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const root = rootOf(p);
+  if (!root.git_repo || !gh.hasToken()) throw bad('Needs the GitHub repository and a token (CI/CD tab, Settings → GitHub)');
+  const branch = p.git_branch || root.git_branch || 'main';
+  const commits = await gh.listCommits(root.git_repo, branch, 25);
+  const runs = all('SELECT sha, status, conclusion, html_url, run_number, run_id FROM ci_runs WHERE project_id = ? AND event != ? ORDER BY run_id DESC', root.id, 'pull_request');
+  const git = gitStates(root);
+  const servers = deploymentsOf(p.id).map((d) => ({ deployment: d.id, server_name: d.server_name, live: d.id === p.active_deployment_id, commit: git[d.id]?.commit || null }));
+  const held = heldOf(root.id);
+  res.json({
+    branch,
+    commits: commits.map((c, i) => ({ ...c, newest: i === 0, run: runs.find((r) => r.sha === c.sha) || null, on: servers.filter((s) => s.commit === c.sha).map((s) => s.server_name) })),
+    servers,
+    held,
+  });
+});
+
+const mustHeld = (id) => {
+  const row = get('SELECT h.*, s.name AS server_name, p.name AS project_name FROM held_deploys h JOIN deployments d ON d.id = h.deployment_id JOIN servers s ON s.id = d.server_id JOIN projects p ON p.id = h.project_id WHERE h.id = ?', toId(id));
+  if (!row) throw notFound('This waiting deploy is gone (already deployed or cancelled)');
+  return row;
+};
+api.post('/held-deploys/:id/deploy', (req, res) => {
+  const row = mustHeld(req.params.id);
+  const job = releaseHeld(row, { user: who(req), why: 'started by hand' });
+  audit(req, 'info', `${row.project_name}: waiting deploy on ${row.server_name} started now`, { projectId: row.project_id });
+  res.json({ job });
+});
+api.delete('/held-deploys/:id', (req, res) => {
+  cancelHeld(mustHeld(req.params.id), who(req));
+  res.json({ ok: true });
 });
 
 /** Look at the Git folder on every server of the project (read-only). */
@@ -2183,7 +2276,10 @@ api.put('/projects/:id/ci/workflow', async (req, res) => {
   if (!/^\s*jobs\s*:/m.test(content) || !/^\s*on\s*:/m.test(content)) throw bad('This does not look like a GitHub workflow (it needs "on:" and "jobs:")');
   const branch = p.git_branch || 'main';
   const changed = await gh.putFile(p.git_repo, path, content.endsWith('\n') ? content : `${content}\n`, { branch, message: str(req.body.message, 200) || `Update ${path.split('/').pop()} (from Switchboard)` });
-  if (p.ci_workflow_path !== path) update('projects', p.id, { ci_workflow_path: path });
+  if (p.ci_workflow_path !== path) {
+    update('projects', p.id, { ci_workflow_path: path });
+    run('DELETE FROM ci_runs WHERE project_id = ?', p.id);
+  }
   audit(req, 'info', `${p.name}: workflow ${path} ${changed ? 'committed' : 'unchanged'} on ${branch}`, { projectId: p.id });
   bus.emit('state', { projectId: p.id });
   res.json({ ok: true, changed, path });

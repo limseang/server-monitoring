@@ -1,12 +1,13 @@
 import fs from 'node:fs';
-import { get, insert, tx, update, now } from '../db.js';
+import { get, insert, run, tx, update, now } from '../db.js';
 import { bus } from '../bus.js';
 import { alert, logEvent } from '../events.js';
 import { defineJob } from '../jobs.js';
 import { getProject, getServer, getDeployment, deploymentsOf } from '../models.js';
 import { probe } from '../health.js';
 import { fmtBytes, sleep } from '../util.js';
-import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, gitHint } from './remote.js';
+import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, GIT_TRUST, gitCheckoutCommit, gitHint } from './remote.js';
+import { noteGitCommit } from './ci.js';
 import { syncDatabase, backupDeployment, importFromFile, countTables, backupAbsPath, pruneBackups, requireDb } from './database.js';
 import { syncFiles, parseSyncPaths } from './files.js';
 import { setMaintenance } from './app.js';
@@ -350,13 +351,42 @@ defineJob('deploy', async (ctx, p) => {
   const script = String(project.deploy_script || '').trim();
   if (!script) throw new Error('No deploy script set for this project (Project → Settings → Deploy script)');
   const isActive = (d) => (d.id === project.active_deployment_id ? 1 : 0);
-  // Deploy standby servers first, the live one last.
-  const targets = p.all ? deploymentsOf(project.id).sort((a, b) => isActive(a) - isActive(b)) : [mustDep(project, p.deployment)];
+  // Standby servers first, the live one last — or the live one FIRST when rolling back (visitors see the errors there).
+  const order = (a, b) => (p.liveFirst ? isActive(b) - isActive(a) : isActive(a) - isActive(b));
+  // all · a chosen list (deploy plan: the others wait) · one server
+  const targets = p.all
+    ? deploymentsOf(project.id).sort(order)
+    : Array.isArray(p.deployments)
+      ? p.deployments.map((id) => mustDep(project, id)).sort(order)
+      : [mustDep(project, p.deployment)];
+  const commit = /^[0-9a-f]{7,40}$/.test(String(p.commit || '')) ? p.commit : null;
+  // Live progress for the deploy view: each server's phase (connect → code → script → health) and commits.
+  const prog = {
+    kind: 'deploy',
+    project: project.name,
+    rollback: !!p.rollback,
+    commit,
+    started_at: new Date().toISOString(),
+    servers: targets.map((d) => ({ id: d.id, name: d.server_name, live: !!isActive(d), state: 'queued', phase: '', from: null, to: null, dir: null, started_at: null, finished_at: null, health: null, error: null })),
+  };
+  const setS = (id, patch) => {
+    Object.assign(prog.servers.find((x) => x.id === id), patch);
+    ctx.progress(prog);
+  };
+  ctx.progress(prog);
+  const headOf = async (conn, dir) => {
+    const r = await runRemote(null, conn, shellScript('git rev-parse HEAD 2>/dev/null || true', { cwd: dir }), { quiet: true, okCodes: [0, 1, 128] }).catch(() => null);
+    const at = r?.stdout?.trim();
+    return /^[0-9a-f]{40}$/.test(at || '') ? at : null;
+  };
+  let current = null;
   try {
     const lb = isLb(project);
     if (lb && targets.length > 1) ctx.log('Load balanced: rolling deploy — one server at a time is taken out, deployed and put back, so visitors are never cut off');
     for (const dep of targets) {
       const run1 = async () => {
+        current = dep.id;
+        setS(dep.id, { state: 'running', phase: 'connect', started_at: new Date().toISOString() });
         ctx.step(`Deploy on ${dep.server_name}${isActive(dep) ? ' (active)' : ''}`);
         if (!dep.app_dir) ctx.warn(`${dep.server_name}: no app directory set — running in the SSH user's home directory`);
         const conn = await connectTo(ctx, getServer(dep.server_id));
@@ -364,9 +394,36 @@ defineJob('deploy', async (ctx, p) => {
           // A deploy started from GitHub (pull mode) passes the exact commit, like the runner does.
           const env = /^[0-9a-f]{7,40}$/.test(String(p.commit || '')) ? `export SB_COMMIT=${p.commit}; export SB_BRANCH=${shq(project.git_branch || 'main')}\n` : '';
           if (env) ctx.log(`Commit ${p.commit.slice(0, 7)} (${project.git_branch})`);
+          // A checkout owned by another user (files made in a container…): let git work there, before the script starts.
+          if (dep.app_dir) {
+            const t = await runRemote(null, conn, shellScript(GIT_TRUST, { cwd: dep.app_dir }), { quiet: true, okCodes: [0, 1, 2, 127, 128], timeout: 60000 }).catch(() => null);
+            const m = String(t?.stdout || '').match(/^SB_TRUSTED (\S+) (\S+)/m);
+            if (m) ctx.log(`${m[1]} belongs to user ${m[2]}, not the SSH user: marked as safe for git (safe.directory) — no owner changed`);
+          }
           // git never waits for a login/passphrase/host-key answer or a dead network (it fails with a hint instead).
           try {
+            setS(dep.id, { phase: 'code', from: dep.app_dir ? await headOf(conn, dep.app_dir) : null });
+            // A deploy of one exact commit: Switchboard moves the checkout there first — also BACK, for a rollback.
+            if (commit && dep.app_dir) {
+              const mv = await runRemote(null, conn, shellScript(gitCheckoutCommit(commit, project.git_branch || 'main'), { cwd: dep.app_dir, prelude: GIT_NO_WAIT }), { quiet: true, timeout: 10 * 60000 });
+              const m = String(mv.stdout).match(/^SB_MOVE (\w+)(?: (\w+) (\w+))?/m);
+              if (m?.[1] === 'back') ctx.warn(`${dep.server_name}: going BACK from ${m[2].slice(0, 7)} to ${m[3].slice(0, 7)} (rollback)`);
+              else if (m?.[1] === 'forward') ctx.log(`${dep.server_name}: code moved from ${m[2].slice(0, 7)} to ${m[3].slice(0, 7)}`);
+              else if (m?.[1] === 'same') ctx.log(`${dep.server_name}: already at ${m[3].slice(0, 7)}`);
+              if (m?.[3]) setS(dep.id, { from: m[2], to: m[3], dir: m[1] });
+            }
+            setS(dep.id, { phase: 'script' });
             await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true, prelude: GIT_NO_WAIT }), { timeout: 60 * 60000 });
+            // Which commit is the server on now? (A script with a plain "git pull" moves it to the newest again.)
+            if (dep.app_dir) {
+              const at = (await runRemote(null, conn, shellScript('git rev-parse HEAD 2>/dev/null || true', { cwd: dep.app_dir }), { quiet: true, okCodes: [0, 1, 128] }).catch(() => null))?.stdout?.trim();
+              if (/^[0-9a-f]{40}$/.test(at || '')) {
+                noteGitCommit(project, dep, at);
+                const sv = prog.servers.find((x) => x.id === dep.id);
+                setS(dep.id, { to: at, dir: sv.dir || (sv.from && sv.from !== at ? 'forward' : 'same') });
+                if (commit && !at.startsWith(commit) && !commit.startsWith(at)) ctx.warn(`${dep.server_name} is at ${at.slice(0, 7)}, not ${commit.slice(0, 7)}: the deploy script moved the code (it does not use $SB_COMMIT — e.g. a plain "git pull"). Use CI/CD → "pull from Git + rebuild", or make your script skip "git pull" when $SB_COMMIT is set.`);
+              }
+            }
           } catch (e) {
             const hint = gitHint(`${e.result?.stderr || ''}\n${e.result?.stdout || ''}\n${e.message}`);
             if (hint) {
@@ -378,15 +435,23 @@ defineJob('deploy', async (ctx, p) => {
         } finally {
           conn.end();
         }
+        // Deployed now: a deploy that was waiting for this server is no longer needed.
+        if (run('DELETE FROM held_deploys WHERE deployment_id = ?', dep.id).changes) ctx.log(`${dep.server_name}: its waiting deploy is done by this one`);
+        setS(dep.id, { phase: 'health' });
         const h = await probe(project, dep);
         if (h.ok) ctx.log(`Health after deploy: HTTP ${h.code} in ${h.ms} ms ✓`);
         else ctx.warn(`Health after deploy: ${h.error}`);
+        setS(dep.id, { state: 'success', phase: 'done', health: h.ok ? `HTTP ${h.code} · ${h.ms} ms` : h.error, finished_at: new Date().toISOString() });
+        current = null;
       };
       if (lb) await whileDrained(ctx, project.id, getDeployment(dep.id), run1);
       else await run1();
     }
     logEvent('success', `${project.name}: deployed on ${targets.map((d) => d.server_name).join(', ')}`, { projectId: project.id, jobId: ctx.id, user: ctx.user });
   } catch (e) {
+    if (current) setS(current, { state: 'failure', error: String(e.message).slice(0, 300), finished_at: new Date().toISOString() });
+    for (const sv of prog.servers) if (sv.state === 'queued') sv.state = 'skipped';
+    ctx.progress(prog);
     alert('error', `${project.name}: deploy FAILED — ${e.message}`, { projectId: project.id, jobId: ctx.id, link: `#/projects/${project.id}` });
     throw e;
   }

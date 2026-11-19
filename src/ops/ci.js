@@ -9,6 +9,7 @@ import * as gh from '../github.js';
 import { exec } from '../ssh.js';
 import { slugify } from '../util.js';
 import { connectTo, runRemote, asRoot, shq, shellScript } from './remote.js';
+import { splitForPolicy, POLICIES } from './deployplan.js';
 import { TEMPLATES, installHelper, pushProjectConf, ensureRepoAccess, helper, gitSshCommand, appUser } from './stack.js';
 
 /**
@@ -103,7 +104,11 @@ export function workflowYaml(root) {
   }
   for (const p of root.ci_mode === 'pull' ? [] : projects) {
     // Standby servers first, the live server last; one at a time, stop at the first failure.
-    const deps = deploymentsOf(p.id).sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
+    // The live server waits (Switchboard deploys it later) when the project says so.
+    const deps = deploymentsOf(p.id)
+      .filter((d) => !liveWaits(root, p) || d.id !== p.active_deployment_id)
+      .sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
+    if (!deps.length) continue;
     const labels = deps.map((d) => runnerLabel(getServer(d.server_id)));
     const job = `deploy-${p.slug}`.slice(0, 90);
     L.push(`  ${job}:`);
@@ -151,8 +156,8 @@ export function workflowYaml(root) {
 }
 
 /** Deploy script for an app that runs with Docker Compose: get the new code, rebuild and restart the containers. */
-export const DOCKER_DEPLOY_SCRIPT = `# Get the new code (the exact commit when CI/CD started the deploy)
-if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi
+export const DOCKER_DEPLOY_SCRIPT = `# Get the code: the exact commit when one was chosen (newer, or older for a rollback), else the newest
+if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git reset -q --keep "$SB_COMMIT"; else git pull -q --ff-only; fi
 # Rebuild the images that have a build: section and restart what changed
 docker compose up -d --build --remove-orphans
 # Remove old image layers so the disk does not fill up
@@ -210,7 +215,7 @@ export function exampleWorkflow(root) {
     '      - name: Get the new code',
     '        run: |',
     `          git fetch -q origin ${branch}`,
-    '          git merge -q --ff-only "$GITHUB_SHA"',
+    '          git reset -q --keep "$GITHUB_SHA"   # also works when you re-run an older run (rollback)',
     '          git log -1 --format="Now at %h: %s"',
     '      - name: Rebuild and restart the containers',
     '        run: docker compose up -d --build --remove-orphans',
@@ -225,6 +230,9 @@ export function exampleWorkflow(root) {
   );
   return `${L.join('\n')}\n`;
 }
+
+/** The live server of this project is not deployed together with the others (it waits for a click or a quiet time). */
+export const liveWaits = (root, p) => POLICIES.includes(root.ci_live_policy) && root.ci_live_policy !== 'now' && !!p.active_deployment_id && !!String(p.deploy_script || '').trim();
 
 export const workflowHash = (yaml) => crypto.createHash('sha256').update(yaml).digest('hex').slice(0, 16);
 
@@ -557,6 +565,13 @@ D=${shq(dep.app_dir)}
   }
 }
 
+/** After a deploy: remember which commit this server is on now (shown in Servers and Git and the commit list). */
+export function noteGitCommit(project, dep, sha) {
+  const root = rootOf(project);
+  const st = gitStates(root)[dep.id] || {};
+  saveGit(root, dep, { ...st, state: st.state && st.state !== 'ok' && st.state !== 'other_repo' ? st.state : st.state || 'ok', commit: sha, behind: st.remote_commit === sha ? 0 : st.behind });
+}
+
 /** Read-only look at every server of the project (in parallel). */
 export async function checkAllGit(root) {
   await Promise.all(
@@ -586,7 +601,9 @@ defineJob('ci-connect', async (ctx, p) => {
   if (!server) throw new Error('Server not found');
   const deps = depsOn(root, server);
   if (!deps.length) throw new Error(`${server.name} is not part of ${root.name} — add it to the project first`);
-  const runner = root.ci_enabled && root.ci_mode !== 'pull';
+  // p.runner: the self-hosted runner was asked for (even when CI/CD isn't on or Switchboard deploys).
+  const runner = !!p.runner || (root.ci_enabled && root.ci_mode !== 'pull');
+  if (p.runner && !gh.hasToken()) throw new Error('A self-hosted runner needs a GitHub token (Settings → GitHub)');
   try {
     if (gh.hasToken()) {
       ctx.step(`Check access to ${root.git_repo}`);
@@ -594,7 +611,7 @@ defineJob('ci-connect', async (ctx, p) => {
       ctx.log(`${r.full_name} — ${r.private ? 'private' : 'public'}, default branch ${r.default_branch}`);
     } else ctx.warn('No GitHub token (Settings → GitHub): no deploy key, runner or workflow update — only the folder is connected');
     await setupServers(ctx, root, { runners: runner && gh.hasToken(), git: true, only: server.id });
-    if (runner && gh.hasToken() && !ownWorkflow(root)) {
+    if (runner && gh.hasToken() && !ownWorkflow(root) && root.ci_mode !== 'pull') {
       ctx.step('Commit the workflow file (adds this server to the deploy jobs)');
       await commitWorkflow(ctx, root);
     } else if (runner && ownWorkflow(root)) ctx.log(`Your own workflow ${root.ci_workflow_path} decides what runs — use runs-on: [self-hosted, ${slugify(server.name)}] for this server`);
@@ -804,10 +821,29 @@ async function autoDeploy(root, runs) {
       }
     }
     deployed[p.slug] = sha;
-    enqueue({ type: 'deploy', title: `Deploy ${p.name} @ ${sha.slice(0, 7)} (new commit on ${p.git_branch})`, projectId: p.id, params: { all: true, commit: sha }, user: 'github' });
-    logEvent('info', `${p.name}: new commit ${sha.slice(0, 7)} on ${p.git_branch} — deploying`, { projectId: p.id });
+    // The live server may wait (click / quiet time): the others are deployed now.
+    const plan = splitForPolicy(p, root, { commit: sha });
+    if (plan.now.length) enqueue({ type: 'deploy', title: `Deploy ${p.name} @ ${sha.slice(0, 7)} (new commit on ${p.git_branch})${plan.held ? ` — ${plan.held.server_name} later` : ''}`, projectId: p.id, params: { deployments: plan.now.map((d) => d.id), commit: sha }, user: 'github' });
+    logEvent('info', `${p.name}: new commit ${sha.slice(0, 7)} on ${p.git_branch} — deploying${plan.now.length ? ` on ${plan.now.map((d) => d.server_name).join(', ')}` : ''}${plan.held ? `; ${plan.held.server_name} (live) waits` : ''}`, { projectId: p.id });
   }
   saveCi(root.id, { deployed });
+}
+
+/** Runner mode with Switchboard's workflow: the live server is not in it — hold it after the run of a new commit passes. */
+function holdAfterRuns(root, runs) {
+  const held = { ...(ci(root).held_from || {}) };
+  let changed = false;
+  for (const p of ciProjects(root)) {
+    if (!liveWaits(root, p)) continue;
+    const r = runs.filter((x) => x.event !== 'pull_request' && x.head_branch === (p.git_branch || 'main') && x.status === 'completed').sort((a, b) => b.id - a.id)[0];
+    if (!r || held[p.slug] === r.head_sha) continue;
+    if (Date.parse(r.created_at) < Date.parse(ci(root).policy_at || 0)) continue; // from before "the live server waits" was turned on
+    held[p.slug] = r.head_sha;
+    changed = true;
+    if (r.conclusion !== 'success') continue; // nothing to bring to the live server
+    splitForPolicy(p, root, { commit: r.head_sha });
+  }
+  if (changed) saveCi(root.id, { held_from: held });
 }
 
 export async function pollProject(id) {
@@ -816,7 +852,10 @@ export async function pollProject(id) {
   try {
     const runs = await pollRuns(root);
     if (root.ci_mode === 'pull') await autoDeploy(root, runs);
-    else if (root.preview_server_id) await syncPreviews(root, runs);
+    else {
+      if (!ownWorkflow(root)) holdAfterRuns(root, runs);
+      if (root.preview_server_id) await syncPreviews(root, runs);
+    }
     saveCi(root.id, { polled_at: now(), error: null });
   } catch (e) {
     saveCi(root.id, { polled_at: now(), error: e.message });
@@ -837,6 +876,66 @@ export async function pollAllCi() {
   } finally {
     polling = false;
   }
+}
+
+/* ------------------------------------------------------------------ live view of one run */
+const liveCache = new Map(); // run id → { at, data }: several open viewers share one GitHub call
+const T = (x) => (x ? Date.parse(x) : null);
+
+/** A run with its jobs and steps; each job on a self-hosted runner is matched to the project's server. */
+export async function liveRun(root, runId) {
+  const hit = liveCache.get(runId);
+  if (hit && Date.now() - hit.at < 2500) return hit.data;
+  const [run, jobs] = await Promise.all([gh.getRun(root.git_repo, runId), gh.listRunJobs(root.git_repo, runId)]);
+  const servers = ciServers(root);
+  const labelsOf = (j) => (Array.isArray(j.labels) ? j.labels : String(j.labels || '').split(',')).map((l) => String(l?.name ?? l).trim().toLowerCase()).filter(Boolean);
+  const serverOf = (j) => {
+    const labels = labelsOf(j);
+    if (!labels.includes('self-hosted') && !j.runner_name?.startsWith('sb-')) return null;
+    return servers.find((s) => j.runner_name === runnerLabel(s) || labels.includes(runnerLabel(s).toLowerCase()) || labels.includes(slugify(s.name))) || null;
+  };
+  const data = {
+    run: {
+      id: run.id,
+      number: run.run_number,
+      title: String(run.display_title || run.head_commit?.message || '').split('\n')[0].slice(0, 200),
+      event: run.event,
+      branch: run.head_branch,
+      sha: run.head_sha,
+      actor: run.actor?.login || run.triggering_actor?.login || '',
+      status: run.status,
+      conclusion: run.conclusion,
+      html_url: run.html_url,
+      created_at: run.created_at,
+      started_at: run.run_started_at || run.created_at,
+      updated_at: run.updated_at,
+    },
+    jobs: jobs.map((j) => {
+      const s = serverOf(j);
+      const labels = labelsOf(j);
+      return {
+        id: j.id,
+        name: j.name,
+        status: j.status,
+        conclusion: j.conclusion,
+        started_at: j.started_at,
+        completed_at: j.completed_at,
+        html_url: j.html_url,
+        runner: j.runner_name || '',
+        where: s ? 'server' : labels.includes('self-hosted') ? 'self-hosted' : 'github',
+        server: s ? { id: s.id, name: s.name } : null,
+        steps: (j.steps || []).map((x) => ({ number: x.number, name: x.name, status: x.status, conclusion: x.conclusion, started_at: x.started_at, completed_at: x.completed_at })),
+      };
+    }).sort((a, b) => (T(a.started_at) ?? 9e15) - (T(b.started_at) ?? 9e15) || a.id - b.id),
+    servers: servers.map((s) => ({ id: s.id, name: s.name, label: slugify(s.name) })),
+    at: new Date().toISOString(),
+  };
+  liveCache.set(runId, { at: Date.now(), data });
+  for (const [k, v] of liveCache) if (Date.now() - v.at > 60000) liveCache.delete(k);
+  // Keep the runs list in step with what the viewer sees.
+  const row = get('SELECT id, status FROM ci_runs WHERE project_id = ? AND run_id = ?', root.id, run.id);
+  if (row && (row.status !== run.status || run.status === 'completed')) update('ci_runs', row.id, { status: run.status, conclusion: run.conclusion, updated_at: run.updated_at });
+  return data;
 }
 
 /** Live runner status from GitHub (online / offline / busy), best effort. */

@@ -1,0 +1,249 @@
+/* Live CI/CD run view (public/app/runview.js): "Professional" timeline and "Animated" pipeline. */
+.rv { display: flex; flex-direction: column; gap: 14px; }
+.rv-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.rv-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rv-switch { flex: none; }
+
+/* state colours shared by both views */
+.rv .st-running { --st: var(--blue); --st-bg: var(--blue-bg); }
+.rv .st-success { --st: var(--green); --st-bg: var(--green-bg); }
+.rv .st-failure { --st: var(--red); --st-bg: var(--red-bg); }
+.rv .st-queued, .rv .st-idle { --st: var(--muted); --st-bg: var(--gray-bg); }
+.rv .st-cancelled, .rv .st-skipped { --st: var(--muted); --st-bg: var(--gray-bg); }
+
+.rv-ico { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; font-size: 11px; font-weight: 800; background: var(--st-bg); color: var(--st); flex: none; }
+.rv-ico.sm { width: 16px; height: 16px; font-size: 9.5px; }
+.rv-ico.st-running { animation: rv-pulse 1.4s ease-in-out infinite; }
+
+/* ---------------- professional ---------------- */
+.rv-pro { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--panel); }
+.rv-axis, .rv-job-row { display: grid; grid-template-columns: minmax(180px, 34%) 1fr 74px; align-items: center; gap: 14px; padding: 0 16px; }
+.rv-axis { height: 34px; border-bottom: 1px solid var(--border); background: var(--panel-2); font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.rv-axis-track { position: relative; height: 100%; }
+.rv-axis-track span { position: absolute; top: 50%; transform: translate(-50%, -50%); text-transform: none; letter-spacing: 0; font-family: var(--mono); font-size: 11px; }
+.rv-axis-track span:first-child { transform: translate(0, -50%); }
+.rv-axis-track span:last-child { transform: translate(-100%, -50%); }
+.rv-axis-dur { text-align: right; }
+.rv-job + .rv-job { border-top: 1px solid var(--border); }
+.rv-job-row { width: 100%; min-height: 46px; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.rv-job-row:hover { background: var(--hover); }
+.rv-job-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.rv-job-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rv-where { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--gray-bg); color: var(--text-2); white-space: nowrap; }
+.rv-where.w-server { background: var(--accent-bg); color: var(--accent); }
+.rv-track { position: relative; height: 10px; border-radius: 99px; background: var(--bg-2); overflow: hidden; }
+.rv-bar { position: absolute; top: 0; bottom: 0; border-radius: 99px; background: var(--st); min-width: 4px; transition: width 0.6s var(--ease-out, ease-out), left 0.6s var(--ease-out, ease-out); }
+.rv-bar.st-running { background-image: linear-gradient(90deg, transparent 0 40%, rgba(255, 255, 255, 0.35) 50%, transparent 60% 100%); background-color: var(--st); background-size: 200% 100%; animation: rv-sheen 1.6s linear infinite; }
+.rv-job-dur { text-align: right; font-size: 12.5px; color: var(--text-2); }
+.rv-steps { padding: 4px 16px 12px 45px; display: flex; flex-direction: column; gap: 2px; background: var(--bg-2); border-top: 1px dashed var(--border); }
+.rv-step { display: grid; grid-template-columns: 16px 1fr auto; gap: 9px; align-items: center; padding: 5px 0; font-size: 13px; }
+.rv-step.st-queued .rv-step-name { color: var(--muted); }
+.rv-step.st-running .rv-step-name { font-weight: 650; }
+.rv-steps-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-top: 8px; }
+
+/* ---------------- animated ---------------- */
+.rv-anim { border: 1px solid var(--border); border-radius: var(--radius); background:
+  radial-gradient(1200px 300px at 50% -40%, var(--accent-bg), transparent 70%),
+  repeating-linear-gradient(0deg, transparent 0 23px, color-mix(in srgb, var(--border) 45%, transparent) 23px 24px),
+  repeating-linear-gradient(90deg, transparent 0 23px, color-mix(in srgb, var(--border) 45%, transparent) 23px 24px),
+  var(--panel); overflow: hidden; }
+.rv-hero { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px 8px; }
+.rv-hero-text { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 15px; }
+.rv-hero-text b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-hero-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--st); flex: none; }
+.rv-hero-dot.st-running { animation: rv-ping 1.4s ease-out infinite; }
+.rv-progress { height: 4px; margin: 0 18px; border-radius: 99px; background: var(--bg-2); overflow: hidden; }
+.rv-progress span { display: block; height: 100%; border-radius: 99px; background: var(--st); transition: width 0.8s var(--ease-out, ease-out); }
+.rv-progress.st-running span { background-image: linear-gradient(90deg, var(--accent), var(--blue), var(--accent)); background-size: 200% 100%; animation: rv-sheen 1.4s linear infinite; }
+.rv-scene { display: block; width: 100%; height: auto; }
+.rv-legend { display: flex; gap: 14px; justify-content: flex-end; padding: 0 18px 12px; flex-wrap: wrap; }
+.rv-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.rv-legend .lg { width: 9px; height: 9px; border-radius: 50%; background: var(--st); display: inline-block; }
+
+/* text in the scene */
+.rv-scene text { fill: var(--text); font-family: var(--sans); }
+.rv-scene .mono { font-family: var(--mono); }
+.rv-t-strong { font-size: 14px; font-weight: 700; }
+.rv-t-muted { font-size: 12px; fill: var(--muted) !important; }
+.rv-t-small { font-size: 12.5px; font-weight: 600; fill: var(--text-2) !important; }
+.rv-t-tiny { font-size: 11px; fill: var(--muted) !important; }
+
+/* connections */
+.rv-edge-base { fill: none; stroke: var(--border-2); stroke-width: 2; }
+.rv-edge-flow { fill: none; stroke: var(--st); stroke-width: 2.5; stroke-linecap: round; opacity: 0; transition: opacity 0.4s; }
+.rv-edge.st-running .rv-edge-flow { opacity: 1; stroke-dasharray: 2 10; animation: rv-dash 0.9s linear infinite; }
+.rv-edge.st-success .rv-edge-flow, .rv-edge.st-failure .rv-edge-flow { opacity: 0.9; }
+.rv-packet { fill: var(--blue); filter: drop-shadow(0 0 5px var(--blue)); }
+
+/* commit */
+.rv-commit-ring { fill: var(--panel); stroke: var(--accent); stroke-width: 3; }
+.rv-commit-dot { fill: var(--accent); }
+.rv-commit-line { stroke: var(--accent); stroke-width: 3; }
+.rv-commit.st-running .rv-commit-glow { animation: rv-breathe 2.4s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.rv-commit.st-success .rv-commit-ring, .rv-commit.st-success .rv-commit-line { stroke: var(--green); }
+.rv-commit.st-success .rv-commit-dot { fill: var(--green); }
+.rv-commit.st-failure .rv-commit-ring, .rv-commit.st-failure .rv-commit-line { stroke: var(--red); }
+.rv-commit.st-failure .rv-commit-dot { fill: var(--red); }
+
+/* GitHub panel + job chips */
+.rv-panel-box { fill: color-mix(in srgb, var(--panel-2) 88%, transparent); stroke: var(--border-2); stroke-width: 1.5; }
+.rv-panel.st-running .rv-panel-box { stroke: var(--blue); }
+.rv-chip { fill: var(--panel); stroke: var(--border); }
+.rv-chip-ico { fill: var(--st-bg); }
+.rv-chip-glyph { font-size: 10px; font-weight: 800; fill: var(--st) !important; }
+.rv-spin { fill: none; stroke: var(--st); stroke-width: 2; stroke-dasharray: 20 62; transform-box: fill-box; transform-origin: center; animation: rv-rotate 1s linear infinite; }
+.rv-mini-track { fill: var(--bg-2); }
+.rv-mini-bar { fill: var(--st); transition: width 0.7s var(--ease-out, ease-out); }
+
+/* servers */
+.rv-server-box { fill: var(--panel); stroke: var(--border-2); stroke-width: 1.5; transition: stroke 0.3s; }
+.rv-server.st-idle { opacity: 0.55; }
+.rv-server.st-running .rv-server-box { stroke: var(--blue); filter: drop-shadow(0 0 10px color-mix(in srgb, var(--blue) 45%, transparent)); }
+.rv-server.st-success .rv-server-box { stroke: var(--green); }
+.rv-server.st-failure .rv-server-box { stroke: var(--red); }
+.rv-server.st-failure { animation: rv-shake 0.5s ease-in-out 1; transform-box: fill-box; }
+.rv-rack rect { fill: var(--bg-2); stroke: var(--border-2); }
+.rv-led { fill: var(--muted); }
+.rv-server.st-running .rv-led { fill: var(--blue); animation: rv-blink 0.8s steps(2, start) infinite; }
+.rv-server.st-running .rv-led.l2 { animation-delay: 0.27s; }
+.rv-server.st-running .rv-led.l3 { animation-delay: 0.53s; }
+.rv-server.st-success .rv-led { fill: var(--green); }
+.rv-server.st-failure .rv-led { fill: var(--red); }
+.rv-stamp circle { fill: var(--st); }
+.rv-stamp text { fill: #fff !important; font-size: 14px; font-weight: 800; }
+.rv-stamp { animation: rv-pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1) 1; transform-box: fill-box; transform-origin: center; }
+.rv-burst { fill: none; stroke: var(--green); stroke-width: 2; transform-box: fill-box; transform-origin: center; opacity: 0; animation: rv-burst 0.9s ease-out 1; }
+
+@keyframes rv-dash { to { stroke-dashoffset: -24; } }
+@keyframes rv-sheen { from { background-position: 200% 0; } to { background-position: 0 0; } }
+@keyframes rv-rotate { to { transform: rotate(360deg); } }
+@keyframes rv-blink { to { opacity: 0.2; } }
+@keyframes rv-pulse { 50% { box-shadow: 0 0 0 4px var(--st-bg); } }
+@keyframes rv-ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--st) 60%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@keyframes rv-breathe { 50% { transform: scale(1.25); opacity: 0.6; } }
+@keyframes rv-pop { from { transform: scale(0); } }
+@keyframes rv-burst { 0% { opacity: 0.9; transform: scale(1); } 100% { opacity: 0; transform: scale(2.6); } }
+@keyframes rv-shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+
+@media (max-width: 700px) {
+  .rv-axis, .rv-job-row { grid-template-columns: minmax(120px, 44%) 1fr 56px; gap: 8px; padding: 0 10px; }
+  .rv-where { display: none; }
+  .rv-steps { padding-left: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rv *, .rv-anim * { animation: none !important; transition: none !important; }
+}
+
+/* runs table: a row opens the live view */
+.row-link { cursor: pointer; }
+.row-link:hover td { background: var(--hover); }
+
+/* ---------------- deploy plan (public/app/deployplan.js) ---------------- */
+.dp-list { display: flex; flex-direction: column; gap: 8px; }
+.dp-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); transition: border-color 0.2s, opacity 0.2s; }
+.dp-row.dp-live { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.dp-row.dp-skip { opacity: 0.6; }
+.dp-server { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dp-server b { font-size: 14px; }
+.dp-server .badge { align-self: flex-start; }
+.dp-choice { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.dp-when { display: flex; flex-direction: column; gap: 4px; }
+.dp-time { height: 30px; padding: 0 8px; width: 120px; min-width: 120px; flex: none; }
+.dp-at { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dp-summary { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-2); }
+.held-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.held-row + .held-row { margin-top: 6px; }
+@media (max-width: 700px) { .dp-choice { align-items: flex-start; } }
+
+.dp-commits { display: flex; flex-direction: column; max-height: 232px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); }
+.dp-commit { display: grid; grid-template-columns: 18px auto 1fr auto; gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+.dp-commit + .dp-commit { border-top: 1px solid var(--border); }
+.dp-commit:hover { background: var(--hover); }
+.dp-commit.on { background: var(--accent-bg); }
+.dp-commit.on.older { background: var(--amber-bg); }
+.dp-sha { color: var(--accent); font-weight: 650; }
+.dp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 700px) { .dp-commit { grid-template-columns: 18px auto 1fr; } .dp-tags { grid-column: 2 / -1; justify-content: flex-start; } }
+
+/* ---------------- deploy / rollback view (public/app/deployview.js) ---------------- */
+.dv { margin-bottom: 14px; }
+.dv .st-skipped { --st: var(--muted); --st-bg: var(--gray-bg); }
+.ta-r { text-align: right; }
+.dv-head, .dv-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(150px, 1fr) 2.2fr 70px; gap: 12px; align-items: center; padding: 0 16px; }
+.dv-head { height: 34px; border-bottom: 1px solid var(--border); background: var(--panel-2); font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.dv-row { min-height: 50px; padding-top: 8px; padding-bottom: 8px; }
+.dv-row + .dv-row { border-top: 1px solid var(--border); }
+.dv-srv { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dv-code { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.dv-back { margin-left: 4px; }
+.dv-phases { display: flex; gap: 6px; flex-wrap: wrap; }
+.dv-ph { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 99px; font-size: 12px; background: var(--bg-2); color: var(--muted); }
+.dv-ph i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+.dv-ph.ph-done { color: var(--green); background: var(--green-bg); }
+.dv-ph.ph-now { color: var(--blue); background: var(--blue-bg); font-weight: 650; }
+.dv-ph.ph-now i { opacity: 1; animation: rv-pulse 1.2s ease-in-out infinite; --st-bg: var(--blue-bg); }
+.dv-ph.ph-fail { color: var(--red); background: var(--red-bg); font-weight: 650; }
+.dv-note { grid-column: 2 / -1; margin-top: -2px; }
+
+.dv-anim.dv-rewind { position: relative; }
+.dv-anim.dv-rewind::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+  background: repeating-linear-gradient(180deg, transparent 0 3px, color-mix(in srgb, var(--amber) 7%, transparent) 3px 4px);
+  animation: dv-scan 6s linear infinite;
+}
+.dv-rw-ico { color: var(--amber); flex: none; }
+.dv-rw-ico.spin { animation: dv-unspin 1.1s linear infinite; }
+.dv-rw-text { font-family: var(--mono); font-size: 13px; font-weight: 800; letter-spacing: 0.25em; fill: var(--amber) !important; animation: dv-blink 1s steps(2, start) infinite; }
+.dv-pill { fill: var(--panel); stroke: var(--border-2); stroke-width: 1.5; }
+.dv-pill.to { stroke: var(--accent); stroke-width: 2; }
+.dv-pill.to.back { stroke: var(--amber); }
+.dv-track { stroke: var(--border-2); stroke-width: 4; stroke-linecap: round; }
+.dv-trail { stroke: var(--accent); stroke-width: 4; stroke-linecap: round; transition: x2 1.1s var(--ease-out, ease-out); }
+.dv-anim.dv-rewind .dv-trail, .dv-lane .dv-ahead.back { stroke: var(--amber); }
+.dv-lane.st-success .dv-trail { stroke: var(--green); }
+.dv-lane.st-failure .dv-trail { stroke: var(--red); }
+.dv-ahead { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 3 11; stroke-linecap: round; opacity: 0.7; animation: dv-flow 0.7s linear infinite; }
+.dv-ahead.back { animation-name: dv-flow-back; }
+.dv-node { fill: var(--panel); stroke: var(--border-2); stroke-width: 2; }
+.dv-node.to { stroke: var(--accent); }
+.dv-lane.st-success .dv-node.to { fill: var(--green); stroke: var(--green); }
+.dv-mover { transition: transform 1.1s cubic-bezier(0.3, 0.9, 0.3, 1); }
+.dv-chip { fill: var(--panel); stroke: var(--border-2); stroke-width: 1.5; }
+.dv-lane.st-running .dv-chip { stroke: var(--blue); filter: drop-shadow(0 0 9px color-mix(in srgb, var(--blue) 45%, transparent)); }
+.dv-anim.dv-rewind .dv-lane.st-running .dv-chip { stroke: var(--amber); filter: drop-shadow(0 0 9px color-mix(in srgb, var(--amber) 50%, transparent)); }
+.dv-lane.st-success .dv-chip { stroke: var(--green); }
+.dv-lane.st-failure .dv-chip { stroke: var(--red); }
+.dv-lane.st-failure .dv-mover { animation: rv-shake 0.5s ease-in-out 1; }
+.dv-lane.st-queued .dv-mover, .dv-lane.st-skipped .dv-mover { opacity: 0.6; }
+.dv-ghost { fill: none; stroke: var(--amber); stroke-width: 1.5; }
+.dv-lane .rv-led { fill: var(--muted); }
+.dv-lane.st-running .rv-led { fill: var(--blue); animation: rv-blink 0.8s steps(2, start) infinite; }
+.dv-anim.dv-rewind .dv-lane.st-running .rv-led { fill: var(--amber); }
+.dv-lane.st-running .rv-led.l2 { animation-delay: 0.27s; }
+.dv-lane.st-running .rv-led.l3 { animation-delay: 0.53s; }
+.dv-lane.st-success .rv-led { fill: var(--green); }
+.dv-lane.st-failure .rv-led { fill: var(--red); }
+.dv-lane .rv-stamp circle { fill: var(--st); }
+.dv-live { fill: var(--green-bg); stroke: var(--green); stroke-width: 1; }
+.dv-live-t { font-size: 9px; font-weight: 800; letter-spacing: 0.06em; fill: var(--green) !important; }
+.dv-phg circle { fill: var(--bg-2); stroke: var(--border-2); }
+.dv-phg.ph-done circle { fill: var(--green); stroke: var(--green); }
+.dv-phg.ph-now circle { fill: var(--blue); stroke: var(--blue); animation: dv-throb 1s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.dv-phg.ph-fail circle { fill: var(--red); stroke: var(--red); }
+.dv-phg.ph-now text { fill: var(--text) !important; font-weight: 650; }
+
+@keyframes dv-flow { to { stroke-dashoffset: -14; } }
+@keyframes dv-flow-back { to { stroke-dashoffset: 14; } }
+@keyframes dv-unspin { to { transform: rotate(-360deg); } }
+@keyframes dv-blink { to { opacity: 0.25; } }
+@keyframes dv-throb { 50% { transform: scale(1.5); } }
+@keyframes dv-scan { from { background-position: 0 0; } to { background-position: 0 120px; } }
+@media (max-width: 700px) {
+  .dv-head { display: none; }
+  .dv-row { grid-template-columns: 1fr auto; }
+  .dv-code, .dv-phases, .dv-note { grid-column: 1 / -1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dv *, .dv-anim::after { animation: none !important; transition: none !important; }
+}

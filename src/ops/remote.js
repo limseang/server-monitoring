@@ -74,6 +74,32 @@ if command -v git >/dev/null 2>&1; then
 fi
 `;
 
+/**
+ * Run in the app folder before a deploy, as the deploy user: when the Git checkout holding it (the folder or a
+ * parent) belongs to another user, git refuses every command ("dubious ownership"). Mark just that checkout as
+ * safe for this user (git config --global safe.directory) — the owner is not changed. Prints one line when it did.
+ */
+export const GIT_TRUST = `d="$(pwd)"; while [ -n "$d" ] && [ "$d" != / ] && [ ! -e "$d/.git" ]; do d="$(dirname "$d")"; done
+if [ -e "$d/.git" ] && command -v git >/dev/null 2>&1 && git -C "$d" rev-parse --git-dir 2>&1 | grep -q 'dubious ownership'; then
+  git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$d" || git config --global --add safe.directory "$d"
+  echo "SB_TRUSTED $d $(ls -ld "$d" | awk '{print $3}')"
+fi`;
+
+/**
+ * Move the Git checkout holding the app folder to one exact commit (newer OR older — a rollback), before the
+ * deploy script runs. `git reset --keep` keeps edits made on the server and stops if one would be overwritten.
+ * Prints "SB_MOVE back|forward|same <from> <to>". Runs as the deploy user, with GIT_NO_WAIT.
+ */
+export const gitCheckoutCommit = (commit, branch) => `C=${shq(commit)}; B=${shq(branch)}
+git rev-parse --git-dir >/dev/null 2>&1 || { echo 'SB_MOVE none'; exit 0; }
+git fetch -q origin "+refs/heads/$B:refs/remotes/origin/$B" || git fetch -q origin
+git cat-file -e "$C^{commit}" 2>/dev/null || { echo "Commit $C is not in this repository (not on $B?)" >&2; exit 3; }
+FROM="$(git rev-parse HEAD)"; TO="$(git rev-parse "$C^{commit}")"
+if [ "$FROM" = "$TO" ]; then echo "SB_MOVE same $FROM $TO"; exit 0; fi
+if git merge-base --is-ancestor "$TO" "$FROM"; then DIR=back; else DIR=forward; fi
+git reset -q --keep "$TO" || { echo "Edits on the server would be overwritten by going to \${TO%"\${TO#???????}"} — see git status in $(git rev-parse --show-toplevel)" >&2; exit 4; }
+echo "SB_MOVE $DIR $FROM $TO"`;
+
 /** Plain-language hint for a failed git step (null when the output doesn't look like a git problem). */
 export function gitHint(text) {
   const t = String(text || '');

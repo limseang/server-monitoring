@@ -26,6 +26,9 @@ const EVERYONE = [
 
 const DEVELOPER = [
   ['POST', /^\/projects\/\d+\/deploy$/],
+  ['POST', /^\/projects\/\d+\/deploy-plan$/],
+  ['POST', /^\/held-deploys\/\d+\/deploy$/],
+  ['DELETE', /^\/held-deploys\/\d+$/],
   ['POST', /^\/deployments\/\d+\/(deploy|maintenance|backup)$/],
   ['POST', /^\/deployments\/\d+\/command$/, (req) => req.body?.where === 'app'],
   ['POST', /^\/projects\/\d+\/(check|dns\/refresh)$/],

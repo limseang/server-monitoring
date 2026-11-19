@@ -39,7 +39,10 @@ export const summary = (j) =>
 
 export function getJob(id) {
   const j = get('SELECT * FROM jobs WHERE id = ?', id);
-  if (j && active.has(j.id)) j.log = active.get(j.id).state.log;
+  if (j && active.has(j.id)) {
+    j.log = active.get(j.id).state.log;
+    if (active.get(j.id).state.progress) j.progress = JSON.stringify(active.get(j.id).state.progress);
+  }
   return j;
 }
 
@@ -115,6 +118,12 @@ function makeCtx(job, controller, state) {
         state.partial[key] = '';
       }
     },
+    /** Live progress for the job views (any JSON); sent right away, saved with the log. */
+    progress: (data) => {
+      state.progress = data;
+      state.progressDirty = true;
+      bus.emit(`job:${job.id}`, { type: 'progress', progress: data });
+    },
     throwIfCancelled: () => {
       if (controller.signal.aborted) throw new Error('Cancelled by user');
     },
@@ -132,6 +141,10 @@ async function execute(id) {
 
   const ctx = makeCtx(job, controller, state);
   const flush = () => {
+    if (state.progressDirty) {
+      state.progressDirty = false;
+      run('UPDATE jobs SET progress = ? WHERE id = ?', JSON.stringify(state.progress), id);
+    }
     if (!state.dirty) return;
     state.dirty = false;
     run('UPDATE jobs SET log = ? WHERE id = ?', state.log, id);
@@ -151,7 +164,7 @@ async function execute(id) {
     if (process.env.DEBUG) console.error(e);
   } finally {
     clearInterval(timer);
-    run('UPDATE jobs SET status = ?, error = ?, log = ?, finished_at = ? WHERE id = ?', status, error, state.log, now(), id);
+    run('UPDATE jobs SET status = ?, error = ?, log = ?, progress = ?, finished_at = ? WHERE id = ?', status, error, state.log, state.progress ? JSON.stringify(state.progress) : null, now(), id);
     active.delete(id);
     bus.emit(`job:${id}`, { type: 'end', status, error });
     bus.emit('job', summary(get('SELECT * FROM jobs WHERE id = ?', id)));

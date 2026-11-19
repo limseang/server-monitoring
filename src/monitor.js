@@ -17,6 +17,7 @@ import { inRotation } from './lb/nginx.js';
 import { httpCheck } from './health.js';
 import { getServer } from './models.js';
 import { pollAllCi } from './ops/ci.js';
+import { runDueHeld } from './ops/deployplan.js';
 import { collectAllTraffic, pruneTraffic } from './ops/traffic.js';
 import { recordUsage, pruneUsage } from './ops/usage.js';
 import { cleanupLocal } from './ops/backupstore.js';
@@ -528,6 +529,7 @@ export function startMonitor() {
   loop('ssl', () => 6 * 3600, checkAllSsl, 15000);
   loop('prune', () => 3600, prune, 60000);
   loop('ci', () => 60, pollAllCi, 20000); // GitHub Actions results + pull request previews
+  loop('held', () => 30, runDueHeld, 30000); // deploys that wait for their time (e.g. the live server at night)
   loop('traffic', () => 60, collectAllTraffic, 25000);
   loop('billing', () => 3600, () => checkBilling(), 50000); // server payment reminders (each sent once per due date)
   loop('backup-store', () => 600, () => cleanupLocal(), 45000); // S3: retry failed uploads, remove local copies that are in S3 // nginx access logs → Traffic tab + unusual-activity alerts

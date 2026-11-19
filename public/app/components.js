@@ -258,7 +258,7 @@ export const EventsList = {
 /** Live job log (Server-Sent Events). */
 export const JobLog = {
   props: { jobId: Number, tall: Boolean },
-  emits: ['status'],
+  emits: ['status', 'progress'],
   components: { JobStatus, LivePill },
   setup(props, { emit }) {
     const conn = ref('connecting'); // live badge while the job runs
@@ -300,8 +300,11 @@ export const JobLog = {
         status.value = d.status;
         error.value = d.error;
         emit('status', d.status);
+        if (d.progress) emit('progress', d.progress);
         scroll();
       });
+      // Live progress (e.g. a deploy: each server's phase) for the view above the log.
+      es.addEventListener('progress', (e) => emit('progress', JSON.parse(e.data)));
       es.addEventListener('log', (e) => {
         lines.value.push(JSON.parse(e.data).line);
         if (lines.value.length > 10000) lines.value.splice(0, lines.value.length - 10000);

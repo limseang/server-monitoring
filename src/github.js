@@ -130,6 +130,24 @@ export async function listRuns(repo, { perPage = 30, file = WORKFLOW_FILE } = {}
 
 export const dispatchWorkflow = (repo, ref, file = WORKFLOW_FILE) => gh('POST', `/repos/${repoPath(repo)}/actions/workflows/${enc(file)}/dispatches`, { body: { ref } });
 
+/** The newest commits of a branch (for "deploy another commit" / rollback). */
+export async function listCommits(repo, branch, perPage = 25) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/commits?sha=${enc(branch)}&per_page=${perPage}`);
+  return (Array.isArray(r) ? r : Object.values(r).filter((x) => x && typeof x === 'object' && x.sha)).map((c) => ({
+    sha: c.sha,
+    title: String(c.commit?.message || '').split('\n')[0].slice(0, 200),
+    author: c.author?.login || c.commit?.author?.name || '',
+    date: c.commit?.committer?.date || c.commit?.author?.date || null,
+  }));
+}
+
+/** One run, and its jobs with their steps (for the live run view). */
+export const getRun = (repo, id) => gh('GET', `/repos/${repoPath(repo)}/actions/runs/${Number(id)}`);
+export async function listRunJobs(repo, id) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/actions/runs/${Number(id)}/jobs?per_page=100`);
+  return r.jobs || [];
+}
+
 /** The workflow files in .github/workflows on a branch (names only). */
 export async function listWorkflowFiles(repo, ref) {
   const r = await gh('GET', `/repos/${repoPath(repo)}/contents/.github/workflows?ref=${enc(ref)}`, { okStatus: [404] });
