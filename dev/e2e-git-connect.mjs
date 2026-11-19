@@ -96,7 +96,7 @@ await step('Clean up, log in, repo with two commits, three server entries for vp
   await api('POST', '/auth/login', { username: 'admin', password: 'admin-password-123' });
   for (const p of await api('GET', '/projects')) if (p.slug.startsWith('git-connect-lab')) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
   for (const s of await api('GET', '/servers')) if (s.name.startsWith('gc-')) await api('DELETE', `/servers/${s.id}`);
-  on('rm -rf /srv/gc-live /srv/gc-backup /srv/gc-empty /srv/gc-owned');
+  on('rm -rf /srv/gc-live /srv/gc-backup /srv/gc-empty /srv/gc-owned /srv/gc-owned2');
   await api('PUT', '/settings', { github_token: 'gh-test-token' });
   await freshRepo(REPO);
   await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'index.html', content: 'v1\n' });
@@ -219,6 +219,8 @@ await step('Folder owned by another user ("dubious ownership") → marked safe, 
   await waitJob(dj);
   check(on('git -C /srv/gc-owned rev-parse HEAD') === sha, `deploy pulled ${sha.slice(0, 7)} into the folder`);
   check(gitOf(await ci(), 'gc-empty')?.state === 'ok', 'state: connected');
+  // Let every deploy of this project finish first (a deploy marks the folder safe again).
+  for (const x of (await jobsOf(project.id)).filter((x) => ['queued', 'running'].includes(x.status))) await waitJob(x);
   // A refused folder that is a checkout of ANOTHER repo is not re-pointed.
   on('git config --global --unset-all safe.directory /srv/gc-owned');
   on('git -C /srv/gc-owned config --file .git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git || git config --file /srv/gc-owned/.git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git');
@@ -228,6 +230,24 @@ await step('Folder owned by another user ("dubious ownership") → marked safe, 
   check(on('git config --file /srv/gc-owned/.git/config remote.origin.url') === 'git://172.30.0.6/lab-user/gc-other.git', 'origin unchanged');
   await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-empty' });
   on('rm -rf /srv/gc-owned');
+});
+
+await step('Deploy straight away into a sub-folder of a checkout owned by another user (no Connect first)', async () => {
+  on('rm -rf /srv/gc-owned2 && id -u gc-other >/dev/null 2>&1 || useradd -M gc-other');
+  on(`git clone -q ${URL_GIT} /srv/gc-owned2 && mkdir -p /srv/gc-owned2/docker && chown -R gc-other: /srv/gc-owned2`);
+  on('git config --global --unset-all safe.directory /srv/gc-owned2 || true');
+  const p = await api('GET', `/projects/${project.id}`);
+  const dep = p.deployments.find((d) => d.server_id === srv['gc-empty'].id);
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-owned2/docker' });
+  const sha = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v4.txt', content: 'v4\n' })).sha;
+  const { job } = await api('POST', `/deployments/${dep.id}/deploy`, {});
+  const j = await waitJob(job);
+  check(/\/srv\/gc-owned2 belongs to user gc-other, not the SSH user: marked as safe for git/.test(j.log), 'deploy marked the checkout safe first');
+  check(on('git -C /srv/gc-owned2 rev-parse HEAD') === sha && on('stat -c %U /srv/gc-owned2') === 'gc-other', `pulled ${sha.slice(0, 7)}, owner unchanged`);
+  const { job: j2 } = await api('POST', `/deployments/${dep.id}/deploy`, {});
+  check(!/marked as safe/.test((await waitJob(j2)).log), 'second deploy: nothing to mark');
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-empty' });
+  on('rm -rf /srv/gc-owned2');
 });
 
 await step('Compose folder inside the repo + "pull from Git and rebuild" deploy script (Docker)', async () => {

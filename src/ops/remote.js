@@ -74,6 +74,17 @@ if command -v git >/dev/null 2>&1; then
 fi
 `;
 
+/**
+ * Run in the app folder before a deploy, as the deploy user: when the Git checkout holding it (the folder or a
+ * parent) belongs to another user, git refuses every command ("dubious ownership"). Mark just that checkout as
+ * safe for this user (git config --global safe.directory) — the owner is not changed. Prints one line when it did.
+ */
+export const GIT_TRUST = `d="$(pwd)"; while [ -n "$d" ] && [ "$d" != / ] && [ ! -e "$d/.git" ]; do d="$(dirname "$d")"; done
+if [ -e "$d/.git" ] && command -v git >/dev/null 2>&1 && git -C "$d" rev-parse --git-dir 2>&1 | grep -q 'dubious ownership'; then
+  git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$d" || git config --global --add safe.directory "$d"
+  echo "SB_TRUSTED $d $(ls -ld "$d" | awk '{print $3}')"
+fi`;
+
 /** Plain-language hint for a failed git step (null when the output doesn't look like a git problem). */
 export function gitHint(text) {
   const t = String(text || '');

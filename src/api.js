@@ -2090,6 +2090,8 @@ api.put('/projects/:id/ci', (req, res) => {
   if (b.ci_test_cmd !== undefined) row.ci_test_cmd = str(b.ci_test_cmd, 5000) || null;
   if (b.ci_runner_access !== undefined) row.ci_runner_access = b.ci_runner_access === 'full' ? 'full' : 'restricted';
   if (b.ci_workflow_path !== undefined) row.ci_workflow_path = b.ci_workflow_path ? workflowPathInput(b.ci_workflow_path) : null;
+  // Another workflow file: the runs list starts again with that file's runs.
+  if (row.ci_workflow_path !== undefined && (row.ci_workflow_path || null) !== (p.ci_workflow_path || null)) run('DELETE FROM ci_runs WHERE project_id = ?', p.id);
   if (b.preview_server_id !== undefined) {
     row.preview_server_id = b.preview_server_id ? mustServer(b.preview_server_id).id : null;
     if (row.preview_server_id && !p.template) throw bad('Pull request previews need a project made from a template (Switchboard must know how to build it)');
@@ -2183,7 +2185,10 @@ api.put('/projects/:id/ci/workflow', async (req, res) => {
   if (!/^\s*jobs\s*:/m.test(content) || !/^\s*on\s*:/m.test(content)) throw bad('This does not look like a GitHub workflow (it needs "on:" and "jobs:")');
   const branch = p.git_branch || 'main';
   const changed = await gh.putFile(p.git_repo, path, content.endsWith('\n') ? content : `${content}\n`, { branch, message: str(req.body.message, 200) || `Update ${path.split('/').pop()} (from Switchboard)` });
-  if (p.ci_workflow_path !== path) update('projects', p.id, { ci_workflow_path: path });
+  if (p.ci_workflow_path !== path) {
+    update('projects', p.id, { ci_workflow_path: path });
+    run('DELETE FROM ci_runs WHERE project_id = ?', p.id);
+  }
   audit(req, 'info', `${p.name}: workflow ${path} ${changed ? 'committed' : 'unchanged'} on ${branch}`, { projectId: p.id });
   bus.emit('state', { projectId: p.id });
   res.json({ ok: true, changed, path });
