@@ -852,8 +852,10 @@ export async function pollProject(id) {
   try {
     const runs = await pollRuns(root);
     if (root.ci_mode === 'pull') await autoDeploy(root, runs);
-    else if (!ownWorkflow(root)) holdAfterRuns(root, runs);
-    else if (root.preview_server_id) await syncPreviews(root, runs);
+    else {
+      if (!ownWorkflow(root)) holdAfterRuns(root, runs);
+      if (root.preview_server_id) await syncPreviews(root, runs);
+    }
     saveCi(root.id, { polled_at: now(), error: null });
   } catch (e) {
     saveCi(root.id, { polled_at: now(), error: e.message });
