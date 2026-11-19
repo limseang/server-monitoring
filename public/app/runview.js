@@ -31,12 +31,21 @@ export function dur(msec) {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
 }
 const stepsDone = (j) => j.steps.filter((s) => s.status === 'completed').length;
-/** 0…1 for a job: finished steps, half a step for the one running. */
-const jobProgress = (j) => {
+/**
+ * 0…1 for a job: finished steps, plus how far the running step probably is. That part grows with the time it has
+ * been running (fast at first, never reaching the end), so bars move every second instead of jumping every poll.
+ */
+const creep = (startedAt, now, half = 20000) => {
+  const e = Math.max(0, (now || Date.now()) - (ms(startedAt) || now || Date.now()));
+  return (e / (e + half)) * 0.92;
+};
+const jobProgress = (j, now) => {
   const st = stateOf(j);
   if (st !== 'running' && st !== 'queued') return 1;
-  if (!j.steps.length) return st === 'running' ? 0.15 : 0;
-  return Math.min(0.98, (stepsDone(j) + (j.steps.some((s) => s.status === 'in_progress') ? 0.5 : 0)) / j.steps.length);
+  if (st === 'queued') return 0;
+  if (!j.steps.length) return 0.05 + creep(j.started_at, now, 30000) * 0.8;
+  const cur = j.steps.find((s) => s.status === 'in_progress');
+  return Math.min(0.98, (stepsDone(j) + (cur ? creep(cur.started_at, now) : 0)) / j.steps.length);
 };
 const currentStep = (j) => j.steps.find((s) => s.status === 'in_progress') || null;
 const reducedMotion = () => {
@@ -175,7 +184,7 @@ const AnimView = {
       return out;
     });
     const all = computed(() => props.data.jobs);
-    const overall = computed(() => (all.value.length ? all.value.reduce((n, j) => n + jobProgress(j), 0) / all.value.length : 0));
+    const overall = computed(() => (all.value.length ? all.value.reduce((n, j) => n + jobProgress(j, props.now), 0) / all.value.length : 0));
     const runState = computed(() => stateOf(props.data.run));
     const headline = computed(() => {
       const st = runState.value;
@@ -263,7 +272,7 @@ const AnimView = {
           <text x="38" y="17" class="rv-t-small">{{ trim(j.name, 30) }}</text>
           <text x="38" y="31" class="rv-t-tiny">{{ currentStep(j) ? trim(currentStep(j).name, 34) : (j.steps.length ? stepsDone(j) + '/' + j.steps.length + ' steps' : '') }}</text>
           <rect x="38" y="34" :width="(panel.w - 74)" height="2" rx="1" class="rv-mini-track" />
-          <rect x="38" y="34" :width="(panel.w - 74) * jobProgress(j)" height="2" rx="1" class="rv-mini-bar" />
+          <rect x="38" y="34" :width="panel.w - 74" height="2" rx="1" class="rv-mini-bar" :style="{ transform: 'scaleX(' + jobProgress(j, now) + ')' }" />
         </g>
       </g>
 
@@ -283,11 +292,11 @@ const AnimView = {
             <rect width="78" height="22" rx="11" /><text x="39" y="15" text-anchor="middle">Deploy ▶</text></g>
         </template>
         <template v-else>
-        <text x="64" y="47" class="rv-t-small">{{ s.job ? trim(s.job.name, 26) : s.released ? 'Got its turn later' : 'No job in this run' }}</text>
+        <text x="64" y="47" class="rv-t-small">{{ s.job ? trim(s.job.name, 26) : s.released ? 'Got its turn later' : data.run.status !== 'completed' ? 'Waits for its turn…' : 'No job in this run' }}</text>
         <text x="64" y="64" class="rv-t-tiny">{{ s.job ? (currentStep(s.job) ? trim(currentStep(s.job).name, 30) : s.state === 'success' ? (/deploy/i.test(s.job.name) ? 'Deployed ✓' : 'Passed ✓') : s.state === 'failure' ? 'Failed' : s.state === 'queued' ? 'Waiting…' : (stepsDone(s.job) + '/' + s.job.steps.length + ' steps')) : '' }}</text>
         </template>
         <rect x="14" :y="s.h - 9" :width="s.w - 28" height="3" rx="1.5" class="rv-mini-track" />
-        <rect x="14" :y="s.h - 9" :width="(s.w - 28) * (s.job ? jobProgress(s.job) : 0)" height="3" rx="1.5" class="rv-mini-bar" />
+        <rect x="14" :y="s.h - 9" :width="s.w - 28" height="3" rx="1.5" class="rv-mini-bar" :style="{ transform: 'scaleX(' + (s.job ? jobProgress(s.job, now) : 0) + ')' }" />
         <g v-if="s.state === 'success' || s.state === 'failure'" :transform="'translate(' + (s.w - 22) + ',22)'">
           <g class="rv-stamp"><circle r="13" /><text y="5" text-anchor="middle">{{ s.state === 'success' ? '✓' : '✕' }}</text></g>
         </g>
