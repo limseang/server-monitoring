@@ -1,4 +1,4 @@
-import { ref, reactive, computed, watch, onMounted } from '/vendor/vue.js';
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
 import { store, http, toast, closeDialog, go, showJob, runJob, confirmBox, openDialog, fmtDate, isPrivateIp } from './lib.js';
 import { whenText } from './deployplan.js';
 
@@ -488,10 +488,54 @@ export const CicdTab = {
     }
     onMounted(async () => {
       await load(true);
+      loadActive();
       if (c.value?.own_workflow && c.value.is_root) ownMode();
       if (c.value?.is_root && c.value.repo && c.value.servers.length) checkGit();
     });
     watch(() => store.live, () => load());
+    // Runs still going on GitHub (any workflow of the repo): checked every 5 s while one runs, else every 20 s.
+    const active = ref([]);
+    let activeT = null;
+    let mounted = true;
+    async function loadActive() {
+      clearTimeout(activeT);
+      if (c.value?.repo && c.value.token) {
+        try {
+          const had = active.value.length;
+          active.value = (await http.get(`/projects/${props.project.id}/ci/active`)).runs;
+          if (had > active.value.length) load(); // one finished: refresh the runs list
+        } catch {}
+      }
+      if (mounted) activeT = setTimeout(loadActive, active.value.length ? 5000 : 20000);
+    }
+    onUnmounted(() => {
+      mounted = false;
+      clearTimeout(activeT);
+    });
+    async function cancelRun(r, force = false) {
+      const where = r.servers.length ? ` It is running on ${r.servers.map((s) => s.name).join(', ')}.` : '';
+      const ok = await confirmBox({
+        title: `${force ? 'Force-stop' : 'Cancel'} run #${r.run_number}?`,
+        message: force
+          ? `GitHub stops it right away and also skips its clean-up steps.${where}`
+          : `GitHub stops the jobs that are running now and does not start the others.${where} A deploy cut off halfway can leave a server between two versions — check it, or deploy again.`,
+        confirmText: force ? 'Force-stop' : 'Cancel run',
+        danger: true,
+      });
+      if (!ok) return;
+      busy.value['cancel' + r.run_id] = true;
+      try {
+        await http.post(`/projects/${props.project.id}/ci/runs/${r.run_id}/cancel`, { force });
+        toast(`Run #${r.run_number}: ${force ? 'force-stop' : 'cancel'} sent to GitHub`, 'success');
+        r.cancelled_at = Date.now();
+        setTimeout(loadActive, 3000);
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value['cancel' + r.run_id] = false;
+      }
+    }
+    const watchActive = (r) => openDialog('ci-run', { projectId: c.value.root.id, runId: r.run_id });
     async function act(key, fn, ok) {
       busy.value[key] = true;
       try {
@@ -583,7 +627,7 @@ export const CicdTab = {
       runJob(http.post(`/projects/${c.value.root.id}/staging/${s.id}/data`));
     };
     const runBadge = RUN_BADGE;
-    return { c, f, wf, viewRun, liveRun, rollBack, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
+    return { c, f, wf, viewRun, liveRun, active, cancelRun, watchActive, rollBack, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
   },
   template: `
   <div v-if="!c" class="muted">Loading…</div>
@@ -630,6 +674,22 @@ export const CicdTab = {
         <span class="hint" v-else-if="c.own_workflow">Installs the runner on {{ c.servers.map(s => s.name).join(', ') || 'the servers' }}. Your own <code>{{ c.workflow_path }}</code> is used as it is.</span>
         <span class="hint" v-else>Installs the runner on {{ c.servers.map(s => s.name).join(', ') || 'the servers' }} and commits <code>{{ c.workflow_path }}</code>.</span>
       </div>
+    </div>
+
+    <div class="card" v-if="c.is_root && c.repo && active.length">
+      <div class="card-head"><h3><span class="live-pill live-live" style="margin-right:8px"><i></i>LIVE</span>Running now on GitHub</h3>
+        <a class="btn btn-sm" :href="c.repo_url + '/actions'" target="_blank" rel="noopener">GitHub ↗</a></div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Workflow</th><th>State</th><th>Commit</th><th>Servers</th><th>Now</th><th></th></tr></thead>
+        <tbody><tr v-for="r in active" :key="r.run_id" class="row-link" @click="watchActive(r)" title="Open the live view of this run">
+          <td><b>{{ r.workflow }}</b> <span class="mono muted small">#{{ r.run_number }}</span><div class="small muted"><span class="mono">{{ r.branch }}</span> · {{ r.event === 'pull_request' ? 'pull request' : r.event === 'workflow_dispatch' ? 'run by hand' : r.event }}<template v-if="r.actor"> · {{ r.actor }}</template></div></td>
+          <td class="nowrap"><span class="badge" :class="r.cancelled_at ? 'badge-amber' : r.status === 'in_progress' ? 'badge-blue' : 'badge-gray'">{{ r.cancelled_at ? 'stopping…' : r.status === 'in_progress' ? 'running' : r.status === 'waiting' ? 'waiting for approval' : 'queued' }}</span><div class="small muted">{{ r.jobs.done }}/{{ r.jobs.total }} jobs · <ago :at="r.started_at" /></div></td>
+          <td class="small"><span class="mono muted">{{ (r.sha || '').slice(0, 7) }}</span> {{ r.title }}</td>
+          <td class="small"><span v-for="s in r.servers" :key="s.id" class="badge" :class="s.status === 'in_progress' ? 'badge-blue' : s.status === 'completed' ? (s.conclusion === 'success' ? 'badge-green' : 'badge-red') : 'badge-gray'" style="margin:0 4px 2px 0">{{ s.name }}</span><span v-if="!r.servers.length" class="muted">GitHub only (so far)</span></td>
+          <td class="small">{{ r.step || '—' }}</td>
+          <td class="actions nowrap" @click.stop><button class="btn btn-xs btn-primary" @click="watchActive(r)">Watch</button> <button class="btn btn-xs btn-danger dev-only" @click="cancelRun(r, !!r.cancelled_at)" :disabled="busy['cancel' + r.run_id]">{{ r.cancelled_at ? 'Force-stop' : 'Cancel' }}</button></td>
+        </tr></tbody>
+      </table></div>
     </div>
 
     <div class="card" v-if="c.is_root && c.repo">

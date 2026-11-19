@@ -86,6 +86,22 @@ if [ -e "$d/.git" ] && command -v git >/dev/null 2>&1 && git -C "$d" rev-parse -
 fi`;
 
 /**
+ * Run in the app folder before a deploy, as the deploy user, with GIT_NO_WAIT: when the checked-out branch has no
+ * upstream, a plain "git pull" fails ("There is no tracking information for the current branch"). Make it track
+ * origin/<same name> (or origin/<project branch>) when that branch exists on GitHub. Prints one line when it did.
+ */
+export const gitTrack = (branch) => `B=${shq(branch)}
+cur="$(git symbolic-ref -q --short HEAD 2>/dev/null)" || exit 0
+git rev-parse -q --verify '@{u}' >/dev/null 2>&1 && exit 0
+git remote get-url origin >/dev/null 2>&1 || exit 0
+for b in "$cur" "$B"; do
+  if git fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b" 2>/dev/null; then
+    git branch -q --set-upstream-to="origin/$b" "$cur" && echo "SB_TRACK $cur origin/$b"
+    exit 0
+  fi
+done`;
+
+/**
  * Move the Git checkout holding the app folder to one exact commit (newer OR older — a rollback), before the
  * deploy script runs. `git reset --keep` keeps edits made on the server and stops if one would be overwritten.
  * Prints "SB_MOVE back|forward|same <from> <to>". Runs as the deploy user, with GIT_NO_WAIT.
@@ -105,6 +121,8 @@ export function gitHint(text) {
   const t = String(text || '');
   if (/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password/i.test(t))
     return 'git needs a login for this repo (HTTPS remote). On the server, switch the remote to SSH with a deploy key (git remote set-url origin git@github.com:OWNER/REPO.git), or save a token with a credential helper for the deploy user.';
+  if (/no tracking information for the current branch/i.test(t))
+    return 'The branch checked out on the server does not follow a branch on GitHub, so "git pull" does not know what to pull. Check the project\'s Git branch, or run in the app folder on the server: git branch --set-upstream-to=origin/<branch>.';
   if (/dubious ownership/i.test(t))
     return 'The app folder belongs to another user, so git refuses it. Project → CI/CD → Servers and Git → "Connect to Git" fixes it (marks the folder as safe for git), or run on the server as the deploy user: git config --global --add safe.directory <folder>.';
   if (/Host key verification failed/i.test(t))

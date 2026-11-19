@@ -1,5 +1,5 @@
 import { ref, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
-import { http, closeDialog, openDialog } from './lib.js';
+import { http, toast, confirmBox, closeDialog, openDialog } from './lib.js';
 
 /*
  * Live view of one CI/CD run (GitHub Actions): its jobs and steps, read through Switchboard every few seconds
@@ -320,7 +320,33 @@ export const RunViewer = {
     const eventText = (e) => ({ push: 'push', pull_request: 'pull request', workflow_dispatch: 'run by hand', schedule: 'schedule' })[e] || e;
     // Errors after this run's deploy? Deploy an older commit of the branch again.
     const rollBack = () => openDialog('deploy-plan', { projectId: props.projectId, rollback: true });
-    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack };
+    // Stop the run on GitHub. A second click (it hangs on clean-up steps) force-stops it.
+    const stopping = ref(false);
+    const sentAt = ref(0);
+    async function cancelRun() {
+      const force = !!sentAt.value;
+      const servers = [...new Set(data.value.jobs.filter((j) => j.server && j.status !== 'completed').map((j) => j.server.name))];
+      const ok = await confirmBox({
+        title: `${force ? 'Force-stop' : 'Cancel'} run #${data.value.run.number}?`,
+        message: (force ? 'GitHub stops it right away and also skips its clean-up steps.' : 'GitHub stops the jobs that are running now and does not start the others.') + (servers.length ? ` Running on ${servers.join(', ')} now — a deploy cut off halfway can leave a server between two versions.` : ''),
+        confirmText: force ? 'Force-stop' : 'Cancel run',
+        danger: true,
+      });
+      if (!ok) return;
+      stopping.value = true;
+      try {
+        await http.post(`/projects/${props.projectId}/ci/runs/${props.runId}/cancel`, { force });
+        sentAt.value = Date.now();
+        toast(`${force ? 'Force-stop' : 'Cancel'} sent to GitHub`, 'success');
+        clearTimeout(pollT);
+        pollT = setTimeout(load, 2000);
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        stopping.value = false;
+      }
+    }
+    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack, cancelRun, stopping, sentAt };
   },
   template: `
   <modal :title="data ? 'Run #' + data.run.number + ' · ' + data.run.title : 'Run'" size="xl" @close="closeDialog">
@@ -346,7 +372,8 @@ export const RunViewer = {
       <anim-view v-else :data="data" :now="now" />
     </div>
     <template #footer>
-      <span class="muted small" v-if="data">{{ running ? 'Updates every 5 seconds' : 'Finished' }}</span>
+      <span class="muted small" v-if="data">{{ running ? (sentAt ? 'Stopping… updates every 5 seconds' : 'Updates every 5 seconds') : 'Finished' }}</span>
+      <button v-if="running" class="btn btn-danger dev-only" @click="cancelRun" :disabled="stopping">{{ sentAt ? 'Force-stop' : 'Cancel run' }}</button>
       <button v-if="data && !running && data.run.event !== 'pull_request'" class="btn dev-only" :class="{ 'btn-danger': st === 'failure' }" @click="rollBack" title="Deploy an older commit of the branch again">↩ Roll back…</button>
       <a v-if="data" class="btn btn-ghost" :href="data.run.html_url" target="_blank" rel="noopener">Open in GitHub ↗</a>
       <button class="btn" @click="closeDialog">Close</button>

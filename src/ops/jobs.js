@@ -6,7 +6,7 @@ import { defineJob } from '../jobs.js';
 import { getProject, getServer, getDeployment, deploymentsOf } from '../models.js';
 import { probe } from '../health.js';
 import { fmtBytes, sleep } from '../util.js';
-import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, GIT_TRUST, gitCheckoutCommit, gitHint } from './remote.js';
+import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, GIT_TRUST, gitTrack, gitCheckoutCommit, gitHint } from './remote.js';
 import { noteGitCommit } from './ci.js';
 import { syncDatabase, backupDeployment, importFromFile, countTables, backupAbsPath, pruneBackups, requireDb } from './database.js';
 import { syncFiles, parseSyncPaths } from './files.js';
@@ -399,6 +399,10 @@ defineJob('deploy', async (ctx, p) => {
             const t = await runRemote(null, conn, shellScript(GIT_TRUST, { cwd: dep.app_dir }), { quiet: true, okCodes: [0, 1, 2, 127, 128], timeout: 60000 }).catch(() => null);
             const m = String(t?.stdout || '').match(/^SB_TRUSTED (\S+) (\S+)/m);
             if (m) ctx.log(`${m[1]} belongs to user ${m[2]}, not the SSH user: marked as safe for git (safe.directory) — no owner changed`);
+            // A branch without an upstream: a plain "git pull" in the script would fail, so make it follow GitHub's.
+            const tr = await runRemote(null, conn, shellScript(gitTrack(project.git_branch || 'main'), { cwd: dep.app_dir, prelude: GIT_NO_WAIT }), { quiet: true, okCodes: [0, 1, 2, 127, 128], timeout: 5 * 60000 }).catch(() => null);
+            const k = String(tr?.stdout || '').match(/^SB_TRACK (\S+) (\S+)/m);
+            if (k) ctx.log(`Branch ${k[1]} had no tracking branch, so "git pull" did not know what to pull: it now follows ${k[2]}`);
           }
           // git never waits for a login/passphrase/host-key answer or a dead network (it fails with a hint instead).
           try {
