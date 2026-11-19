@@ -99,3 +99,16 @@ test('Deploy now: starts the workflow for the live server and that commit, no Sw
   assert.deepEqual(d.data, { ref: 'main', inputs: { deploy_sha: SHA, deploy_to: 'cinemagickh' } });
   assert.equal(heldOf(pid).length, 0);
 });
+
+test('send a commit to one server (e.g. the live one): the workflow for that server only, a held deploy is dropped', async () => {
+  const { deployCommitTo } = await import('../src/ops/ci.js');
+  const { holdDeploy } = await import('../src/ops/deployplan.js');
+  const p = project();
+  const liveDep = get('SELECT d.*, s.name AS server_name FROM deployments d JOIN servers s ON s.id = d.server_id WHERE d.id = ?', dLive);
+  holdDeploy({ project: p, dep: liveDep, commit: SHA, via: 'workflow' });
+  assert.equal(heldOf(pid).length, 1);
+  const job = await deployCommitTo(p, liveDep, SHA, { user: 'tester' });
+  assert.equal(job, null);
+  assert.deepEqual(calls.filter((c) => c.p.endsWith('/dispatches')).at(-1).data, { ref: 'main', inputs: { deploy_sha: SHA, deploy_to: 'cinemagickh' } });
+  assert.equal(heldOf(pid).length, 0);
+});

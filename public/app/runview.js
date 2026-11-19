@@ -120,10 +120,12 @@ const ProView = {
 const W = 980;
 const AnimView = {
   props: { data: Object, now: Number },
-  emits: ['deploy'],
+  emits: ['deploy', 'deploy-to'],
   setup(props) {
     const motion = !reducedMotion();
     const hosted = computed(() => props.data.jobs.filter((j) => j.where !== 'server'));
+    // A finished, passed run (not a pull request): its commit can be sent to the servers that did not get it.
+    const canSend = computed(() => props.data.run.status === 'completed' && props.data.run.conclusion === 'success' && props.data.run.event !== 'pull_request');
     // Servers: those with a job in this run first, then the project's other servers (idle).
     const servers = computed(() => {
       const withJobs = [];
@@ -135,12 +137,13 @@ const AnimView = {
         const held = (props.data.held || []).find((h) => h.server_id === s.id) || null;
         const jobs = props.data.jobs.filter((j) => j.server?.id === s.id && !j.hold);
         if (held) return { ...s, jobs, job: null, held, state: 'held' };
-        if (holdJob && !jobs.length) return { ...s, jobs, job: null, held: null, state: ['running', 'queued'].includes(stateOf(holdJob)) ? 'queued' : 'idle', released: stateOf(holdJob) === 'success' };
+        const target = canSend.value ? (props.data.targets || []).find((t) => t.server_id === s.id && !t.got) || null : null;
+        if (holdJob && !jobs.length) return { ...s, jobs, job: null, held: null, state: ['running', 'queued'].includes(stateOf(holdJob)) ? 'queued' : 'idle', released: stateOf(holdJob) === 'success', target };
         // The job to show: the one running, else a failed one, else the next one waiting (the run goes on), else the last one that ran.
         const done = [...jobs].reverse().find((j) => j.started_at && !['queued', 'running'].includes(stateOf(j)));
         const failed = jobs.find((j) => stateOf(j) === 'failure');
         const job = jobs.find((j) => stateOf(j) === 'running') || failed || (props.data.run.status !== 'completed' && jobs.find((j) => stateOf(j) === 'queued')) || done || jobs[0] || null;
-        return { ...s, jobs, job, state: job ? stateOf(job) : 'idle' };
+        return { ...s, jobs, job, target: job && stateOf(job) === 'success' ? null : target, state: job ? stateOf(job) : 'idle' };
       });
     });
     const rowsH = (n, h) => Math.max(1, n) * h;
@@ -277,7 +280,7 @@ const AnimView = {
       </g>
 
       <!-- your servers -->
-      <g v-for="s in serverBoxes" :key="s.id" class="rv-server" :class="'st-' + s.state" :transform="'translate(' + s.x + ',' + s.y + ')'">
+      <g v-for="s in serverBoxes" :key="s.id" class="rv-server" :class="['st-' + s.state, { 'can-send': s.target }]" :transform="'translate(' + s.x + ',' + s.y + ')'">
         <rect :width="s.w" :height="s.h" rx="14" class="rv-server-box" />
         <g transform="translate(16,18)" class="rv-rack">
           <rect width="34" height="12" rx="3" /><rect y="17" width="34" height="12" rx="3" /><rect y="34" width="34" height="12" rx="3" />
@@ -289,6 +292,11 @@ const AnimView = {
           <text x="64" y="64" class="rv-t-tiny">{{ s.held.run_at ? 'or at the quiet time' : 'the others have it' }}</text>
           <g :transform="'translate(' + (s.w - 22) + ',22)'"><g class="rv-hg"><text y="6" text-anchor="middle" style="font-size:17px">⏳</text></g></g>
           <g class="rv-hold-btn dev-only" role="button" tabindex="0" :aria-label="'Deploy ' + s.name + ' now'" :transform="'translate(' + (s.w - 92) + ',' + (s.h - 36) + ')'" @click="$emit('deploy', s.held)" @keydown.enter="$emit('deploy', s.held)">
+            <rect width="78" height="22" rx="11" /><text x="39" y="15" text-anchor="middle">Deploy ▶</text></g>
+        </template>
+        <template v-else-if="s.target">
+          <text x="64" y="47" class="rv-t-small">{{ s.target.live ? 'Live — not on this commit' : 'Not on this commit' }}</text>
+          <g class="rv-hold-btn rv-send-btn dev-only" role="button" tabindex="0" :aria-label="'Deploy this commit to ' + s.name" :transform="'translate(' + (s.w - 92) + ',' + (s.h - 36) + ')'" @click="$emit('deploy-to', s.target)" @keydown.enter="$emit('deploy-to', s.target)">
             <rect width="78" height="22" rx="11" /><text x="39" y="15" text-anchor="middle">Deploy ▶</text></g>
         </template>
         <template v-else>
@@ -376,6 +384,38 @@ export const RunViewer = {
         deploying.value = false;
       }
     }
+    // Send this run's commit to one server (e.g. the live one) — always possible once the run passed.
+    const canSend = computed(() => data.value && data.value.run.status === 'completed' && data.value.run.conclusion === 'success' && data.value.run.event !== 'pull_request');
+    async function deployTo(t) {
+      if (!t || deploying.value) return;
+      const sha = (data.value.run.sha || '').slice(0, 7);
+      if (!(await confirmBox({ title: `Deploy ${sha} to ${t.name}${t.live ? ' (live)' : ''}?`, message: t.live ? 'This is the server your visitors use: it may show errors for a few seconds while the app restarts.' : `${t.name} gets the code of this run.`, confirmText: `Deploy to ${t.name}`, danger: t.live }))) return;
+      deploying.value = true;
+      try {
+        const r = await http.post(`/projects/${props.projectId}/ci/runs/${props.runId}/deploy`, { deployment: t.deployment });
+        toast(r.message || `Deploy to ${t.name} started`, 'success');
+        if (r.job) showJob(r.job.id);
+        else await load();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        deploying.value = false;
+      }
+    }
+    /** Your own workflow + the live server did not wait and did not get this commit: say why, in plain words. */
+    const whyNoWait = computed(() => {
+      const d = data.value;
+      if (!d || !canSend.value || !d.own_workflow || (d.held || []).length) return '';
+      const live = (d.targets || []).find((t) => t.live);
+      if (!live || live.got || (d.targets || []).length < 2) return '';
+      const w = d.waits || {};
+      if (w.servers_var_error) return `Switchboard could not tell the workflow which servers to use: ${w.servers_var_error}`;
+      if (w.policy === 'now') return 'The live server is set to "Updates with the others" (CI/CD tab). Choose "Waits for me" to have it wait here after the other servers.';
+      if (w.var_after_run) return 'This run started before Switchboard saved the list of servers (SWITCHBOARD_SERVERS), so the workflow did not know them. The next push deploys the other servers first and the live one waits here.';
+      if (w.hold_job === 'skipped') return 'The workflow skipped "Live server waits" (a job before it did not finish).';
+      if (!w.hold_job) return 'This workflow has no "Live server waits for Switchboard" job — add it in the flow editor (CI/CD tab → workflow file) so the live server waits here.';
+      return '';
+    });
     // Stop the run on GitHub. A second click (it hangs on clean-up steps) force-stops it.
     const stopping = ref(false);
     const sentAt = ref(0);
@@ -402,7 +442,7 @@ export const RunViewer = {
         stopping.value = false;
       }
     }
-    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack, cancelRun, stopping, sentAt, deployHeld, deploying };
+    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack, cancelRun, stopping, sentAt, deployHeld, deploying, canSend, deployTo, whyNoWait };
   },
   template: `
   <modal :title="data ? 'Run #' + data.run.number + ' · ' + data.run.title : 'Run'" size="xl" @close="closeDialog">
@@ -429,7 +469,18 @@ export const RunViewer = {
         <button class="btn btn-sm btn-primary dev-only" @click="deployHeld(h)" :disabled="deploying"><span v-if="deploying" class="spinner"></span>Deploy {{ h.server_name }} now</button>
       </div>
       <pro-view v-if="view === 'pro'" :data="data" :now="now" />
-      <anim-view v-else :data="data" :now="now" @deploy="deployHeld" />
+      <anim-view v-else :data="data" :now="now" @deploy="deployHeld" @deploy-to="deployTo" />
+      <div v-if="canSend && (data.targets || []).length" class="rv-send">
+        <div class="rv-send-head"><b>Send <code>{{ (data.run.sha || '').slice(0, 7) }}</code> to your servers</b><span class="muted small">the code of this run — {{ data.own_workflow ? 'your workflow deploys it on that server only (no new build)' : "Switchboard's deploy script runs on that server" }}</span></div>
+        <div v-if="whyNoWait" class="hint text-amber" style="margin:0">⏸ Why the live server did not wait: {{ whyNoWait }}</div>
+        <div class="rv-send-list">
+          <div v-for="t in data.targets" :key="t.deployment" class="rv-send-row" :class="{ live: t.live, got: t.got }">
+            <span class="rv-send-name"><b>{{ t.name }}</b><span v-if="t.live" class="badge badge-green">LIVE</span></span>
+            <span class="small" :class="t.got ? 'text-green' : 'muted'">{{ t.got ? '✓ got it in this run' : (data.held || []).some(h => h.server_id === t.server_id) ? '⏸ waits for you' : 'not on this commit (from this run)' }}</span>
+            <button class="btn btn-sm dev-only" :class="t.got ? 'btn-ghost' : 'btn-primary'" @click="deployTo(t)" :disabled="deploying">{{ t.got ? 'Deploy again' : 'Deploy ▶' }}</button>
+          </div>
+        </div>
+      </div>
     </div>
     <template #footer>
       <span class="muted small" v-if="data">{{ running ? (sentAt ? 'Stopping… updates every 5 seconds' : 'Updates every 5 seconds') : 'Finished' }}</span>

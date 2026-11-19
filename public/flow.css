@@ -93,3 +93,27 @@
   .fl-card:hover { transform: none; }
   .fl-lib-item:hover { transform: none; }
 }
+
+/* ---------------- template gallery ---------------- */
+.fl-tpl-btn { border-color: var(--accent); color: var(--accent); }
+.fl-tpl-intro { font-size: 13px; color: var(--text-2); }
+.fl-tpl-h { margin: 6px 0 0; font-size: 14px; }
+.fl-tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.fl-tpl { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); overflow: hidden; transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s; animation: fl-in 0.3s ease-out both; }
+.fl-tpl:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 8px 24px var(--accent-bg); }
+.fl-tpl-pic { display: block; width: 100%; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--border); background-color: var(--bg-2); background-image: radial-gradient(var(--border-2) 1px, transparent 1px); background-size: 14px 14px; cursor: zoom-in; }
+.fl-tpl-body { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 4px; flex: 1; }
+.fl-tpl-title { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.fl-tpl-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-tpl-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.fl-tpl-actions { display: flex; gap: 6px; justify-content: flex-end; padding: 8px 12px 12px; flex-wrap: wrap; }
+.fl-tpl-yaml summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.fl-mini { display: block; width: 100%; height: 96px; }
+.fl-mini-line { fill: none; stroke: var(--accent); stroke-opacity: 0.6; stroke-width: 1.4; stroke-dasharray: 3 4; animation: fl-dash 1.4s linear infinite; }
+.fl-mini-box { fill: var(--panel); stroke: var(--border-2); stroke-width: 1.2; }
+.fl-mini-box.k-trigger { stroke: var(--accent); fill: var(--accent-bg); }
+.fl-mini-box.k-github { stroke: var(--blue); }
+.fl-mini-box.k-server { stroke: var(--green); }
+.fl-mini-box.wait { stroke: var(--amber); stroke-dasharray: 3 2; }
+.fl-tpl:hover .fl-mini-line { stroke-opacity: 1; animation-duration: 0.7s; }
+@media (hover: none) { .fl-tpl:hover { transform: none; box-shadow: none; } }

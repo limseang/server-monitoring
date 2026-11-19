@@ -60,7 +60,7 @@ import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
 import { parseFlow, applyFlow, remapServers } from './ops/flow.js';
 import { POLICIES, parseQuiet, nextQuietTime, heldOf, releaseHeld, cancelHeld, runPlan } from './ops/deployplan.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, activeRuns, forgetActive, serversPlan, SERVERS_VAR, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, activeRuns, forgetActive, serversPlan, SERVERS_VAR, deployCommitTo, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -2187,6 +2187,22 @@ api.get('/projects/:id/ci/active', async (req, res) => {
   const p = rootOf(mustProject(req.params.id));
   if (!p.git_repo || !gh.hasToken()) return res.json({ runs: [] });
   res.json({ runs: await activeRuns(p) });
+});
+
+/** Send a finished run's commit to one server of the project (e.g. the live server). Body: { deployment }. */
+api.post('/projects/:id/ci/runs/:runId/deploy', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo || !gh.hasToken()) throw bad('Needs a repository and a GitHub token');
+  const runId = Number(req.params.runId);
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw notFound('Run not found');
+  const dep = deploymentsOf(p.id).find((d) => d.id === Number(req.body?.deployment));
+  if (!dep) throw bad('That server is not in this project');
+  const r = await gh.getRun(p.git_repo, runId);
+  if (r.status !== 'completed' || r.conclusion !== 'success') throw bad('Only a run that finished without errors can be deployed (its images must be built)');
+  if (r.event === 'pull_request') throw bad('A pull request run is not deployed to the servers');
+  const job = await deployCommitTo(p, dep, r.head_sha, { user: who(req), why: `from run #${r.run_number}` });
+  audit(req, 'info', `${p.name}: commit ${r.head_sha.slice(0, 7)} (run #${r.run_number}) sent to ${dep.server_name}${dep.id === p.active_deployment_id ? ' (live)' : ''}`, { projectId: p.id });
+  res.json({ job, sha: r.head_sha, message: job ? null : `GitHub deploys ${r.head_sha.slice(0, 7)} on ${dep.server_name} now — watch it under "Running now"` });
 });
 
 /** Stop a run on GitHub. Body: { force } — force also skips its "always run" steps. */
