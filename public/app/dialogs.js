@@ -5,6 +5,7 @@ import { BillingDialog, PaidDialog } from './billing.js';
 import { LbSetupDialog, DbServerDialog, ScaleOutDialog, OsUpgradeDialog } from './lbdialogs.js';
 import { TemplateProjectDialog, StagingDialog, ConnectGitDialog } from './cicd.js';
 import { RunViewer } from './runview.js';
+import { DeployLive } from './deployview.js';
 import { DeployPlanDialog } from './deployplan.js';
 import { PowerDialog, PasswordDialog, PortDialog, DomainDialog } from './serverctl.js';
 import { RemoveDeploymentDialog, DeleteProjectDialog, ResetServerDialog, ReinstallDialog } from './wipedialogs.js';
@@ -831,13 +832,18 @@ export const CloneDialog = {
 
 /* ======================================================================= GLOBAL: job log + confirm */
 export const JobModal = {
-  components: { Modal, JobLog },
+  components: { Modal, JobLog, DeployLive },
   setup() {
-    return { store, close: () => (store.jobId = null), open: () => { go(`/jobs/${store.jobId}`); store.jobId = null; } };
+    // A deploy (or rollback) shows its live view above the log.
+    const progress = ref(null);
+    const status = ref(null);
+    watch(() => store.jobId, () => ((progress.value = null), (status.value = null)));
+    return { store, progress, status, close: () => (store.jobId = null), open: () => { go(`/jobs/${store.jobId}`); store.jobId = null; } };
   },
   template: `
   <modal v-if="store.jobId" :title="'Job #' + store.jobId" size="xl" @close="close">
-    <job-log :job-id="store.jobId" :key="store.jobId" />
+    <deploy-live v-if="progress && progress.kind === 'deploy'" :progress="progress" :status="status" />
+    <job-log :job-id="store.jobId" :key="store.jobId" @progress="(p) => (progress = p)" @status="(s) => (status = s)" />
     <template #footer><button class="btn btn-ghost" @click="open">Open as page</button><button class="btn" @click="close">Close</button></template>
   </modal>`,
 };

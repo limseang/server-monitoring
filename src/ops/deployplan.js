@@ -99,7 +99,7 @@ export function runPlan({ project, nowIds = [], later = [], commit = null, liveF
       type: 'deploy',
       title: `${rollback ? 'Roll back' : 'Deploy'} ${project.name} on ${names}${isSha(commit) ? ` ${rollback ? 'to' : '@'} ${commit.slice(0, 7)}` : ''}${later.length ? ' (others later)' : ''}`,
       projectId: project.id,
-      params: { deployments: nowDeps.map((d) => d.id), ...(isSha(commit) ? { commit } : {}), ...(liveFirst ? { liveFirst: true } : {}) },
+      params: { deployments: nowDeps.map((d) => d.id), ...(isSha(commit) ? { commit } : {}), ...(liveFirst ? { liveFirst: true } : {}), ...(rollback ? { rollback: true } : {}) },
       user,
     });
   }

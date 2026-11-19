@@ -263,13 +263,14 @@ api.get('/jobs/:id/stream', (req, res) => {
   const key = `job:${job.id}`;
   const onMsg = (m) => {
     if (m.type === 'log') s.send('log', { line: m.line });
+    else if (m.type === 'progress') s.send('progress', m.progress);
     else if (m.type === 'end') {
       s.send('end', { status: m.status, error: m.error });
       s.end();
     }
   };
   const s = sse(req, res, () => bus.off(key, onMsg));
-  s.send('init', { log: job.log, status: job.status, error: job.error });
+  s.send('init', { log: job.log, status: job.status, error: job.error, type: job.type, progress: parseJSON(job.progress, null) });
   if (!['queued', 'running'].includes(job.status)) {
     s.send('end', { status: job.status, error: job.error });
     return s.end();
@@ -1757,7 +1758,7 @@ api.get('/jobs', (req, res) => {
 api.get('/jobs/:id', (req, res) => {
   const j = getJob(toId(req.params.id));
   if (!j) throw notFound('Job not found');
-  res.json({ ...summary(j), log: j.log, params: parseJSON(j.params, {}) });
+  res.json({ ...summary(j), log: j.log, params: parseJSON(j.params, {}), progress: parseJSON(j.progress, null) });
 });
 
 api.post('/jobs/:id/cancel', (req, res) => {

@@ -397,6 +397,10 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   `,
+  // v15: live progress of a job (JSON, e.g. a deploy: each server's phase and commits) for the job views
+  `
+  ALTER TABLE jobs ADD COLUMN progress TEXT;
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

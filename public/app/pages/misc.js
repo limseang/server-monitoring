@@ -1,6 +1,7 @@
 import { ref, reactive, computed, watch, onMounted } from '/vendor/vue.js';
 import { store, http, toast, confirmBox, runJob, fmtDate, JOB_TYPES } from '../lib.js';
 import { JobsTable, EventsList, JobLog } from '../components.js';
+import { DeployLive } from '../deployview.js';
 
 /* ------------------------------------------------------------------ jobs */
 export const JobsPage = {
@@ -24,11 +25,18 @@ export const JobsPage = {
 
 export const JobPage = {
   props: { id: Number },
-  components: { JobLog },
+  components: { JobLog, DeployLive },
+  setup(props) {
+    const progress = ref(null);
+    const status = ref(null);
+    watch(() => props.id, () => ((progress.value = null), (status.value = null)));
+    return { progress, status };
+  },
   template: `
   <div>
     <div class="page-head"><div><div class="crumbs"><a href="#/jobs">Jobs</a> / #{{ id }}</div><h1>Job #{{ id }}</h1></div></div>
-    <job-log :job-id="id" :key="id" tall />
+    <deploy-live v-if="progress && progress.kind === 'deploy'" :progress="progress" :status="status" />
+    <job-log :job-id="id" :key="id" tall @progress="(p) => (progress = p)" @status="(s) => (status = s)" />
   </div>`,
 };
 

@@ -479,6 +479,10 @@ await step('Roll back: errors after a deploy → deploy an older commit of main 
   check(['gc-live', 'gc-backup', 'gc-empty'].every((d) => head(d) === good), `all servers back on ${good.slice(0, 7)}`);
   check(/going BACK from/.test(j.log), 'log says it goes back');
   check(j.log.indexOf('Deploy on gc-live') < j.log.indexOf('Deploy on gc-backup'), 'live server first');
+  const prog = (await api('GET', `/jobs/${r.job.id}`)).progress;
+  check(prog?.kind === 'deploy' && prog.rollback && prog.commit === good, 'job keeps its live progress (rollback, commit)');
+  check(prog?.servers.length === 3 && prog.servers[0].live && prog.servers.every((x) => x.state === 'success' && x.phase === 'done' && x.dir === 'back' && x.from === bad && x.to === good && x.started_at && x.finished_at),
+    `each server: done, moved back ${bad.slice(0, 7)} → ${good.slice(0, 7)}, live first`);
   check(on('cat /srv/gc-backup/index.html') === 'v1 edited on backup', 'edits made on a server are kept');
   check((await api('GET', `/projects/${project.id}/commits`)).commits[1].on.length === 3, 'commit list shows the servers on the older commit');
 
