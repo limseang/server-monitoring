@@ -938,6 +938,48 @@ export async function liveRun(root, runId) {
   return data;
 }
 
+/**
+ * Every run of the repo that is not finished yet (any workflow, not just the tracked one), with the servers of
+ * this project its jobs run on and the step running now. Shared by all viewers for a few seconds.
+ */
+const activeCache = new Map(); // project id → { at, data }
+export async function activeRuns(root) {
+  const hit = activeCache.get(root.id);
+  if (hit && Date.now() - hit.at < 4000) return hit.data;
+  const runs = await gh.listActiveRuns(root.git_repo);
+  const data = await Promise.all(
+    runs.slice(0, 10).map(async (r) => {
+      const live = await liveRun(root, r.id).catch(() => null);
+      const jobs = live?.jobs || [];
+      const step = jobs.flatMap((j) => j.steps.filter((s) => s.status === 'in_progress').map((s) => `${j.name}: ${s.name}`))[0] || '';
+      const servers = new Map();
+      for (const j of jobs) if (j.server) servers.set(j.server.id, { id: j.server.id, name: j.server.name, status: j.status, conclusion: j.conclusion });
+      return {
+        run_id: r.id,
+        run_number: r.run_number,
+        workflow: r.name || '',
+        title: String(r.display_title || r.head_commit?.message || '').split('\n')[0].slice(0, 200),
+        event: r.event,
+        branch: r.head_branch,
+        sha: r.head_sha,
+        actor: r.actor?.login || r.triggering_actor?.login || '',
+        status: r.status,
+        html_url: r.html_url,
+        started_at: r.run_started_at || r.created_at,
+        jobs: { total: jobs.length, done: jobs.filter((j) => j.status === 'completed').length },
+        step,
+        servers: [...servers.values()],
+      };
+    }),
+  );
+  activeCache.set(root.id, { at: Date.now(), data });
+  return data;
+}
+export const forgetActive = (root, runId) => {
+  activeCache.delete(root.id);
+  liveCache.delete(runId);
+};
+
 /** Live runner status from GitHub (online / offline / busy), best effort. */
 export async function runnerStatus(repo) {
   try {

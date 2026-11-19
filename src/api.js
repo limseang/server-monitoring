@@ -59,7 +59,7 @@ import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from 
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
 import { POLICIES, parseQuiet, nextQuietTime, heldOf, releaseHeld, cancelHeld, runPlan } from './ops/deployplan.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, activeRuns, forgetActive, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -2173,9 +2173,36 @@ api.post('/projects/:id/ci/connect', (req, res) => {
 api.get('/projects/:id/ci/runs/:runId/live', async (req, res) => {
   const p = rootOf(mustProject(req.params.id));
   if (!p.git_repo || !gh.hasToken()) throw bad('Needs a repository and a GitHub token');
+  // Any run of this project's repository (also other workflow files): GitHub only finds it in that repo.
   const runId = Number(req.params.runId);
-  if (!get('SELECT 1 AS x FROM ci_runs WHERE project_id = ? AND run_id = ?', p.id, runId)) throw notFound('Run not found');
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw notFound('Run not found');
   res.json(await liveRun(p, runId));
+});
+
+/** Runs of the repository that are still going (any workflow), with the project's servers they run on. */
+api.get('/projects/:id/ci/active', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo || !gh.hasToken()) return res.json({ runs: [] });
+  res.json({ runs: await activeRuns(p) });
+});
+
+/** Stop a run on GitHub. Body: { force } — force also skips its "always run" steps. */
+api.post('/projects/:id/ci/runs/:runId/cancel', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo || !gh.hasToken()) throw bad('Needs a repository and a GitHub token');
+  const runId = Number(req.params.runId);
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw notFound('Run not found');
+  const force = req.body?.force === true;
+  try {
+    await gh.cancelRun(p.git_repo, runId, force);
+  } catch (e) {
+    if (e.status === 409) throw bad('GitHub says this run can no longer be cancelled (it already finished or is stopping)');
+    throw e;
+  }
+  forgetActive(p, runId);
+  audit(req, 'warn', `CI/CD run ${runId} ${force ? 'force-' : ''}cancelled on GitHub (${p.name})`, { projectId: p.id });
+  setTimeout(() => pollProject(p.id).catch(() => {}), 4000);
+  res.json({ ok: true });
 });
 
 /**

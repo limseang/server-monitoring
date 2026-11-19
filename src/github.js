@@ -148,6 +148,16 @@ export async function listRunJobs(repo, id) {
   return r.jobs || [];
 }
 
+/** Runs of any workflow in the repo that have not finished (queued, running, or waiting for an approval). */
+export async function listActiveRuns(repo) {
+  const lists = await Promise.all(['in_progress', 'queued', 'waiting'].map((s) => gh('GET', `/repos/${repoPath(repo)}/actions/runs?status=${s}&per_page=20`).then((r) => r.workflow_runs || [])));
+  const seen = new Set();
+  return lists.flat().filter((r) => !seen.has(r.id) && seen.add(r.id)).sort((a, b) => b.id - a.id);
+}
+
+/** Stop a run. force: also skips its "always run" steps (when a normal cancel hangs). */
+export const cancelRun = (repo, id, force = false) => gh('POST', `/repos/${repoPath(repo)}/actions/runs/${Number(id)}/${force ? 'force-cancel' : 'cancel'}`);
+
 /** The workflow files in .github/workflows on a branch (names only). */
 export async function listWorkflowFiles(repo, ref) {
   const r = await gh('GET', `/repos/${repoPath(repo)}/contents/.github/workflows?ref=${enc(ref)}`, { okStatus: [404] });
