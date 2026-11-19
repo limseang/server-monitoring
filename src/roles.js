@@ -22,6 +22,8 @@ const ownJob = (req, m) => get('SELECT user FROM jobs WHERE id = ?', Number(m[1]
 const EVERYONE = [
   ['POST', /^\/auth\/logout$/],
   ['POST', /^\/account\//],
+  // The flow editor turns YAML into a picture and back: no side effects.
+  ['POST', /^\/projects\/\d+\/ci\/flow\/(parse|apply)$/],
 ];
 
 const DEVELOPER = [

@@ -9,7 +9,7 @@ import * as gh from '../github.js';
 import { exec } from '../ssh.js';
 import { slugify } from '../util.js';
 import { connectTo, runRemote, asRoot, shq, shellScript } from './remote.js';
-import { splitForPolicy, POLICIES } from './deployplan.js';
+import { splitForPolicy, POLICIES, holdDeploy, nextQuietTime } from './deployplan.js';
 import { TEMPLATES, installHelper, pushProjectConf, ensureRepoAccess, helper, gitSshCommand, appUser } from './stack.js';
 
 /**
@@ -846,6 +846,82 @@ function holdAfterRuns(root, runs) {
   if (changed) saveCi(root.id, { held_from: held });
 }
 
+/* ------------------------------------------------------------------ your own workflow asks Switchboard which servers */
+/**
+ * Your own workflow reads the repository variable SWITCHBOARD_SERVERS to know where to deploy after you approve:
+ *   { branch, now: [servers deployed right away — standby first, live last unless it waits],
+ *     live: the live server when it waits for you (else null), servers: every server of the project }
+ * Each server: { name, label (its runner label = its name as a slug), app_dir, live }.
+ * The workflow then marks the live server with a job named "Live server waits…"; Switchboard sees it and holds the live
+ * server (Deploy now / quiet time), which starts the same workflow again for that server only (deploy_sha + deploy_to).
+ */
+export const SERVERS_VAR = 'SWITCHBOARD_SERVERS';
+export const HOLD_JOB_RE = /^live server waits\b/i;
+const livePolicy = (root) => (POLICIES.includes(root.ci_live_policy) ? root.ci_live_policy : 'now');
+
+export function serversPlan(root) {
+  const deps = deploymentsOf(root.id);
+  const live = deps.find((d) => d.id === root.active_deployment_id) || null;
+  const entry = (d) => ({ name: d.server_name, label: slugify(getServer(d.server_id)?.name || d.server_name), app_dir: d.app_dir || '', live: d.id === live?.id });
+  const standby = deps.filter((d) => d !== live);
+  // One server only: there is nothing to try first, so it is deployed after you approve.
+  const waits = !!live && standby.length > 0 && livePolicy(root) !== 'now';
+  return {
+    branch: root.git_branch || 'main',
+    now: [...standby, ...(live && !waits ? [live] : [])].map(entry),
+    live: waits ? entry(live) : null,
+    servers: deps.map(entry),
+  };
+}
+
+async function publishServers(root) {
+  const value = JSON.stringify(serversPlan(root));
+  const st = ci(root);
+  if (st.servers_var === value && !st.servers_var_error) return;
+  try {
+    await gh.setVariable(root.git_repo, SERVERS_VAR, value);
+    saveCi(root.id, { servers_var: value, servers_var_error: null, servers_var_at: now() });
+  } catch (e) {
+    saveCi(root.id, { servers_var_error: `Could not save the repository variable ${SERVERS_VAR}: ${e.message}${e.status === 403 ? ' — give the GitHub token "Variables: read and write" on this repository' : ''}` });
+  }
+}
+
+/** Own workflow: a run whose "Live server waits…" job passed → hold the live server for that commit. */
+async function holdFromOwnRuns(root, runs) {
+  const branch = root.git_branch || 'main';
+  const st = ci(root);
+  const last = Number(st.hold_checked_run || 0);
+  const done = runs.filter((r) => r.status === 'completed' && r.conclusion === 'success' && r.head_branch === branch && r.event !== 'pull_request').sort((a, b) => a.id - b.id);
+  if (!done.length) return;
+  // First time: start from now (don't hold for runs from before this was turned on).
+  if (!last) return saveCi(root.id, { hold_checked_run: done.at(-1).id });
+  for (const r of done.filter((x) => x.id > last)) {
+    const jobs = await gh.listRunJobs(root.git_repo, r.id);
+    if (jobs.some((j) => HOLD_JOB_RE.test(j.name || '') && j.conclusion === 'success')) {
+      const live = deploymentsOf(root.id).find((d) => d.id === root.active_deployment_id);
+      if (live) {
+        const policy = livePolicy(root);
+        const runAt = policy === 'quiet' ? nextQuietTime(root.ci_quiet_time) : null;
+        holdDeploy({ project: root, dep: live, commit: r.head_sha, runAt, reason: policy === 'quiet' ? 'quiet time' : 'live server waits', user: 'github', via: 'workflow' });
+        alert('info', `${root.name}: commit ${r.head_sha.slice(0, 7)} is on the other servers — ${live.server_name} (live) waits for you. CI/CD tab → Deploy now`, { projectId: root.id, link: `#/projects/${root.id}` });
+      }
+    }
+    saveCi(root.id, { hold_checked_run: r.id });
+  }
+}
+
+/** Start your own workflow for one server and one commit (the images of that commit are already built). */
+export async function startWorkflowDeploy(project, dep, sha, { user = 'system', why = '' } = {}) {
+  const root = rootOf(project);
+  if (!ownWorkflow(root) || !root.git_repo) throw new Error('This project does not use its own workflow file');
+  if (!/^[0-9a-f]{7,40}$/.test(String(sha || ''))) throw new Error('No commit to deploy');
+  const label = slugify(getServer(dep.server_id)?.name || dep.server_name);
+  await gh.dispatchWorkflow(root.git_repo, project.git_branch || root.git_branch || 'main', workflowFileOf(root), { deploy_sha: sha, deploy_to: label });
+  logEvent('info', `${project.name}: ${dep.server_name} — GitHub deploys commit ${sha.slice(0, 7)} now${why ? ` (${why})` : ''}`, { projectId: project.id, user });
+  activeCache.delete(root.id);
+  setTimeout(() => pollProject(root.id).catch(() => {}), 5000);
+}
+
 export async function pollProject(id) {
   const root = rootOf(getProject(id));
   if (!root?.git_repo || !gh.hasToken()) return;
@@ -854,6 +930,10 @@ export async function pollProject(id) {
     if (root.ci_mode === 'pull') await autoDeploy(root, runs);
     else {
       if (!ownWorkflow(root)) holdAfterRuns(root, runs);
+      else {
+        await publishServers(root);
+        await holdFromOwnRuns(root, runs);
+      }
       if (root.preview_server_id) await syncPreviews(root, runs);
     }
     saveCi(root.id, { polled_at: now(), error: null });
@@ -880,6 +960,7 @@ export async function pollAllCi() {
 
 /* ------------------------------------------------------------------ live view of one run */
 const liveCache = new Map(); // run id → { at, data }: several open viewers share one GitHub call
+const GATE_JOB_RE = /^(approve|choose)\b/i;
 const T = (x) => (x ? Date.parse(x) : null);
 
 /** A run with its jobs and steps; each job on a self-hosted runner is matched to the project's server. */
@@ -891,6 +972,8 @@ export async function liveRun(root, runId) {
   const labelsOf = (j) => (Array.isArray(j.labels) ? j.labels : String(j.labels || '').split(',')).map((l) => String(l?.name ?? l).trim().toLowerCase()).filter(Boolean);
   const serverOf = (j) => {
     const labels = labelsOf(j);
+    // The approval job only waits on a server's runner; it does not deploy there.
+    if (GATE_JOB_RE.test(j.name || '')) return null;
     if (!labels.includes('self-hosted') && !j.runner_name?.startsWith('sb-')) return null;
     return servers.find((s) => j.runner_name === runnerLabel(s) || labels.includes(runnerLabel(s).toLowerCase()) || labels.includes(slugify(s.name))) || null;
   };
@@ -923,11 +1006,14 @@ export async function liveRun(root, runId) {
         html_url: j.html_url,
         runner: j.runner_name || '',
         where: s ? 'server' : labels.includes('self-hosted') ? 'self-hosted' : 'github',
+        hold: HOLD_JOB_RE.test(j.name || ''),
         server: s ? { id: s.id, name: s.name } : null,
         steps: (j.steps || []).map((x) => ({ number: x.number, name: x.name, status: x.status, conclusion: x.conclusion, started_at: x.started_at, completed_at: x.completed_at })),
       };
     }).sort((a, b) => (T(a.started_at) ?? 9e15) - (T(b.started_at) ?? 9e15) || a.id - b.id),
     servers: servers.map((s) => ({ id: s.id, name: s.name, label: slugify(s.name) })),
+    // Servers that wait for you with this run's commit (Deploy now).
+    held: all('SELECT h.id, h.run_at, h.via, d.server_id FROM held_deploys h JOIN deployments d ON d.id = h.deployment_id WHERE h.commit_sha = ? AND (h.project_id = ? OR h.project_id IN (SELECT id FROM projects WHERE parent_id = ?))', run.head_sha, root.id, root.id).map((h) => ({ ...h, server_name: getServer(h.server_id)?.name || '' })),
     at: new Date().toISOString(),
   };
   liveCache.set(runId, { at: Date.now(), data });

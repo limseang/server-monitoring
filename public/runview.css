@@ -247,3 +247,37 @@
 @media (prefers-reduced-motion: reduce) {
   .dv *, .dv-anim::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------------- own workflow: where it deploys (CI/CD tab) ---------------- */
+.sv-plan { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); }
+.sv-flow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.sv-step { padding: 5px 10px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--border); }
+.sv-step.sv-wait { border-color: color-mix(in srgb, var(--amber) 55%, var(--border)); background: var(--amber-bg); }
+.sv-arrow { color: var(--muted); }
+
+/* ---------------- a server that waits for you (run view) ---------------- */
+.rv-held-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 12px; border-radius: var(--radius-sm); border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--border)); background: var(--amber-bg); position: relative; overflow: hidden; }
+.rv-held-bar::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--amber) 18%, transparent) 50%, transparent 70%); background-size: 250% 100%; animation: rv-sheen 2.8s linear infinite; pointer-events: none; }
+.rv-held-bar .rv-hourglass { display: inline-block; animation: rv-flip 2.4s ease-in-out infinite; }
+.rv .st-held, .rv-anim .st-held { --st: var(--amber); --st-bg: var(--amber-bg); }
+.rv-server.st-held .rv-server-box { stroke: var(--amber); stroke-dasharray: 7 5; animation: rv-dash 1.2s linear infinite, rv-glow-amber 2.4s ease-in-out infinite; }
+.rv-server.st-held .rv-led { fill: var(--amber); animation: rv-blink 1.6s ease-in-out infinite alternate; }
+.rv-server.st-held .rv-led.l2 { animation-delay: 0.5s; }
+.rv-server.st-held .rv-led.l3 { animation-delay: 1s; }
+.rv-edge.st-held .rv-edge-base { stroke: color-mix(in srgb, var(--amber) 40%, transparent); }
+.rv-edge.st-held .rv-edge-flow { stroke: var(--amber); stroke-dasharray: 3 9; animation: rv-dash 2.4s linear infinite; opacity: 0.9; }
+.rv-gate circle { fill: var(--panel); stroke: var(--amber); stroke-width: 2; }
+.rv-gate text { fill: var(--amber) !important; font-size: 11px; font-weight: 800; }
+.rv-gate { animation: rv-throb-svg 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.rv-parked { fill: var(--amber); animation: rv-bob 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.rv-hold-btn { cursor: pointer; }
+.rv-hold-btn rect { fill: var(--amber); transition: filter 0.2s; }
+.rv-hold-btn:hover rect { filter: brightness(1.15); }
+.rv-hold-btn text { fill: #1a1300 !important; font-size: 11px; font-weight: 800; }
+.rv-hold-btn:focus-visible rect { stroke: var(--text); stroke-width: 2; }
+.rv-server.st-held .rv-hg { animation: rv-flip 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes rv-glow-amber { 50% { filter: drop-shadow(0 0 12px color-mix(in srgb, var(--amber) 55%, transparent)); } }
+@keyframes rv-flip { 0%, 40% { transform: rotate(0); } 50%, 90% { transform: rotate(180deg); } 100% { transform: rotate(360deg); } }
+@keyframes rv-bob { 50% { transform: translateX(-5px); opacity: 0.55; } }
+@keyframes rv-throb-svg { 50% { transform: scale(1.18); } }
+@media (prefers-reduced-motion: reduce) { .rv-held-bar::after, .rv-held-bar .rv-hourglass { animation: none !important; } }

@@ -1,5 +1,5 @@
 import { ref, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
-import { http, toast, confirmBox, closeDialog, openDialog } from './lib.js';
+import { http, toast, confirmBox, closeDialog, openDialog, showJob } from './lib.js';
 
 /*
  * Live view of one CI/CD run (GitHub Actions): its jobs and steps, read through Switchboard every few seconds
@@ -111,6 +111,7 @@ const ProView = {
 const W = 980;
 const AnimView = {
   props: { data: Object, now: Number },
+  emits: ['deploy'],
   setup(props) {
     const motion = !reducedMotion();
     const hosted = computed(() => props.data.jobs.filter((j) => j.where !== 'server'));
@@ -120,7 +121,12 @@ const AnimView = {
       for (const j of props.data.jobs) if (j.server && !withJobs.some((s) => s.id === j.server.id)) withJobs.push(j.server);
       const rest = props.data.servers.filter((s) => !withJobs.some((x) => x.id === s.id));
       return [...withJobs, ...rest].map((s) => {
-        const jobs = props.data.jobs.filter((j) => j.server?.id === s.id);
+        // "Live server waits…" only marks the server: it is not a deploy.
+        const holdJob = props.data.jobs.find((j) => j.hold && j.server?.id === s.id) || null;
+        const held = (props.data.held || []).find((h) => h.server_id === s.id) || null;
+        const jobs = props.data.jobs.filter((j) => j.server?.id === s.id && !j.hold);
+        if (held) return { ...s, jobs, job: null, held, state: 'held' };
+        if (holdJob && !jobs.length) return { ...s, jobs, job: null, held: null, state: ['running', 'queued'].includes(stateOf(holdJob)) ? 'queued' : 'idle', released: stateOf(holdJob) === 'success' };
         // The job to show: the one running, else a failed one, else the next one waiting (the run goes on), else the last one that ran.
         const done = [...jobs].reverse().find((j) => j.started_at && !['queued', 'running'].includes(stateOf(j)));
         const failed = jobs.find((j) => stateOf(j) === 'failure');
@@ -173,6 +179,11 @@ const AnimView = {
     const runState = computed(() => stateOf(props.data.run));
     const headline = computed(() => {
       const st = runState.value;
+      const waiting = serverBoxes.value.filter((s) => s.state === 'held');
+      if (waiting.length && st !== 'failure' && st !== 'cancelled') {
+        const busy = serverBoxes.value.find((s) => s.state === 'running');
+        if (!busy) return `Ready — ${waiting.map((s) => s.name).join(', ')} waits for you`;
+      }
       if (st === 'success') return 'Done — everything passed';
       if (st === 'failure') {
         const j = all.value.find((x) => stateOf(x) === 'failure');
@@ -198,7 +209,9 @@ const AnimView = {
       return dur(b - a);
     });
     const trim = (t, n) => (String(t || '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t || ''));
-    return { W, H, motion, hosted, panel, serverBoxes, commit, edges, overall, runState, headline, elapsed, trim, stateOf, jobProgress, currentStep, stepsDone, ICON, hostedState };
+    // Where a held server's gate sits: on its connection, just before the server.
+    const gates = computed(() => serverBoxes.value.filter((s) => s.state === 'held').map((s) => ({ id: s.id, x: s.x - 18, y: s.y + s.h / 2 })));
+    return { gates, W, H, motion, hosted, panel, serverBoxes, commit, edges, overall, runState, headline, elapsed, trim, stateOf, jobProgress, currentStep, stepsDone, ICON, hostedState };
   },
   template: `
   <div class="rv-anim" :class="'run-' + runState">
@@ -220,6 +233,12 @@ const AnimView = {
             <animateMotion :dur="'1.8s'" repeatCount="indefinite" :begin="((k - 1) * 0.6) + 's'" :path="e.d" />
           </circle>
         </template>
+      </g>
+
+      <!-- a held server: the code is parked at a gate until you click -->
+      <g v-for="g in gates" :key="'gate-' + g.id">
+        <template v-if="motion"><circle v-for="k in 3" :key="k" r="3.5" class="rv-parked" :cx="g.x - 18 - (k - 1) * 11" :cy="g.y" :style="{ animationDelay: ((k - 1) * 0.25) + 's' }" /></template>
+        <g :transform="'translate(' + g.x + ',' + g.y + ')'"><g class="rv-gate"><circle r="10" /><text y="4" text-anchor="middle">❚❚</text></g></g>
       </g>
 
       <!-- the commit -->
@@ -256,8 +275,17 @@ const AnimView = {
           <circle cx="27" cy="6" r="2.2" class="rv-led l1" /><circle cx="27" cy="23" r="2.2" class="rv-led l2" /><circle cx="27" cy="40" r="2.2" class="rv-led l3" />
         </g>
         <text x="64" y="28" class="rv-t-strong">{{ trim(s.name, 20) }}</text>
-        <text x="64" y="47" class="rv-t-small">{{ s.job ? trim(s.job.name, 26) : 'No job in this run' }}</text>
+        <template v-if="s.state === 'held'">
+          <text x="64" y="47" class="rv-t-small">Waits for you</text>
+          <text x="64" y="64" class="rv-t-tiny">{{ s.held.run_at ? 'or at the quiet time' : 'the others have it' }}</text>
+          <g :transform="'translate(' + (s.w - 22) + ',22)'"><g class="rv-hg"><text y="6" text-anchor="middle" style="font-size:17px">⏳</text></g></g>
+          <g class="rv-hold-btn dev-only" role="button" tabindex="0" :aria-label="'Deploy ' + s.name + ' now'" :transform="'translate(' + (s.w - 92) + ',' + (s.h - 36) + ')'" @click="$emit('deploy', s.held)" @keydown.enter="$emit('deploy', s.held)">
+            <rect width="78" height="22" rx="11" /><text x="39" y="15" text-anchor="middle">Deploy ▶</text></g>
+        </template>
+        <template v-else>
+        <text x="64" y="47" class="rv-t-small">{{ s.job ? trim(s.job.name, 26) : s.released ? 'Got its turn later' : 'No job in this run' }}</text>
         <text x="64" y="64" class="rv-t-tiny">{{ s.job ? (currentStep(s.job) ? trim(currentStep(s.job).name, 30) : s.state === 'success' ? (/deploy/i.test(s.job.name) ? 'Deployed ✓' : 'Passed ✓') : s.state === 'failure' ? 'Failed' : s.state === 'queued' ? 'Waiting…' : (stepsDone(s.job) + '/' + s.job.steps.length + ' steps')) : '' }}</text>
+        </template>
         <rect x="14" :y="s.h - 9" :width="s.w - 28" height="3" rx="1.5" class="rv-mini-track" />
         <rect x="14" :y="s.h - 9" :width="(s.w - 28) * (s.job ? jobProgress(s.job) : 0)" height="3" rx="1.5" class="rv-mini-bar" />
         <g v-if="s.state === 'success' || s.state === 'failure'" :transform="'translate(' + (s.w - 22) + ',22)'">
@@ -266,7 +294,7 @@ const AnimView = {
         <circle v-if="s.state === 'success'" class="rv-burst" :cx="s.w - 22" cy="22" r="13" />
       </g>
     </svg>
-    <div class="rv-legend small muted"><span><i class="lg st-running"></i>running</span><span><i class="lg st-success"></i>passed</span><span><i class="lg st-failure"></i>failed</span><span><i class="lg st-queued"></i>waiting</span></div>
+    <div class="rv-legend small muted"><span><i class="lg st-running"></i>running</span><span><i class="lg st-success"></i>passed</span><span><i class="lg st-failure"></i>failed</span><span><i class="lg st-queued"></i>waiting</span><span><i class="lg st-held"></i>waits for you</span></div>
   </div>`,
 };
 
@@ -320,6 +348,25 @@ export const RunViewer = {
     const eventText = (e) => ({ push: 'push', pull_request: 'pull request', workflow_dispatch: 'run by hand', schedule: 'schedule' })[e] || e;
     // Errors after this run's deploy? Deploy an older commit of the branch again.
     const rollBack = () => openDialog('deploy-plan', { projectId: props.projectId, rollback: true });
+    // A server that waits for you with this commit: deploy it now (your workflow runs again for that server only).
+    const deploying = ref(false);
+    async function deployHeld(h) {
+      if (!h || deploying.value) return;
+      deploying.value = true;
+      try {
+        const r = await http.post(`/held-deploys/${h.id}/deploy`);
+        toast(r.message || `Deploy of ${h.server_name} started`, 'success');
+        if (r.job) showJob(r.job.id);
+        else {
+          clearTimeout(pollT);
+          await load();
+        }
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        deploying.value = false;
+      }
+    }
     // Stop the run on GitHub. A second click (it hangs on clean-up steps) force-stops it.
     const stopping = ref(false);
     const sentAt = ref(0);
@@ -346,7 +393,7 @@ export const RunViewer = {
         stopping.value = false;
       }
     }
-    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack, cancelRun, stopping, sentAt };
+    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack, cancelRun, stopping, sentAt, deployHeld, deploying };
   },
   template: `
   <modal :title="data ? 'Run #' + data.run.number + ' · ' + data.run.title : 'Run'" size="xl" @close="closeDialog">
@@ -368,8 +415,12 @@ export const RunViewer = {
         </div>
       </div>
       <div v-if="error" class="hint text-amber">Could not refresh: {{ error }} (showing the last data)</div>
+      <div v-for="h in (data.held || [])" :key="h.id" class="rv-held-bar">
+        <span><span class="rv-hourglass">⏳</span> <b>{{ h.server_name }}</b> <span class="badge badge-green">LIVE</span> waits for you — commit <code>{{ (data.run.sha || '').slice(0, 7) }}</code>{{ h.run_at ? ' (or at the quiet time)' : '' }}</span>
+        <button class="btn btn-sm btn-primary dev-only" @click="deployHeld(h)" :disabled="deploying"><span v-if="deploying" class="spinner"></span>Deploy {{ h.server_name }} now</button>
+      </div>
       <pro-view v-if="view === 'pro'" :data="data" :now="now" />
-      <anim-view v-else :data="data" :now="now" />
+      <anim-view v-else :data="data" :now="now" @deploy="deployHeld" />
     </div>
     <template #footer>
       <span class="muted small" v-if="data">{{ running ? (sentAt ? 'Stopping… updates every 5 seconds' : 'Updates every 5 seconds') : 'Finished' }}</span>
