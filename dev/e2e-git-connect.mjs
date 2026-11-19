@@ -226,7 +226,8 @@ await step('Folder owned by another user ("dubious ownership") → marked safe, 
   on('git -C /srv/gc-owned config --file .git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git || git config --file /srv/gc-owned/.git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git');
   const { job: j2 } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-empty'].id });
   const l2 = await waitJob(j2);
-  check(/is a checkout of git:\/\/172.30.0.6\/lab-user\/gc-other.git, not lab-user\/gc-app — left as it is/.test(l2.log), 'other repo in a refused folder: left alone');
+  // (A background auto-deploy may have marked the folder safe again meanwhile: then it is reported as "pulls from".)
+  check(/gc-other\.git, not lab-user\/gc-app — left as it is/.test(l2.log), 'other repo in a refused folder: left alone');
   check(on('git config --file /srv/gc-owned/.git/config remote.origin.url') === 'git://172.30.0.6/lab-user/gc-other.git', 'origin unchanged');
   await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-empty' });
   on('rm -rf /srv/gc-owned');
@@ -323,6 +324,42 @@ await step('Runner: full access (SSH user) with the server name as label, then b
   await waitJob(job);
   check(!onOk('test -d /opt/switchboard-runner/lab-user_gc-app'), 'runner removed');
   await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'pull', ci_workflow_path: null });
+  // "+ Self-hosted runner" while Switchboard deploys: the runner is installed anyway (for your own workflow).
+  ({ job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id, runner: true, runner_access: 'full' }));
+  await waitJob(job);
+  r = await runnerOf();
+  check(r?.user === 'root' && (await ci()).runner_access === 'full', `runner asked for in "Switchboard deploys" mode: installed as ${r?.user}`);
+  const rid2 = (await ci()).runners.find((x) => x.server_id === srv['gc-live'].id)?.id;
+  ({ job } = await api('DELETE', `/projects/${project.id}/ci/runners/${rid2}`));
+  await waitJob(job);
+  await api('PUT', `/projects/${project.id}/ci`, { ci_runner_access: 'restricted' });
+});
+
+await step('Live run view: jobs and steps, self-hosted jobs matched to servers', async () => {
+  const t = (s) => new Date(Date.now() - s * 1000).toISOString();
+  const run = await gh('POST', '/__runs', { repo: REPO, run: {
+    status: 'in_progress', conclusion: null, head_sha: 'c'.repeat(40), display_title: 'live view test', run_started_at: t(60),
+    jobs: [
+      { name: 'Build Docker Images', status: 'completed', conclusion: 'success', started_at: t(60), completed_at: t(30), labels: ['ubuntu-latest'], runner_name: 'GitHub Actions 3',
+        steps: [{ number: 1, name: 'Checkout', status: 'completed', conclusion: 'success', started_at: t(60), completed_at: t(55) }] },
+      { name: 'Deploy to public (gc-live)', status: 'in_progress', conclusion: null, started_at: t(20), labels: ['self-hosted', 'gc-live'], runner_name: 'some-hand-made-runner',
+        steps: [{ number: 1, name: 'Pull images', status: 'completed', conclusion: 'success', started_at: t(20), completed_at: t(10) }, { number: 2, name: 'Deploy', status: 'in_progress', started_at: t(10) }] },
+      { name: 'Deploy to backup', status: 'queued', conclusion: null, labels: ['self-hosted', `sb-gc-backup-${srv['gc-backup'].id}`], steps: [] },
+    ] } });
+  await api('POST', `/projects/${project.id}/ci/refresh`);
+  const live = await api('GET', `/projects/${project.id}/ci/runs/${run.id}/live`);
+  check(live.run.status === 'in_progress' && live.jobs.length === 3, `run + 3 jobs (${live.jobs.map((j) => j.name).join(' | ')})`);
+  const byName = Object.fromEntries(live.jobs.map((j) => [j.name, j]));
+  check(byName['Build Docker Images'].where === 'github' && !byName['Build Docker Images'].server, 'build runs on GitHub');
+  check(byName['Deploy to public (gc-live)'].server?.name === 'gc-live', 'job with label gc-live → server gc-live');
+  check(byName['Deploy to backup'].server?.name === 'gc-backup', 'job with the runner label sb-gc-backup-<id> → server gc-backup');
+  check(byName['Deploy to public (gc-live)'].steps[1].status === 'in_progress', 'steps come through');
+  check(live.jobs[0].name === 'Build Docker Images', 'jobs in start order');
+  check((await api('GET', `/projects/${project.id}/ci/runs/999999/live`, undefined, { raw: true })).status === 404, 'unknown run → 404');
+  await gh('POST', `/__runs/${run.id}`, { status: 'completed', conclusion: 'success' });
+  await sleep(2700); // the viewer's short cache
+  const done = await api('GET', `/projects/${project.id}/ci/runs/${run.id}/live`);
+  check(done.run.conclusion === 'success' && (await ci()).runs.find((r) => r.run_id === run.id)?.conclusion === 'success', 'finished run: the runs list is updated too');
 });
 
 await step('Developer may check but not connect', async () => {

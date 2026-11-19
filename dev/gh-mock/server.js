@@ -111,6 +111,13 @@ http
         (S.runs[body.repo] ||= []).unshift(r);
         return send(res, 200, r);
       }
+      // Change a run (status, conclusion, jobs) — to play a run step by step in tests.
+      if ((m = p.match(/^\/__runs\/(\d+)$/)) && req.method === 'POST') {
+        const r = Object.values(S.runs).flat().find((x) => x.id === Number(m[1]));
+        if (!r) return send(res, 404, { message: 'Not Found' });
+        Object.assign(r, body, { updated_at: new Date().toISOString() });
+        return send(res, 200, r);
+      }
       if (p === '/__commit' && req.method === 'POST') return send(res, 200, { sha: commitFile(body.repo, body.branch, body.file, body.content, body.message || 'test commit') });
       if (p === '/__pulls' && req.method === 'POST') {
         // A pull request from `head_ref`: GitHub keeps refs/pull/<n>/head pointing at its newest commit.
@@ -195,6 +202,13 @@ http
           const sha = commitFile(repo, body.branch, file, Buffer.from(body.content, 'base64'), body.message);
           return send(res, cur ? 200 : 201, { commit: { sha } });
         }
+      }
+      if ((m = rest.match(/^\/actions\/runs\/(\d+)(\/jobs)?$/))) {
+        const r = (S.runs[repo] || []).find((x) => x.id === Number(m[1]));
+        if (!r) return send(res, 404, { message: 'Not Found' });
+        if (!m[2]) return send(res, 200, r);
+        const jobs = (r.jobs || []).map((j, i) => ({ id: r.id * 100 + i, run_id: r.id, html_url: `${r.html_url}/job/${i}`, steps: [], labels: ['ubuntu-latest'], ...j }));
+        return send(res, 200, { total_count: jobs.length, jobs });
       }
       // Runs are kept per repo; a run made with "workflow" belongs to that file (default switchboard.yml).
       if ((m = rest.match(/^\/actions\/workflows\/([^/]+)\/runs$/))) {

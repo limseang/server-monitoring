@@ -130,6 +130,13 @@ export async function listRuns(repo, { perPage = 30, file = WORKFLOW_FILE } = {}
 
 export const dispatchWorkflow = (repo, ref, file = WORKFLOW_FILE) => gh('POST', `/repos/${repoPath(repo)}/actions/workflows/${enc(file)}/dispatches`, { body: { ref } });
 
+/** One run, and its jobs with their steps (for the live run view). */
+export const getRun = (repo, id) => gh('GET', `/repos/${repoPath(repo)}/actions/runs/${Number(id)}`);
+export async function listRunJobs(repo, id) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/actions/runs/${Number(id)}/jobs?per_page=100`);
+  return r.jobs || [];
+}
+
 /** The workflow files in .github/workflows on a branch (names only). */
 export async function listWorkflowFiles(repo, ref) {
   const r = await gh('GET', `/repos/${repoPath(repo)}/contents/.github/workflows?ref=${enc(ref)}`, { okStatus: [404] });

@@ -586,7 +586,9 @@ defineJob('ci-connect', async (ctx, p) => {
   if (!server) throw new Error('Server not found');
   const deps = depsOn(root, server);
   if (!deps.length) throw new Error(`${server.name} is not part of ${root.name} — add it to the project first`);
-  const runner = root.ci_enabled && root.ci_mode !== 'pull';
+  // p.runner: the self-hosted runner was asked for (even when CI/CD isn't on or Switchboard deploys).
+  const runner = !!p.runner || (root.ci_enabled && root.ci_mode !== 'pull');
+  if (p.runner && !gh.hasToken()) throw new Error('A self-hosted runner needs a GitHub token (Settings → GitHub)');
   try {
     if (gh.hasToken()) {
       ctx.step(`Check access to ${root.git_repo}`);
@@ -594,7 +596,7 @@ defineJob('ci-connect', async (ctx, p) => {
       ctx.log(`${r.full_name} — ${r.private ? 'private' : 'public'}, default branch ${r.default_branch}`);
     } else ctx.warn('No GitHub token (Settings → GitHub): no deploy key, runner or workflow update — only the folder is connected');
     await setupServers(ctx, root, { runners: runner && gh.hasToken(), git: true, only: server.id });
-    if (runner && gh.hasToken() && !ownWorkflow(root)) {
+    if (runner && gh.hasToken() && !ownWorkflow(root) && root.ci_mode !== 'pull') {
       ctx.step('Commit the workflow file (adds this server to the deploy jobs)');
       await commitWorkflow(ctx, root);
     } else if (runner && ownWorkflow(root)) ctx.log(`Your own workflow ${root.ci_workflow_path} decides what runs — use runs-on: [self-hosted, ${slugify(server.name)}] for this server`);
@@ -837,6 +839,66 @@ export async function pollAllCi() {
   } finally {
     polling = false;
   }
+}
+
+/* ------------------------------------------------------------------ live view of one run */
+const liveCache = new Map(); // run id → { at, data }: several open viewers share one GitHub call
+const T = (x) => (x ? Date.parse(x) : null);
+
+/** A run with its jobs and steps; each job on a self-hosted runner is matched to the project's server. */
+export async function liveRun(root, runId) {
+  const hit = liveCache.get(runId);
+  if (hit && Date.now() - hit.at < 2500) return hit.data;
+  const [run, jobs] = await Promise.all([gh.getRun(root.git_repo, runId), gh.listRunJobs(root.git_repo, runId)]);
+  const servers = ciServers(root);
+  const labelsOf = (j) => (Array.isArray(j.labels) ? j.labels : String(j.labels || '').split(',')).map((l) => String(l?.name ?? l).trim().toLowerCase()).filter(Boolean);
+  const serverOf = (j) => {
+    const labels = labelsOf(j);
+    if (!labels.includes('self-hosted') && !j.runner_name?.startsWith('sb-')) return null;
+    return servers.find((s) => j.runner_name === runnerLabel(s) || labels.includes(runnerLabel(s).toLowerCase()) || labels.includes(slugify(s.name))) || null;
+  };
+  const data = {
+    run: {
+      id: run.id,
+      number: run.run_number,
+      title: String(run.display_title || run.head_commit?.message || '').split('\n')[0].slice(0, 200),
+      event: run.event,
+      branch: run.head_branch,
+      sha: run.head_sha,
+      actor: run.actor?.login || run.triggering_actor?.login || '',
+      status: run.status,
+      conclusion: run.conclusion,
+      html_url: run.html_url,
+      created_at: run.created_at,
+      started_at: run.run_started_at || run.created_at,
+      updated_at: run.updated_at,
+    },
+    jobs: jobs.map((j) => {
+      const s = serverOf(j);
+      const labels = labelsOf(j);
+      return {
+        id: j.id,
+        name: j.name,
+        status: j.status,
+        conclusion: j.conclusion,
+        started_at: j.started_at,
+        completed_at: j.completed_at,
+        html_url: j.html_url,
+        runner: j.runner_name || '',
+        where: s ? 'server' : labels.includes('self-hosted') ? 'self-hosted' : 'github',
+        server: s ? { id: s.id, name: s.name } : null,
+        steps: (j.steps || []).map((x) => ({ number: x.number, name: x.name, status: x.status, conclusion: x.conclusion, started_at: x.started_at, completed_at: x.completed_at })),
+      };
+    }).sort((a, b) => (T(a.started_at) ?? 9e15) - (T(b.started_at) ?? 9e15) || a.id - b.id),
+    servers: servers.map((s) => ({ id: s.id, name: s.name, label: slugify(s.name) })),
+    at: new Date().toISOString(),
+  };
+  liveCache.set(runId, { at: Date.now(), data });
+  for (const [k, v] of liveCache) if (Date.now() - v.at > 60000) liveCache.delete(k);
+  // Keep the runs list in step with what the viewer sees.
+  const row = get('SELECT id, status FROM ci_runs WHERE project_id = ? AND run_id = ?', root.id, run.id);
+  if (row && (row.status !== run.status || run.status === 'completed')) update('ci_runs', row.id, { status: run.status, conclusion: run.conclusion, updated_at: run.updated_at });
+  return data;
 }
 
 /** Live runner status from GitHub (online / offline / busy), best effort. */

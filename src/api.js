@@ -57,7 +57,7 @@ import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, list
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -2139,9 +2139,21 @@ api.post('/projects/:id/ci/connect', (req, res) => {
     // Folder given for a server already in the project: set it when none was set.
     for (const { dep } of depsOn(p, server)) if (!dep.app_dir && dep.project_id === p.id) update('deployments', dep.id, { app_dir: str(req.body.app_dir, 500) });
   }
-  const job = enqueue({ type: 'ci-connect', title: `Connect ${server.name} to ${p.git_repo} (${p.name})`, projectId: p.id, serverId: server.id, params: { server: server.id, deploy: req.body.deploy === true }, user: who(req) });
+  const runner = req.body.runner === true;
+  if (runner && !gh.hasToken()) throw bad('A self-hosted runner needs a GitHub token first (Settings → GitHub)');
+  if (req.body.runner_access !== undefined) update('projects', p.id, { ci_runner_access: req.body.runner_access === 'full' ? 'full' : 'restricted' });
+  const job = enqueue({ type: 'ci-connect', title: `Connect ${server.name} to ${p.git_repo}${runner ? ' + self-hosted runner' : ''} (${p.name})`, projectId: p.id, serverId: server.id, params: { server: server.id, deploy: req.body.deploy === true, runner }, user: who(req) });
   bus.emit('state', { projectId: p.id });
   res.json({ job });
+});
+
+/** One run live from GitHub: its jobs and steps, each self-hosted job matched to a server. */
+api.get('/projects/:id/ci/runs/:runId/live', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo || !gh.hasToken()) throw bad('Needs a repository and a GitHub token');
+  const runId = Number(req.params.runId);
+  if (!get('SELECT 1 AS x FROM ci_runs WHERE project_id = ? AND run_id = ?', p.id, runId)) throw notFound('Run not found');
+  res.json(await liveRun(p, runId));
 });
 
 /** Look at the Git folder on every server of the project (read-only). */
