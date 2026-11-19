@@ -297,3 +297,22 @@
 @media (hover: none) {
   .rv-hold-btn rect { filter: none; }
 }
+
+/* ---------------- send a finished run's commit to a server ---------------- */
+.rv-send { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); }
+.rv-send-head { display: flex; flex-direction: column; gap: 2px; }
+.rv-send-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.rv-send-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--panel); }
+.rv-send-row.live:not(.got) { border-color: var(--amber); background: var(--amber-bg); }
+.rv-send-row .btn { margin-left: auto; }
+.rv-send-name { display: inline-flex; align-items: center; gap: 6px; }
+.rv-server.can-send .rv-server-box { stroke: var(--amber); stroke-dasharray: 6 5; }
+.rv-server.can-send { opacity: 1; }
+.rv-send-btn rect { fill: var(--accent); }
+.rv-send-btn text { fill: #fff !important; }
+
+/* CI/CD tab: deploy the newest passed commit to the live server */
+.live-deploy { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--border); background: linear-gradient(100deg, var(--accent-bg), transparent 70%), var(--panel); }
+.live-deploy-text { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.live-deploy-text > span:last-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.live-deploy-ico { font-size: 22px; }

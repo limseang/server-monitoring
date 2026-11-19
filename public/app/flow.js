@@ -56,7 +56,7 @@ export const JOB_LIBRARY = [
     make: (s) => job(`deploy-${slug(s?.label)}`, `Deploy on ${s?.name || 'server'}`, s ? onServer(s) : { kind: 'server', label: 'my-server' }, [STEP_LIBRARY[4].make(s), STEP_LIBRARY[5].make(s), STEP_LIBRARY[8].make(s)]) },
   { key: 'health', icon: '🩺', title: 'Check a server is healthy', hint: 'On your server: the app answers', server: true,
     make: (s) => job(`check-${slug(s?.label)}`, `Check ${s?.name || 'server'}`, s ? onServer(s) : { kind: 'server', label: 'my-server' }, [STEP_LIBRARY[8].make(s)]) },
-  { key: 'live-waits', icon: '⏸', title: 'Live server waits for Switchboard', hint: 'Switchboard holds the live server until you click "Deploy now"', server: false,
+  { key: 'live-waits', icon: '⏸️', title: 'Live server waits for Switchboard', hint: 'Switchboard holds the live server until you click "Deploy now"', server: false,
     make: (s, servers) => job('hold-live', `Live server waits for Switchboard (${(servers || []).find((x) => x.live)?.name || 'live'})`, GH, [step('Waiting for you in Switchboard', { run: 'echo "The live server waits — Deploy now in Switchboard → CI/CD"' })]) },
   { key: 'notify', icon: '📣', title: 'Message on Telegram', hint: 'When everything is done (also if it failed)', server: false,
     make: () => job('notify', 'Message on Telegram', GH, [STEP_LIBRARY[9].make()], { if: 'always()' }) },
@@ -66,7 +66,7 @@ export const JOB_LIBRARY = [
 /** Ready-made whole flows, built for this project's servers. */
 const T0 = () => ({ push: { on: true, branches: ['main'] }, pull_request: { on: false, branches: [] }, manual: true, schedule: [], other: [] });
 export const STARTERS = [
-  { key: 'test-deploy', icon: '🛡️', title: 'Test, then deploy every server', hint: 'Tests on GitHub; then each server one by one — standby first, the live server last',
+  { key: 'test-deploy', icon: '🛡️', title: 'Test, then deploy every server', hint: 'Tests on GitHub; then each server one by one — standby first, the live server last', tags: ['Tests', 'Docker Compose'],
     make: (servers, branch) => {
       const order = [...servers].sort((a, b) => a.live - b.live);
       const jobs = [JOB_LIBRARY[1].make()];
@@ -79,7 +79,7 @@ export const STARTERS = [
       }
       return { name: 'Test and deploy', triggers: { ...T0(), push: { on: true, branches: [branch] } }, jobs };
     } },
-  { key: 'deploy', icon: '🚀', title: 'Deploy on every push (no tests)', hint: 'Each server pulls and rebuilds — standby first, live last',
+  { key: 'deploy', icon: '🚀', title: 'Deploy on every push (no tests)', hint: 'Each server pulls and rebuilds — standby first, live last', tags: ['Simple', 'Docker Compose'],
     make: (servers, branch) => {
       const order = [...servers].sort((a, b) => a.live - b.live);
       const jobs = [];
@@ -92,7 +92,7 @@ export const STARTERS = [
       }
       return { name: 'Deploy', triggers: { ...T0(), push: { on: true, branches: [branch] } }, jobs: jobs.length ? jobs : [JOB_LIBRARY[7].make()] };
     } },
-  { key: 'live-waits', icon: '⏸', title: 'Deploy standby, the live server waits for me', hint: 'Standby servers get it right away; Switchboard holds the live one for "Deploy now"',
+  { key: 'live-waits', icon: '⏸️', title: 'Deploy standby, the live server waits for me', hint: 'Standby servers get it right away; Switchboard holds the live one for "Deploy now"', tags: ['Tests', 'Live waits', 'Docker Compose'],
     make: (servers, branch) => {
       const standby = servers.filter((s) => !s.live);
       const jobs = [JOB_LIBRARY[1].make()];
@@ -111,6 +111,70 @@ export const STARTERS = [
       return { name: 'Deploy (live waits)', triggers: { ...T0(), push: { on: true, branches: [branch] } }, jobs };
     } },
 ];
+
+/** More ready-made flows: each job gets the right server and folder from the project. */
+const standbyFirst = (servers) => [...servers].sort((a, b) => a.live - b.live);
+/** One job per server, one after the other (standby first). With `liveWaits` and 2+ servers the live one waits for Switchboard. */
+function perServer(servers, makeJob, { after = null, liveWaits = false } = {}) {
+  const jobs = [];
+  let prev = after;
+  const list = standbyFirst(servers);
+  const waits = liveWaits && list.length > 1 && list.some((s) => s.live);
+  for (const s of waits ? list.filter((x) => !x.live) : list) {
+    const j = makeJob(s);
+    if (prev) j.needs = [prev];
+    prev = j.id;
+    jobs.push(j);
+  }
+  if (waits) {
+    const h = JOB_LIBRARY[5].make(null, servers);
+    if (prev) h.needs = [prev];
+    jobs.push(h);
+  }
+  return jobs;
+}
+const T = (o = {}) => ({ ...T0(), ...o });
+STARTERS.push(
+  { key: 'laravel', icon: '🐘', title: 'Laravel with Docker — full', hint: 'Tests on GitHub; each server: pull, rebuild, migrate, caches, health check; the live server waits for you', tags: ['Laravel', 'Tests', 'Live waits'],
+    make: (servers, branch) => {
+      const tests = JOB_LIBRARY[1].make();
+      const deploy = (s) => job(`deploy-${slug(s.label)}`, `Deploy on ${s.name}`, onServer(s), [STEP_LIBRARY[4].make(s), STEP_LIBRARY[5].make(s), STEP_LIBRARY[6].make(s), STEP_LIBRARY[7].make(s), STEP_LIBRARY[8].make(s)]);
+      return { name: 'Laravel: test and deploy', triggers: T({ push: { on: true, branches: [branch] } }), jobs: [tests, ...perServer(servers, deploy, { after: 'tests', liveWaits: true })] };
+    } },
+  { key: 'images', icon: '📦', title: 'Build images on GitHub, servers only pull them', hint: 'The build runs on GitHub (not on your servers); each server pulls the new image and restarts — live waits. Your docker-compose.yml uses image: ghcr.io/<owner>/<repo>', tags: ['Docker', 'GitHub Packages', 'Live waits'],
+    make: (servers, branch) => {
+      const build = JOB_LIBRARY[2].make();
+      const deploy = (s) => job(`deploy-${slug(s.label)}`, `Deploy on ${s.name}`, onServer(s), [
+        step('Log in to GitHub Packages', { run: 'echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin' }),
+        step('Pull the new image and restart', { run: `cd ${appFolder(s)}\ndocker compose pull\ndocker compose up -d --remove-orphans\ndocker image prune -f` }),
+        STEP_LIBRARY[8].make(s),
+      ]);
+      return { name: 'Build and deploy images', triggers: T({ push: { on: true, branches: [branch] } }), jobs: [build, ...perServer(servers, deploy, { after: 'build', liveWaits: true })] };
+    } },
+  { key: 'node-pm2', icon: '🟩', title: 'Node / Nuxt app with PM2', hint: 'Tests on GitHub; each server: git pull, npm ci, build, pm2 reload — standby first, live last', tags: ['Node', 'Nuxt', 'PM2'],
+    make: (servers, branch) => {
+      const deploy = (s) => job(`deploy-${slug(s.label)}`, `Deploy on ${s.name}`, onServer(s), [
+        STEP_LIBRARY[4].make(s),
+        step('Install, build and reload', { run: `cd ${repoFolder(s)}\nnpm ci\nnpm run build\npm2 reload ecosystem.config.js --update-env || pm2 reload all --update-env` }),
+        STEP_LIBRARY[8].make(s),
+      ]);
+      return { name: 'Node app: test and deploy', triggers: T({ push: { on: true, branches: [branch] } }), jobs: [JOB_LIBRARY[0].make(), ...perServer(servers, deploy, { after: 'tests' })] };
+    } },
+  { key: 'static', icon: '🌐', title: 'Static site (Vue, React…) to nginx', hint: 'Build once on GitHub, then each server copies the files into its web folder', tags: ['Vue', 'Static', 'nginx'],
+    make: (servers, branch) => {
+      const build = job('build', 'Build the site', GH, [STEP_LIBRARY[0].make(), STEP_LIBRARY[2].make(), step('Build', { run: 'npm ci\nnpm run build' }), step('Keep the files for the servers', { uses: 'actions/upload-artifact@v4', with: { name: 'site', path: 'dist' } })]);
+      const deploy = (s) => job(`publish-${slug(s.label)}`, `Publish on ${s.name}`, onServer(s), [step('Get the built files', { uses: 'actions/download-artifact@v4', with: { name: 'site', path: 'site' } }), step('Copy into the web folder', { run: `rsync -a --delete site/ ${appFolder(s)}/` })]);
+      return { name: 'Build and publish the site', triggers: T({ push: { on: true, branches: [branch] } }), jobs: [build, ...perServer(servers, deploy, { after: 'build' })] };
+    } },
+  { key: 'pr-tests', icon: '🔍', title: 'Check pull requests (tests only)', hint: 'Every pull request runs the tests — nothing is deployed. Good next to a deploy workflow', tags: ['Tests', 'Pull requests'],
+    make: (servers, branch) => ({ name: 'Check pull requests', triggers: T({ push: { on: false, branches: [] }, pull_request: { on: true, branches: [branch] } }), jobs: [JOB_LIBRARY[0].make()] }) },
+  { key: 'nightly', icon: '🌙', title: 'Nightly clean-up on every server', hint: 'Every night: remove old Docker images and build cache, show free disk space', tags: ['Schedule', 'Maintenance'],
+    make: (servers) => ({
+      name: 'Nightly clean-up',
+      triggers: T({ push: { on: false, branches: [] }, schedule: ['0 3 * * *'] }),
+      jobs: (servers.length ? servers : [{ name: 'server', label: 'my-server' }]).map((s) => job(`clean-${slug(s.label)}`, `Clean up ${s.name}`, onServer(s), [step('Remove old images and build cache', { run: 'docker image prune -af --filter "until=168h"\ndocker builder prune -f --filter "until=168h"' }), step('Free disk space', { run: 'df -h /' })])),
+    }) },
+);
 
 const IF_PRESETS = [
   { value: '', label: 'When the jobs before it worked (normal)' },
@@ -173,6 +237,41 @@ const curve = (a, b) => {
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 };
 
+/* ------------------------------------------------------------------ a small picture of a flow (template cards) */
+export const MiniFlow = {
+  props: { flow: Object },
+  setup(props) {
+    const W = 300;
+    const H = 96;
+    const geo = computed(() => {
+      const L = layout(props.flow);
+      const k = Math.min(W / L.width, H / L.height, 0.32);
+      const ox = (W - L.width * k) / 2;
+      const oy = (H - L.height * k) / 2;
+      const box = (p) => ({ x: ox + p.x * k, y: oy + p.y * k, w: CARD_W * k, h: CARD_H * k });
+      const boxes = (props.flow?.jobs || []).map((j) => ({ id: j.id, name: j.name || j.id, kind: j.runs_on?.kind === 'server' || /self-hosted/.test(j.runs_on?.raw || '') ? 'server' : j.runs_on?.kind === 'github' ? 'github' : 'custom', wait: /waits for switchboard/i.test(j.name), ...box(L.pos.get(j.id)) }));
+      const t = box(L.trigger);
+      const at = (id) => (id === 'trigger' ? t : boxes.find((b) => b.id === id));
+      const lines = [];
+      for (const j of props.flow?.jobs || []) {
+        const to = at(j.id);
+        for (const n of j.needs?.length ? j.needs : ['trigger']) {
+          const fr = at(n);
+          if (fr && to) lines.push({ id: `${n}-${j.id}`, d: `M ${fr.x + fr.w} ${fr.y + fr.h / 2} C ${fr.x + fr.w + 12} ${fr.y + fr.h / 2}, ${to.x - 12} ${to.y + to.h / 2}, ${to.x} ${to.y + to.h / 2}` });
+        }
+      }
+      return { boxes, t, lines };
+    });
+    return { geo, W, H };
+  },
+  template: `
+  <svg class="fl-mini" :viewBox="'0 0 ' + W + ' ' + H" role="img" :aria-label="(flow?.jobs || []).map(j => j.name || j.id).join(' then ')">
+    <path v-for="l in geo.lines" :key="l.id" :d="l.d" class="fl-mini-line" />
+    <rect :x="geo.t.x" :y="geo.t.y" :width="geo.t.w" :height="geo.t.h" rx="5" class="fl-mini-box k-trigger" />
+    <rect v-for="b in geo.boxes" :key="b.id" :x="b.x" :y="b.y" :width="b.w" :height="b.h" rx="5" class="fl-mini-box" :class="['k-' + b.kind, { wait: b.wait }]"><title>{{ b.name }}</title></rect>
+  </svg>`,
+};
+
 /* ------------------------------------------------------------------ the editor */
 export const FlowEditor = {
   props: {
@@ -182,8 +281,9 @@ export const FlowEditor = {
     branch: { type: String, default: 'main' },
     path: { type: String, default: '.github/workflows/deploy.yml' },
     compact: Boolean, // picture only (e.g. Switchboard's own file)
+    startOpen: Boolean, // open the template gallery first (a new file)
   },
-  emits: ['update:content'],
+  emits: ['update:content', 'commit'],
   setup(props, { emit }) {
     const flow = ref(null);
     const errors = ref([]);
@@ -516,6 +616,71 @@ export const FlowEditor = {
         templates.value = await http.get('/flow-templates');
       } catch {}
     };
+    /* ---------- template gallery: pick a flow, use it as it is (commit) or use it and add more */
+    const gallery = reactive({ open: false, flows: {}, preview: null, previewYaml: '', projects: [], busy: '' });
+    async function openGallery() {
+      gallery.open = true;
+      gallery.preview = null;
+      library.value = null;
+      // Each ready-made flow, built for this project's servers (for the small pictures).
+      gallery.flows = Object.fromEntries(STARTERS.map((st) => [st.key, st.make(servers.value, props.branch)]));
+      loadTemplates();
+      try {
+        gallery.projects = (await http.get('/projects')).filter((p) => !p.parent_id && p.id !== props.projectId && p.git_repo && p.ci_workflow_path);
+      } catch {
+        gallery.projects = [];
+      }
+    }
+    const flowLine = (f) => (f?.jobs || []).map((j) => j.name || j.id).join(' → ');
+    async function previewStarter(st) {
+      try {
+        gallery.previewYaml = (await http.post(`/projects/${props.projectId}/ci/flow/apply`, { content: '', flow: gallery.flows[st.key] })).content;
+        gallery.preview = st;
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    }
+    async function useStarter(st, commitNow) {
+      if (props.content && props.content.trim() && !(await confirmBox({ title: `Use “${st.title}”?`, message: commitNow ? 'The workflow file is replaced by this flow and committed to GitHub now.' : 'The flow in the editor is replaced (nothing is saved to GitHub until you commit).', confirmText: commitNow ? 'Use and commit' : 'Use it' }))) return;
+      gallery.busy = st.key;
+      try {
+        const r = await http.post(`/projects/${props.projectId}/ci/flow/apply`, { content: '', flow: st.make(servers.value, props.branch) });
+        ownWrite = null;
+        emit('update:content', r.content);
+        gallery.open = false;
+        selected.value = null;
+        if (commitNow) nextTick(() => emit('commit'));
+        else toast('Now make it yours: click a card to change it, + to add a job — then Commit to GitHub', 'success');
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        gallery.busy = '';
+      }
+    }
+    async function useProjectFlow(p) {
+      gallery.busy = `p${p.id}`;
+      try {
+        const r = await http.get(`/projects/${p.id}/ci/workflows?path=${encodeURIComponent(p.ci_workflow_path)}`);
+        if (!r.content) throw new Error(`${p.ci_workflow_path} is not in ${p.git_repo} any more`);
+        gallery.open = false;
+        await useTemplate({ name: `${p.name} — ${p.ci_workflow_path.split('/').pop()}`, content: r.content });
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        gallery.busy = '';
+      }
+    }
+    watch(
+      () => [props.startOpen, flow.value != null],
+      ([open, ready]) => {
+        if (open && ready && !props.readonly && !props.compact && !gallery.shown) {
+          gallery.shown = true;
+          openGallery();
+        }
+      },
+      { immediate: true },
+    );
+
     async function startFrom(st) {
       if (props.content && props.content.trim() && !(await confirmBox({ title: `Start from “${st.title}”?`, message: 'The flow (and its YAML) in the editor is replaced. Nothing is saved to GitHub until you commit.', confirmText: 'Replace' }))) return;
       const f = st.make(servers.value, props.branch);
@@ -599,7 +764,7 @@ export const FlowEditor = {
       tplForm.busy = true;
       try {
         await http.post('/flow-templates', { name: tplForm.name, description: tplForm.description, content: props.content });
-        toast(`Template “${tplForm.name}” saved — use it in any project: Start from…`, 'success');
+        toast(`Template “${tplForm.name}” saved — use it in any project: 📚 Templates`, 'success');
         tplForm.open = false;
         loadTemplates();
       } catch (e) {
@@ -642,7 +807,7 @@ export const FlowEditor = {
       flow, errors, servers, view, title, wrap, scale, selected, sel, openStep, library, pickServer, sim, busy, isAdmin, lay, jobsOf, edges, edgeState, triggerText, where, badges, t, branches,
       CARD_W, CARD_H, STEP_LIBRARY, JOB_LIBRARY, STARTERS, IF_PRESETS, SCHEDULE_PRESETS, templates, remap, tplForm, dupFor, store,
       play, stopSim, select, addJob, addStep, moveStep, removeStep, removeJob, renameJob, canNeed, toggleNeed, setWhere, ifPreset, setIf, withText, setWith, stepKind, setStepKind, stepIcon, stepTitle,
-      setBranches, toggleSchedule, duplicateFor, startFrom, openCopy, useTemplate, doRemap, saveTemplate, deleteTemplate, download, openLibrary, changed, onYaml, serverByLabel,
+      setBranches, toggleSchedule, duplicateFor, startFrom, gallery, openGallery, previewStarter, useStarter, useProjectFlow, flowLine, openCopy, useTemplate, doRemap, saveTemplate, deleteTemplate, download, openLibrary, changed, onYaml, serverByLabel,
     };
   },
   template: `
@@ -652,7 +817,7 @@ export const FlowEditor = {
         <button class="btn btn-sm" :class="sim.on ? '' : 'btn-primary'" @click="play" :disabled="!jobsOf.length">{{ sim.on ? '■ Stop' : '▶ Show how it runs' }}</button>
         <template v-if="isAdmin && !compact">
           <button class="btn btn-sm" @click="openLibrary('job')" :disabled="!flow">+ Add a job</button>
-          <button class="btn btn-sm" @click="openLibrary('start')">Start from…</button>
+          <button class="btn btn-sm fl-tpl-btn" @click="openGallery">📚 Templates</button>
           <button class="btn btn-sm" @click="openCopy" :disabled="!flow || !content">Copy to another project…</button>
           <button class="btn btn-sm" @click="tplForm.open = true; tplForm.name = (flow && flow.name) || ''" :disabled="!flow || !content">Save as template</button>
         </template>
@@ -810,13 +975,60 @@ export const FlowEditor = {
       <template v-else>
         <h4 style="margin:0">Ready-made — built for this project's servers ({{ servers.map(s => s.name).join(', ') || 'none yet' }})</h4>
         <div class="fl-lib">
-          <button v-for="x in STARTERS" :key="x.key" class="fl-lib-item" @click="startFrom(x)"><span class="fl-lib-ico">{{ x.icon }}</span><span><b>{{ x.title }}</b><span class="hint">{{ x.hint }}</span></span></button>
+          <button v-for="x in STARTERS" :key="x.key" class="fl-lib-item" @click="useStarter(x, false)"><span class="fl-lib-ico">{{ x.icon }}</span><span><b>{{ x.title }}</b><span class="hint">{{ x.hint }}</span></span></button>
         </div>
         <h4 style="margin:0">Your templates</h4>
         <div v-if="templates.length" class="fl-lib">
           <div v-for="x in templates" :key="x.id" class="fl-lib-item as-row"><button class="fl-lib-main" @click="useTemplate(x)"><span class="fl-lib-ico">📋</span><span><b>{{ x.name }}</b><span class="hint">{{ x.description || 'Saved by ' + (x.created_by || '?') }}</span></span></button><button class="icon-btn" @click="deleteTemplate(x)" aria-label="Delete template">✕</button></div>
         </div>
         <div v-else class="hint">None yet — open a flow you like and click "Save as template".</div>
+      </template>
+    </modal>
+
+    <!-- ============ template gallery ============ -->
+    <modal v-if="gallery.open" :title="gallery.preview ? gallery.preview.icon + ' ' + gallery.preview.title : '📚 Choose a template'" size="xl" @close="gallery.open = false">
+      <template v-if="gallery.preview">
+        <div class="hint" style="margin:0">{{ gallery.preview.hint }}</div>
+        <flow-editor :project-id="projectId" :content="gallery.previewYaml" readonly compact :branch="branch" />
+        <details class="fl-tpl-yaml"><summary>See the YAML</summary><pre class="log" style="min-height:0">{{ gallery.previewYaml }}</pre></details>
+      </template>
+      <template v-else>
+        <div class="fl-tpl-intro">Pick a flow to start from. <b>Use as it is</b> commits it right away; <b>Use and edit</b> puts it in the editor so you can add jobs and steps first. Built for this project's servers: <b>{{ servers.map(s => s.name + (s.live ? ' (live)' : '')).join(', ') || 'no servers yet' }}</b>.</div>
+        <div class="fl-tpl-grid">
+          <div v-for="x in STARTERS" :key="x.key" class="fl-tpl">
+            <button class="fl-tpl-pic" @click="previewStarter(x)" :aria-label="'Preview ' + x.title"><mini-flow :flow="gallery.flows[x.key]" /></button>
+            <div class="fl-tpl-body">
+              <div class="fl-tpl-title"><span>{{ x.icon }}</span><b>{{ x.title }}</b></div>
+              <div class="hint" style="margin:0">{{ x.hint }}</div>
+              <div class="fl-tpl-line small muted">{{ flowLine(gallery.flows[x.key]) }}</div>
+              <div class="fl-tpl-tags"><span v-for="t in x.tags || []" :key="t" class="fl-badge">{{ t }}</span></div>
+            </div>
+            <div class="fl-tpl-actions">
+              <button class="btn btn-xs btn-ghost" @click="previewStarter(x)">▶ Preview</button>
+              <button class="btn btn-xs" @click="useStarter(x, false)" :disabled="!!gallery.busy">Use and edit</button>
+              <button class="btn btn-xs btn-primary" @click="useStarter(x, true)" :disabled="!!gallery.busy"><span v-if="gallery.busy === x.key" class="spinner"></span>Use as it is</button>
+            </div>
+          </div>
+        </div>
+        <template v-if="gallery.projects.length">
+          <h4 class="fl-tpl-h">From your other projects</h4>
+          <div class="fl-lib">
+            <button v-for="p in gallery.projects" :key="p.id" class="fl-lib-item" @click="useProjectFlow(p)" :disabled="!!gallery.busy"><span class="fl-lib-ico">🔁</span><span><b>{{ p.name }}</b><span class="hint">{{ p.ci_workflow_path.split('/').pop() }} in {{ p.git_repo }} — you pick which of this project's servers takes each job</span></span></button>
+          </div>
+        </template>
+        <h4 class="fl-tpl-h">Your templates</h4>
+        <div v-if="templates.length" class="fl-lib">
+          <div v-for="x in templates" :key="x.id" class="fl-lib-item as-row"><button class="fl-lib-main" @click="gallery.open = false; useTemplate(x)"><span class="fl-lib-ico">📋</span><span><b>{{ x.name }}</b><span class="hint">{{ x.description || 'Saved by ' + (x.created_by || '?') }}</span></span></button><button class="icon-btn" @click="deleteTemplate(x)" aria-label="Delete template">✕</button></div>
+        </div>
+        <div v-else class="hint">None yet — make a flow you like, then "Save as template" to reuse it in every project.</div>
+      </template>
+      <template #footer>
+        <template v-if="gallery.preview">
+          <button class="btn btn-ghost" @click="gallery.preview = null">← All templates</button>
+          <button class="btn" @click="useStarter(gallery.preview, false)" :disabled="!!gallery.busy">Use and edit</button>
+          <button class="btn btn-primary" @click="useStarter(gallery.preview, true)" :disabled="!!gallery.busy">Use as it is</button>
+        </template>
+        <button v-else class="btn btn-ghost" @click="gallery.open = false">{{ flow && flow.jobs.length ? 'Keep my flow' : 'Close' }}</button>
       </template>
     </modal>
 
@@ -843,8 +1055,11 @@ export const FlowEditor = {
     <modal v-if="tplForm.open" title="Save as template" size="sm" @close="tplForm.open = false">
       <div class="field"><label>Name</label><input v-model="tplForm.name" placeholder="Laravel: test, deploy standby, live waits"></div>
       <div class="field"><label>What it does <span class="muted">(optional)</span></label><input v-model="tplForm.description"></div>
-      <div class="hint">Saved in Switchboard. In any project: Start from… → Your templates (you pick which server takes each job).</div>
+      <div class="hint">Saved in Switchboard. In any project: 📚 Templates → Your templates (you pick which server takes each job).</div>
       <template #footer><button class="btn btn-ghost" @click="tplForm.open = false">Cancel</button><button class="btn btn-primary" @click="saveTemplate" :disabled="!tplForm.name || tplForm.busy">Save</button></template>
     </modal>
   </div>`,
 };
+
+// The gallery's preview shows a flow with the same editor (picture only).
+FlowEditor.components = { FlowEditor, MiniFlow };

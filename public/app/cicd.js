@@ -537,6 +537,27 @@ export const CicdTab = {
       }
     }
     const watchActive = (r) => openDialog('ci-run', { projectId: c.value.root.id, runId: r.run_id });
+    // The newest run that passed (not a pull request) and the live server: "Deploy <commit> to <live>" from here.
+    const newestOk = computed(() => (c.value ? c.value.runs.find((r) => r.status === 'completed' && r.conclusion === 'success' && r.event !== 'pull_request') : null));
+    const liveDep = computed(() => (c.value ? c.value.servers.flatMap((s) => s.deps.map((d) => ({ ...d, server: s.name }))).find((d) => d.active && d.project_id === c.value.root.id) : null));
+    async function deployNewestToLive() {
+      const r = newestOk.value;
+      const d = liveDep.value;
+      if (!r || !d) return;
+      if (!(await confirmBox({ title: `Deploy ${(r.sha || '').slice(0, 7)} to ${d.server} (live)?`, message: `The code of run #${r.run_number} (“${r.title}”). Visitors may see errors for a few seconds while the app restarts.`, confirmText: `Deploy to ${d.server}`, danger: true }))) return;
+      busy.value.live = true;
+      try {
+        const x = await http.post(`/projects/${c.value.root.id}/ci/runs/${r.run_id}/deploy`, { deployment: d.id });
+        toast(x.message || `Deploy to ${d.server} started`, 'success');
+        if (x.job) showJob(x.job.id);
+        load();
+        setTimeout(loadActive, 4000);
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value.live = false;
+      }
+    }
     async function act(key, fn, ok) {
       busy.value[key] = true;
       try {
@@ -635,7 +656,7 @@ export const CicdTab = {
       runJob(http.post(`/projects/${c.value.root.id}/staging/${s.id}/data`));
     };
     const runBadge = RUN_BADGE;
-    return { c, f, wf, viewRun, liveRun, active, cancelRun, watchActive, rollBack, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
+    return { c, f, wf, viewRun, liveRun, active, cancelRun, watchActive, newestOk, liveDep, deployNewestToLive, rollBack, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
   },
   template: `
   <div v-if="!c" class="muted">Loading…</div>
@@ -646,6 +667,10 @@ export const CicdTab = {
     <div v-if="c.held && c.held.length" class="alert alert-info"><span class="alert-icon">⏸</span><div style="flex:1;min-width:0">
       <div v-for="h in c.held" :key="h.id" class="held-row"><span><b>{{ h.server_name }}</b><span v-if="h.live" class="badge badge-green" style="margin:0 6px">LIVE</span> waits for <code>{{ h.commit_sha ? h.commit_sha.slice(0, 7) : 'the newest commit' }}</code> — {{ whenText(h.run_at) }}<span v-if="h.project_id !== c.root.id" class="muted"> ({{ h.project_name }})</span></span>
         <span class="row gap-6"><button class="btn btn-xs btn-primary dev-only" @click="deployHeld(h)">Deploy now</button><button class="btn btn-xs dev-only" @click="cancelHeldDeploy(h)">Cancel</button></span></div></div></div>
+    <div v-if="c.is_root && c.repo && newestOk && liveDep && !(c.held || []).some(h => h.live)" class="live-deploy">
+      <div class="live-deploy-text"><span class="live-deploy-ico">🚀</span><span><b>Deploy to the live server</b><span class="small muted">{{ liveDep.server }} <span class="badge badge-green">LIVE</span> — newest commit that passed: <code>{{ (newestOk.sha || '').slice(0, 7) }}</code> {{ newestOk.title }} (run #{{ newestOk.run_number }}, <ago :at="newestOk.created_at" />)</span></span></div>
+      <div class="row gap-6"><button class="btn btn-sm" @click="viewRun(newestOk)">Open run</button><button class="btn btn-sm btn-primary dev-only" @click="deployNewestToLive" :disabled="busy.live"><span v-if="busy.live" class="spinner"></span>Deploy {{ (newestOk.sha || '').slice(0, 7) }} to {{ liveDep.server }}</button></div>
+    </div>
     <div v-if="c.is_root && notConnected.length" class="alert alert-warn"><span class="alert-icon">⚠</span><span><b>{{ notConnected.map(s => s.name).join(', ') }}</b> can't get updates from GitHub yet. <button class="btn btn-xs admin-only" @click="connect(notConnected[0])">Connect to Git</button></span></div>
 
     <div class="card card-body form" v-if="c.is_root">
@@ -788,7 +813,7 @@ export const CicdTab = {
             <span class="hint" v-if="wf.files.length">In the repo: <template v-for="x in wf.files" :key="x"><a href="" @click.prevent="loadWf(x)"><code>{{ x.split('/').pop() }}</code></a> </template></span>
             <span class="hint" v-if="wf.missing">Not in the repo yet — the example is shown; Commit creates it.</span></div>
         </div>
-        <flow-editor v-if="wf.loaded" v-model:content="wf.content" :project-id="c.root.id" :readonly="!isAdmin" :branch="c.branch" :path="wf.path" />
+        <flow-editor v-if="wf.loaded" v-model:content="wf.content" :project-id="c.root.id" :readonly="!isAdmin" :branch="c.branch" :path="wf.path" :start-open="wf.missing" @commit="commitWf" />
         <div class="row gap-8 wrap admin-only">
           <button class="btn btn-sm btn-primary" @click="commitWf" :disabled="busy.wf || !wf.content || !c.token">Commit to GitHub</button>
           <button class="btn btn-sm" @click="useWf" :disabled="busy.wf || wf.missing" v-if="!c.own_workflow || c.workflow_path !== wf.path" title="Follow this file without changing it">Use this file as it is</button>

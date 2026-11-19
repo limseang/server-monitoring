@@ -910,6 +910,23 @@ async function holdFromOwnRuns(root, runs) {
   }
 }
 
+/**
+ * Deploy one commit to one server of the project: your own workflow (for that server only), else Switchboard's
+ * deploy over SSH. A held deploy of that server is dropped (this replaces it). Returns the Switchboard job or null.
+ */
+export async function deployCommitTo(project, dep, sha, { user = 'system', why = '' } = {}) {
+  run('DELETE FROM held_deploys WHERE deployment_id = ?', dep.id);
+  const root = rootOf(project);
+  if (ownWorkflow(root)) {
+    await startWorkflowDeploy(project, dep, sha, { user, why });
+    bus.emit('state', { projectId: project.id });
+    return null;
+  }
+  if (!String(project.deploy_script || '').trim()) throw new Error(`${project.name} has no deploy script yet (Settings → Deploy script)`);
+  bus.emit('state', { projectId: project.id });
+  return enqueue({ type: 'deploy', title: `Deploy ${project.name} @ ${dep.server_name} @ ${sha.slice(0, 7)}${why ? ` (${why})` : ''}`, projectId: project.id, params: { deployment: dep.id, commit: sha }, user });
+}
+
 /** Start your own workflow for one server and one commit (the images of that commit are already built). */
 export async function startWorkflowDeploy(project, dep, sha, { user = 'system', why = '' } = {}) {
   const root = rootOf(project);
@@ -1012,6 +1029,27 @@ export async function liveRun(root, runId) {
       };
     }).sort((a, b) => (T(a.started_at) ?? 9e15) - (T(b.started_at) ?? 9e15) || a.id - b.id),
     servers: servers.map((s) => ({ id: s.id, name: s.name, label: slugify(s.name) })),
+    // Where this commit can still go: the project's servers, which got it in this run, and why the live one did
+    // (or did not) wait — so the run view always has a button to deploy it.
+    targets: deploymentsOf(root.id).map((d) => ({
+      deployment: d.id,
+      server_id: d.server_id,
+      name: d.server_name,
+      live: d.id === root.active_deployment_id,
+      got: jobs.some((j) => !HOLD_JOB_RE.test(j.name || '') && !GATE_JOB_RE.test(j.name || '') && j.conclusion === 'success' && serverOf(j)?.id === d.server_id),
+    })),
+    own_workflow: ownWorkflow(root),
+    waits: (() => {
+      const st = ci(root);
+      const holdJob = jobs.find((j) => HOLD_JOB_RE.test(j.name || ''));
+      return {
+        policy: livePolicy(root),
+        servers_var_at: st.servers_var_at || null,
+        servers_var_error: st.servers_var_error || null,
+        hold_job: holdJob ? holdJob.conclusion || holdJob.status : null,
+        var_after_run: !st.servers_var_at || Date.parse(st.servers_var_at) > Date.parse(run.run_started_at || run.created_at),
+      };
+    })(),
     // Servers that wait for you with this run's commit (Deploy now).
     held: all('SELECT h.id, h.run_at, h.via, d.server_id FROM held_deploys h JOIN deployments d ON d.id = h.deployment_id WHERE h.commit_sha = ? AND (h.project_id = ? OR h.project_id IN (SELECT id FROM projects WHERE parent_id = ?))', run.head_sha, root.id, root.id).map((h) => ({ ...h, server_name: getServer(h.server_id)?.name || '' })),
     at: new Date().toISOString(),
