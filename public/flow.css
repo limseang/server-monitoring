@@ -14,10 +14,10 @@
 .fl-canvas { position: relative; transform-origin: 0 0; }
 .fl-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .fl-edge-base { fill: none; stroke: var(--border-2); stroke-width: 2; }
-.fl-edge-flow { fill: none; stroke: color-mix(in srgb, var(--accent) 55%, transparent); stroke-width: 2; stroke-dasharray: 4 10; animation: fl-dash 1.6s linear infinite; }
-.fl-edge.st-running .fl-edge-base { stroke: color-mix(in srgb, var(--blue) 40%, transparent); }
-.fl-edge.st-running .fl-edge-flow { stroke: var(--blue); stroke-width: 2.5; stroke-dasharray: 8 8; animation-duration: 0.6s; }
-.fl-edge.st-done .fl-edge-base { stroke: color-mix(in srgb, var(--green) 55%, transparent); }
+.fl-edge-flow { fill: none; stroke: var(--accent); stroke-opacity: 0.55; stroke-width: 2; stroke-dasharray: 4 10; animation: fl-dash 1.6s linear infinite; }
+.fl-edge.st-running .fl-edge-base { stroke: var(--blue); stroke-opacity: 0.4; }
+.fl-edge.st-running .fl-edge-flow { stroke: var(--blue); stroke-opacity: 1; stroke-width: 2.5; stroke-dasharray: 8 8; animation-duration: 0.6s; }
+.fl-edge.st-done .fl-edge-base { stroke: var(--green); stroke-opacity: 0.55; }
 .fl-edge.st-done .fl-edge-flow { stroke: var(--green); animation: none; stroke-dasharray: none; opacity: 0.5; }
 .fl-packet { fill: var(--blue); filter: drop-shadow(0 0 6px var(--blue)); }
 
@@ -87,3 +87,9 @@
 @keyframes fl-pop { from { transform: scale(0); } }
 @keyframes fl-pulse { 50% { box-shadow: 0 0 0 6px var(--accent-bg), 0 0 24px color-mix(in srgb, var(--accent) 35%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .fl *, .fl-card { animation: none !important; transition: none !important; } }
+/* Touch screens (iPad, phones): no hover — show the "+" buttons, no lift on tap. */
+@media (hover: none) {
+  .fl-plus { opacity: 1; }
+  .fl-card:hover { transform: none; }
+  .fl-lib-item:hover { transform: none; }
+}
