@@ -280,10 +280,8 @@ export default {
       if (!(await confirmBox({ title: `Deploy on ${d.server_name}?`, message: 'Runs the deploy script of this project on that server.', confirmText: 'Deploy' }))) return;
       runJob(http.post(`/deployments/${d.id}/deploy`));
     }
-    async function deployAll() {
-      if (!(await confirmBox({ title: 'Deploy on all servers?', message: 'Standby servers first, the live server last. Stops at the first failure.', confirmText: 'Deploy all' }))) return;
-      runJob(http.post(`/projects/${props.id}/deploy`));
-    }
+    // Choose which servers update now and which later (the live one can wait for a quiet moment).
+    const deployAll = () => openDialog('deploy-plan', { projectId: Number(props.id) });
     const removeDep = (d) => openDialog('remove-deployment', { project: p.value, deployment: d, onDone: load });
     const copyDep = (d) => openDialog('project-copy', { project: p.value, deployment: d, onDone: load });
     const restore = (b) => openDialog('restore', { project: p.value, backup: b });
@@ -339,7 +337,7 @@ export default {
           <button class="menu-item" @click="checkNow" :disabled="busy.check">Run health check now</button>
           <button class="menu-item" @click="backupLive" :disabled="!p.db_server_id && (!active || active.db_type === 'none')">Back up the live database</button>
           <button class="admin-only menu-item" @click="openTab('traffic')">Load balancing & database server</button>
-          <button class="menu-item" @click="deployAll" :disabled="!p.deploy_script">Deploy to all servers</button>
+          <button class="menu-item" @click="deployAll" :disabled="!p.deploy_script">Deploy to servers…</button>
           <div class="menu-sep"></div>
           <button class="menu-item" @click="openTab('cicd')">CI/CD, staging & previews</button>
           <button v-if="p.template" class="admin-only menu-item" @click="reprovision">Run the template setup again</button>

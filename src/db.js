@@ -380,6 +380,23 @@ const MIGRATIONS = [
   ALTER TABLE projects ADD COLUMN ci_workflow_path TEXT;
   ALTER TABLE projects ADD COLUMN ci_runner_access TEXT NOT NULL DEFAULT 'restricted';
   `,
+  // v14: choose which servers get a deploy now and which later (e.g. the live server at a quiet time).
+  //      ci_live_policy: what the live server does when CI/CD brings a new commit — 'now' | 'hold' | 'quiet'
+  //      ci_quiet_time:  'HH:MM|<minutes east of UTC>' (the time as the person who set it meant it)
+  `
+  ALTER TABLE projects ADD COLUMN ci_live_policy TEXT NOT NULL DEFAULT 'now';
+  ALTER TABLE projects ADD COLUMN ci_quiet_time TEXT;
+  CREATE TABLE held_deploys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    deployment_id INTEGER NOT NULL UNIQUE REFERENCES deployments(id) ON DELETE CASCADE,
+    commit_sha TEXT,
+    run_at TEXT,
+    reason TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

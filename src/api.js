@@ -57,6 +57,7 @@ import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, list
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
+import { POLICIES, parseQuiet, nextQuietTime, heldOf, releaseHeld, cancelHeld, runPlan } from './ops/deployplan.js';
 import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
@@ -2051,6 +2052,10 @@ api.get('/projects/:id/ci', async (req, res) => {
     own_workflow: ownWorkflow(root),
     runner_access: root.ci_runner_access === 'full' ? 'full' : 'restricted',
     docker_deploy_script: DOCKER_DEPLOY_SCRIPT,
+    live_policy: POLICIES.includes(root.ci_live_policy) ? root.ci_live_policy : 'now',
+    quiet_time: parseQuiet(root.ci_quiet_time)?.time || '',
+    next_quiet: root.ci_quiet_time ? nextQuietTime(root.ci_quiet_time) : null,
+    held: heldOf(root.id),
     up_to_date: ownWorkflow(root) || (!!yaml && st.committed_hash === workflowHash(yaml)),
     committed_at: st.committed_at || null,
     polled_at: st.polled_at || null,
@@ -2089,6 +2094,21 @@ api.put('/projects/:id/ci', (req, res) => {
   if (b.ci_mode !== undefined) row.ci_mode = b.ci_mode === 'pull' ? 'pull' : 'runner';
   if (b.ci_test_cmd !== undefined) row.ci_test_cmd = str(b.ci_test_cmd, 5000) || null;
   if (b.ci_runner_access !== undefined) row.ci_runner_access = b.ci_runner_access === 'full' ? 'full' : 'restricted';
+  if (b.ci_live_policy !== undefined) {
+    row.ci_live_policy = POLICIES.includes(b.ci_live_policy) ? b.ci_live_policy : 'now';
+    if (row.ci_live_policy !== p.ci_live_policy) {
+      // Runs from before this moment never hold the live server.
+      const st = parseJSON(p.ci_state, {}) || {};
+      row.ci_state = JSON.stringify({ ...st, policy_at: now() });
+    }
+  }
+  if (b.ci_quiet_time !== undefined) {
+    const t = str(b.ci_quiet_time, 5);
+    const off = Number.isInteger(b.tz_offset) && Math.abs(b.tz_offset) <= 14 * 60 ? b.tz_offset : 0;
+    if (t && !parseQuiet(t)) throw bad('Quiet time: like 02:00');
+    row.ci_quiet_time = t ? `${t}|${off}` : null;
+  }
+  if ((row.ci_live_policy ?? p.ci_live_policy) === 'quiet' && !(row.ci_quiet_time ?? p.ci_quiet_time)) throw bad('Choose the quiet time (like 02:00)');
   if (b.ci_workflow_path !== undefined) row.ci_workflow_path = b.ci_workflow_path ? workflowPathInput(b.ci_workflow_path) : null;
   // Another workflow file: the runs list starts again with that file's runs.
   if (row.ci_workflow_path !== undefined && (row.ci_workflow_path || null) !== (p.ci_workflow_path || null)) run('DELETE FROM ci_runs WHERE project_id = ?', p.id);
@@ -2154,6 +2174,45 @@ api.get('/projects/:id/ci/runs/:runId/live', async (req, res) => {
   const runId = Number(req.params.runId);
   if (!get('SELECT 1 AS x FROM ci_runs WHERE project_id = ? AND run_id = ?', p.id, runId)) throw notFound('Run not found');
   res.json(await liveRun(p, runId));
+});
+
+/**
+ * Deploy plan: some servers now, others later (when you click, or at a time) — the same commit for all.
+ * Body: { now: [deploymentId], later: [{ deployment, at? }], commit? ('latest' = newest on the branch) }
+ */
+api.post('/projects/:id/deploy-plan', async (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!str(p.deploy_script)) throw bad('Set a deploy script first (project Settings tab, or CI/CD → "pull from Git + rebuild")');
+  const ids = new Set(deploymentsOf(p.id).map((d) => d.id));
+  const nowIds = (Array.isArray(req.body.now) ? req.body.now : []).map(Number).filter((id) => ids.has(id));
+  const later = (Array.isArray(req.body.later) ? req.body.later : [])
+    .map((l) => ({ deployment: Number(l?.deployment), at: l?.at ? new Date(l.at) : null }))
+    .filter((l) => ids.has(l.deployment) && !nowIds.includes(l.deployment));
+  for (const l of later) if (l.at && (Number.isNaN(l.at.getTime()) || l.at.getTime() < Date.now() - 60000)) throw bad('A "later" time is in the past');
+  if (!nowIds.length && !later.length) throw bad('Choose at least one server');
+  // Pin the commit, so the servers that wait later get exactly what the others get now.
+  const root = rootOf(p);
+  let commit = /^[0-9a-f]{7,40}$/.test(String(req.body.commit || '')) ? req.body.commit : null;
+  if (!commit && later.length && root.git_repo && gh.hasToken()) commit = await gh.branchSha(root.git_repo, p.git_branch || root.git_branch || 'main').catch(() => null);
+  const job = runPlan({ project: p, nowIds, later: later.map((l) => ({ deployment: l.deployment, at: l.at ? l.at.toISOString() : null })), commit, user: who(req) });
+  audit(req, 'info', `${p.name}: deploy plan — now ${nowIds.length}, later ${later.length}${commit ? ` (commit ${commit.slice(0, 7)})` : ''}`, { projectId: p.id });
+  res.json({ job, commit, held: heldOf(root.id) });
+});
+
+const mustHeld = (id) => {
+  const row = get('SELECT h.*, s.name AS server_name, p.name AS project_name FROM held_deploys h JOIN deployments d ON d.id = h.deployment_id JOIN servers s ON s.id = d.server_id JOIN projects p ON p.id = h.project_id WHERE h.id = ?', toId(id));
+  if (!row) throw notFound('This waiting deploy is gone (already deployed or cancelled)');
+  return row;
+};
+api.post('/held-deploys/:id/deploy', (req, res) => {
+  const row = mustHeld(req.params.id);
+  const job = releaseHeld(row, { user: who(req), why: 'started by hand' });
+  audit(req, 'info', `${row.project_name}: waiting deploy on ${row.server_name} started now`, { projectId: row.project_id });
+  res.json({ job });
+});
+api.delete('/held-deploys/:id', (req, res) => {
+  cancelHeld(mustHeld(req.params.id), who(req));
+  res.json({ ok: true });
 });
 
 /** Look at the Git folder on every server of the project (read-only). */

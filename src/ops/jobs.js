@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { get, insert, tx, update, now } from '../db.js';
+import { get, insert, run, tx, update, now } from '../db.js';
 import { bus } from '../bus.js';
 import { alert, logEvent } from '../events.js';
 import { defineJob } from '../jobs.js';
@@ -351,7 +351,12 @@ defineJob('deploy', async (ctx, p) => {
   if (!script) throw new Error('No deploy script set for this project (Project → Settings → Deploy script)');
   const isActive = (d) => (d.id === project.active_deployment_id ? 1 : 0);
   // Deploy standby servers first, the live one last.
-  const targets = p.all ? deploymentsOf(project.id).sort((a, b) => isActive(a) - isActive(b)) : [mustDep(project, p.deployment)];
+  // all · a chosen list (deploy plan: the others wait) · one server
+  const targets = p.all
+    ? deploymentsOf(project.id).sort((a, b) => isActive(a) - isActive(b))
+    : Array.isArray(p.deployments)
+      ? p.deployments.map((id) => mustDep(project, id)).sort((a, b) => isActive(a) - isActive(b))
+      : [mustDep(project, p.deployment)];
   try {
     const lb = isLb(project);
     if (lb && targets.length > 1) ctx.log('Load balanced: rolling deploy — one server at a time is taken out, deployed and put back, so visitors are never cut off');
@@ -384,6 +389,8 @@ defineJob('deploy', async (ctx, p) => {
         } finally {
           conn.end();
         }
+        // Deployed now: a deploy that was waiting for this server is no longer needed.
+        if (run('DELETE FROM held_deploys WHERE deployment_id = ?', dep.id).changes) ctx.log(`${dep.server_name}: its waiting deploy is done by this one`);
         const h = await probe(project, dep);
         if (h.ok) ctx.log(`Health after deploy: HTTP ${h.code} in ${h.ms} ms ✓`);
         else ctx.warn(`Health after deploy: ${h.error}`);

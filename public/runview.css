@@ -137,3 +137,20 @@
 /* runs table: a row opens the live view */
 .row-link { cursor: pointer; }
 .row-link:hover td { background: var(--hover); }
+
+/* ---------------- deploy plan (public/app/deployplan.js) ---------------- */
+.dp-list { display: flex; flex-direction: column; gap: 8px; }
+.dp-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); transition: border-color 0.2s, opacity 0.2s; }
+.dp-row.dp-live { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.dp-row.dp-skip { opacity: 0.6; }
+.dp-server { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dp-server b { font-size: 14px; }
+.dp-server .badge { align-self: flex-start; }
+.dp-choice { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.dp-when { display: flex; flex-direction: column; gap: 4px; }
+.dp-time { height: 30px; padding: 0 8px; width: 120px; min-width: 120px; flex: none; }
+.dp-at { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dp-summary { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-2); }
+.held-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.held-row + .held-row { margin-top: 6px; }
+@media (max-width: 700px) { .dp-choice { align-items: flex-start; } }

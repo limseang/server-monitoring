@@ -9,6 +9,7 @@ import * as gh from '../github.js';
 import { exec } from '../ssh.js';
 import { slugify } from '../util.js';
 import { connectTo, runRemote, asRoot, shq, shellScript } from './remote.js';
+import { splitForPolicy, POLICIES } from './deployplan.js';
 import { TEMPLATES, installHelper, pushProjectConf, ensureRepoAccess, helper, gitSshCommand, appUser } from './stack.js';
 
 /**
@@ -103,7 +104,11 @@ export function workflowYaml(root) {
   }
   for (const p of root.ci_mode === 'pull' ? [] : projects) {
     // Standby servers first, the live server last; one at a time, stop at the first failure.
-    const deps = deploymentsOf(p.id).sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
+    // The live server waits (Switchboard deploys it later) when the project says so.
+    const deps = deploymentsOf(p.id)
+      .filter((d) => !liveWaits(root, p) || d.id !== p.active_deployment_id)
+      .sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
+    if (!deps.length) continue;
     const labels = deps.map((d) => runnerLabel(getServer(d.server_id)));
     const job = `deploy-${p.slug}`.slice(0, 90);
     L.push(`  ${job}:`);
@@ -225,6 +230,9 @@ export function exampleWorkflow(root) {
   );
   return `${L.join('\n')}\n`;
 }
+
+/** The live server of this project is not deployed together with the others (it waits for a click or a quiet time). */
+export const liveWaits = (root, p) => POLICIES.includes(root.ci_live_policy) && root.ci_live_policy !== 'now' && !!p.active_deployment_id && !!String(p.deploy_script || '').trim();
 
 export const workflowHash = (yaml) => crypto.createHash('sha256').update(yaml).digest('hex').slice(0, 16);
 
@@ -806,10 +814,29 @@ async function autoDeploy(root, runs) {
       }
     }
     deployed[p.slug] = sha;
-    enqueue({ type: 'deploy', title: `Deploy ${p.name} @ ${sha.slice(0, 7)} (new commit on ${p.git_branch})`, projectId: p.id, params: { all: true, commit: sha }, user: 'github' });
-    logEvent('info', `${p.name}: new commit ${sha.slice(0, 7)} on ${p.git_branch} — deploying`, { projectId: p.id });
+    // The live server may wait (click / quiet time): the others are deployed now.
+    const plan = splitForPolicy(p, root, { commit: sha });
+    if (plan.now.length) enqueue({ type: 'deploy', title: `Deploy ${p.name} @ ${sha.slice(0, 7)} (new commit on ${p.git_branch})${plan.held ? ` — ${plan.held.server_name} later` : ''}`, projectId: p.id, params: { deployments: plan.now.map((d) => d.id), commit: sha }, user: 'github' });
+    logEvent('info', `${p.name}: new commit ${sha.slice(0, 7)} on ${p.git_branch} — deploying${plan.now.length ? ` on ${plan.now.map((d) => d.server_name).join(', ')}` : ''}${plan.held ? `; ${plan.held.server_name} (live) waits` : ''}`, { projectId: p.id });
   }
   saveCi(root.id, { deployed });
+}
+
+/** Runner mode with Switchboard's workflow: the live server is not in it — hold it after the run of a new commit passes. */
+function holdAfterRuns(root, runs) {
+  const held = { ...(ci(root).held_from || {}) };
+  let changed = false;
+  for (const p of ciProjects(root)) {
+    if (!liveWaits(root, p)) continue;
+    const r = runs.filter((x) => x.event !== 'pull_request' && x.head_branch === (p.git_branch || 'main') && x.status === 'completed').sort((a, b) => b.id - a.id)[0];
+    if (!r || held[p.slug] === r.head_sha) continue;
+    if (Date.parse(r.created_at) < Date.parse(ci(root).policy_at || 0)) continue; // from before "the live server waits" was turned on
+    held[p.slug] = r.head_sha;
+    changed = true;
+    if (r.conclusion !== 'success') continue; // nothing to bring to the live server
+    splitForPolicy(p, root, { commit: r.head_sha });
+  }
+  if (changed) saveCi(root.id, { held_from: held });
 }
 
 export async function pollProject(id) {
@@ -818,6 +845,7 @@ export async function pollProject(id) {
   try {
     const runs = await pollRuns(root);
     if (root.ci_mode === 'pull') await autoDeploy(root, runs);
+    else if (!ownWorkflow(root)) holdAfterRuns(root, runs);
     else if (root.preview_server_id) await syncPreviews(root, runs);
     saveCi(root.id, { polled_at: now(), error: null });
   } catch (e) {

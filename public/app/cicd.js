@@ -1,5 +1,6 @@
 import { ref, reactive, computed, watch, onMounted } from '/vendor/vue.js';
 import { store, http, toast, closeDialog, go, showJob, runJob, confirmBox, openDialog, fmtDate, isPrivateIp } from './lib.js';
+import { whenText } from './deployplan.js';
 
 /* ------------------------------------------------------------------ Cloudflare zone picker */
 export const ZoneSelect = {
@@ -458,7 +459,7 @@ export const CicdTab = {
   components: { ZoneSelect },
   setup(props) {
     const c = ref(null);
-    const f = reactive({ git_repo: '', git_branch: 'main', ci_mode: 'runner', ci_runner_access: 'restricted', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
+    const f = reactive({ ci_live_policy: 'now', ci_quiet_time: '02:00', git_repo: '', git_branch: 'main', ci_mode: 'runner', ci_runner_access: 'restricted', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
     // Your own workflow file (edited here, committed to GitHub; Switchboard never rewrites it)
     const wf = reactive({ mode: 'switchboard', path: '.github/workflows/deploy.yml', content: '', files: [], example: '', loaded: false, loading: false, missing: false });
     const showYaml = ref(false);
@@ -477,6 +478,8 @@ export const CicdTab = {
           preview_server_id: c.value.preview.server_id || '',
           preview_zone: c.value.preview.zone,
           ci_runner_access: c.value.runner_access,
+          ci_live_policy: c.value.live_policy,
+          ci_quiet_time: c.value.quiet_time || '02:00',
         });
         if (!runBranch.value) runBranch.value = props.project.git_branch || c.value.branch;
       } catch (e) {
@@ -501,9 +504,10 @@ export const CicdTab = {
         busy.value[key] = false;
       }
     }
-    const save = () => act('save', () => http.put(`/projects/${props.project.id}/ci`, f), 'CI/CD settings saved');
+    const body = () => ({ ...f, tz_offset: -new Date().getTimezoneOffset() });
+    const save = () => act('save', () => http.put(`/projects/${props.project.id}/ci`, body()), 'CI/CD settings saved');
     const setup = async () => {
-      await http.put(`/projects/${props.project.id}/ci`, f).catch((e) => toast(e.message, 'error'));
+      await http.put(`/projects/${props.project.id}/ci`, body()).catch((e) => toast(e.message, 'error'));
       runJob(http.post(`/projects/${props.project.id}/ci/setup`, { commit: true }));
     };
     const updateServers = () => runJob(http.post(`/projects/${props.project.id}/ci/servers`));
@@ -549,7 +553,13 @@ export const CicdTab = {
       wf.content = wf.example;
     };
     const ownScript = computed(() => (c.value ? c.value.servers.some((s) => s.deps.some((d) => d.project_id === c.value.root.id && d.deploy_script)) : false));
-    const pullAll = () => runJob(http.post(`/projects/${c.value.root.id}/deploy`, {}));
+    const pullAll = () => openDialog('deploy-plan', { projectId: c.value.root.id });
+    const heldFor = (d) => (c.value.held || []).find((h) => h.deployment_id === d.id);
+    const deployHeld = (h) => runJob(http.post(`/held-deploys/${h.id}/deploy`));
+    async function cancelHeldDeploy(h) {
+      if (!(await confirmBox({ title: `Cancel the waiting deploy on ${h.server_name}?`, message: 'The server keeps the code it has now. The next deploy brings it up to date.', confirmText: 'Cancel it' }))) return;
+      act('held', () => http.del(`/held-deploys/${h.id}`), 'Waiting deploy cancelled');
+    }
     const pullOne = (d) => runJob(http.post(`/deployments/${d.id}/deploy`, {}));
     async function dockerScript() {
       if (!(await confirmBox({ title: 'Use the Docker deploy script?', message: 'Deploy then runs in the app folder: git pull (the exact commit when CI/CD starts it), docker compose up -d --build, and removes old images. You can change it later in Settings → Deploy script.', confirmText: 'Use it' }))) return;
@@ -572,7 +582,7 @@ export const CicdTab = {
       runJob(http.post(`/projects/${c.value.root.id}/staging/${s.id}/data`));
     };
     const runBadge = RUN_BADGE;
-    return { c, f, wf, viewRun, liveRun, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
+    return { c, f, wf, viewRun, liveRun, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
   },
   template: `
   <div v-if="!c" class="muted">Loading…</div>
@@ -580,6 +590,9 @@ export const CicdTab = {
     <div v-if="!c.is_root" class="alert alert-info"><span class="alert-icon">ℹ</span><span>This is a staging copy. CI/CD is managed on <a :href="'#/projects/' + c.root.id">{{ c.root.name }}</a>; pushes to <code>{{ project.git_branch }}</code> deploy here.</span></div>
     <div v-if="!c.token" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Add a GitHub token first: <a href="#/settings">Settings → GitHub</a>.</span></div>
     <div v-if="c.error" class="alert alert-error"><span class="alert-icon">✖</span><span>GitHub: {{ c.error }}</span></div>
+    <div v-if="c.held && c.held.length" class="alert alert-info"><span class="alert-icon">⏸</span><div style="flex:1;min-width:0">
+      <div v-for="h in c.held" :key="h.id" class="held-row"><span><b>{{ h.server_name }}</b><span v-if="h.live" class="badge badge-green" style="margin:0 6px">LIVE</span> waits for <code>{{ h.commit_sha ? h.commit_sha.slice(0, 7) : 'the newest commit' }}</code> — {{ whenText(h.run_at) }}<span v-if="h.project_id !== c.root.id" class="muted"> ({{ h.project_name }})</span></span>
+        <span class="row gap-6"><button class="btn btn-xs btn-primary dev-only" @click="deployHeld(h)">Deploy now</button><button class="btn btn-xs dev-only" @click="cancelHeldDeploy(h)">Cancel</button></span></div></div></div>
     <div v-if="c.is_root && notConnected.length" class="alert alert-warn"><span class="alert-icon">⚠</span><span><b>{{ notConnected.map(s => s.name).join(', ') }}</b> can't get updates from GitHub yet. <button class="btn btn-xs admin-only" @click="connect(notConnected[0])">Connect to Git</button></span></div>
 
     <div class="card card-body form" v-if="c.is_root">
@@ -602,6 +615,13 @@ export const CicdTab = {
         <div class="seg" style="align-self:flex-start"><button type="button" :class="{ on: f.ci_test_on === 'github' }" @click="f.ci_test_on = 'github'" :disabled="!isAdmin">Run tests on GitHub</button><button type="button" :class="{ on: f.ci_test_on === 'none' }" @click="f.ci_test_on = 'none'" :disabled="!isAdmin">No tests</button></div></div>
       <div class="field" v-if="f.ci_test_on === 'github'"><label>Test commands <span class="muted">(bash, on ubuntu-latest{{ c.root.template === 'laravel' ? ' with PHP 8.4' : c.root.template ? ' with Node 24' : '' }})</span></label>
         <textarea v-model="f.ci_test_cmd" class="code" rows="4" :disabled="!isAdmin"></textarea></div>
+      <div class="field"><label>When a new commit comes, the <b>live</b> server…</label>
+        <div class="seg" style="align-self:flex-start"><button type="button" :class="{ on: f.ci_live_policy === 'now' }" @click="f.ci_live_policy = 'now'" :disabled="!isAdmin">Updates with the others</button><button type="button" :class="{ on: f.ci_live_policy === 'hold' }" @click="f.ci_live_policy = 'hold'" :disabled="!isAdmin">Waits for me</button><button type="button" :class="{ on: f.ci_live_policy === 'quiet' }" @click="f.ci_live_policy = 'quiet'" :disabled="!isAdmin">Updates at a quiet time</button></div>
+        <div v-if="f.ci_live_policy === 'quiet'" class="row gap-8" style="align-items:center"><input type="time" v-model="f.ci_quiet_time" class="dp-time" :disabled="!isAdmin"><span class="hint" style="margin:0">every day, your time{{ c.next_quiet && c.live_policy === 'quiet' ? ' — next: ' + whenText(c.next_quiet) : '' }}</span></div>
+        <span class="hint" v-if="f.ci_live_policy === 'now'">Standby servers first, then the live one — it can show errors for a few seconds while it rebuilds.</span>
+        <span class="hint" v-else>Standby servers get the new commit right away; the live server keeps serving visitors and gets the <b>same commit</b> {{ f.ci_live_policy === 'quiet' ? 'at the quiet time' : 'when you click "Deploy now" (shown at the top of this tab)' }}.{{ f.ci_mode === 'runner' && !c.own_workflow ? ' The workflow file changes: commit it again after saving.' : '' }}</span>
+        <span class="hint text-amber" v-if="f.ci_live_policy !== 'now' && c.own_workflow && f.ci_mode === 'runner'">Your own workflow decides which servers it deploys — this setting only applies to Switchboard's deploys (Pull & rebuild, "Switchboard deploys" mode).</span>
+      </div>
       <div class="row gap-8 wrap admin-only">
         <button class="btn" @click="save" :disabled="busy.save">Save</button>
         <button class="btn btn-primary" @click="setup" :disabled="!f.git_repo || !c.token">{{ c.enabled ? 'Set up again (runners + workflow)' : 'Set up CI/CD' }}</button>
@@ -636,7 +656,7 @@ export const CicdTab = {
 
     <div class="card" v-if="c.is_root && c.repo">
       <div class="card-head"><h3>Servers and Git</h3>
-        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm dev-only" @click="pullAll" :disabled="!ownScript" :title="ownScript ? 'Runs the deploy script on every server: standby first, live last' : 'Set a deploy script first'">Pull & rebuild all</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and project settings to the servers (no deploy)">Send settings</button><button class="btn btn-sm admin-only" @click="connect(null, true)" :disabled="!c.token" title="Install a GitHub self-hosted runner on a server">+ Self-hosted runner</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
+        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm dev-only" @click="pullAll" :disabled="!ownScript" :title="ownScript ? 'Choose which servers update now and which later' : 'Set a deploy script first'">Pull & rebuild…</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and project settings to the servers (no deploy)">Send settings</button><button class="btn btn-sm admin-only" @click="connect(null, true)" :disabled="!c.token" title="Install a GitHub self-hosted runner on a server">+ Self-hosted runner</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
       <div v-if="!ownScript && c.servers.length" class="alert alert-info" style="margin:0 18px 12px"><span class="alert-icon">ℹ</span><span>No deploy script yet, so Switchboard can't update the servers itself. App runs with Docker Compose? <button class="btn btn-xs admin-only" @click="dockerScript" :disabled="busy.script">Use "pull from Git + rebuild"</button> <span class="muted">(or write your own in Settings → Deploy script)</span></span></div>
       <div class="table-wrap"><table class="table" v-if="c.servers.length">
         <thead><tr><th>Server</th><th>App folder</th><th>Git</th><th v-if="c.mode !== 'pull' || c.runners.length">Runner</th><th></th></tr></thead>
@@ -650,7 +670,8 @@ export const CicdTab = {
               <span v-if="gitOf(d).behind" class="text-amber"> · {{ gitOf(d).behind }} behind</span>
               <span v-if="gitOf(d).changed" class="muted" title="Tracked files edited on the server (git status)"> · {{ gitOf(d).changed }} local change{{ gitOf(d).changed > 1 ? 's' : '' }}</span>
               <div v-if="gitOf(d).error && gitOf(d).state !== 'ok'" class="muted small" style="max-width:360px;white-space:normal">{{ gitOf(d).error }}</div>
-            </template></div></td>
+            </template>
+            <div v-if="heldFor(d)" class="small"><span class="badge badge-amber">⏸ waiting</span> <span class="muted">{{ whenText(heldFor(d).run_at) }}</span></div></div></td>
           <td v-if="c.mode !== 'pull' || c.runners.length"><template v-for="r in [c.runners.find(x => x.server_id === s.id)]" :key="s.id + 'r'">
             <template v-if="r"><span v-if="r.live" class="badge" :class="r.live.status === 'online' ? (r.live.busy ? 'badge-blue' : 'badge-green') : 'badge-red'">{{ r.live.status === 'online' ? (r.live.busy ? 'busy' : 'online') : r.live.status }}</span><span v-else class="badge badge-gray">installed</span> <span class="small muted">{{ r.version }}</span></template>
             <span v-else class="muted small">not installed <button class="btn btn-xs admin-only" @click="connect(s, true)" :disabled="!c.token">Install</button></span>

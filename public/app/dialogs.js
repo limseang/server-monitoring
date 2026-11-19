@@ -5,6 +5,7 @@ import { BillingDialog, PaidDialog } from './billing.js';
 import { LbSetupDialog, DbServerDialog, ScaleOutDialog, OsUpgradeDialog } from './lbdialogs.js';
 import { TemplateProjectDialog, StagingDialog, ConnectGitDialog } from './cicd.js';
 import { RunViewer } from './runview.js';
+import { DeployPlanDialog } from './deployplan.js';
 import { PowerDialog, PasswordDialog, PortDialog, DomainDialog } from './serverctl.js';
 import { RemoveDeploymentDialog, DeleteProjectDialog, ResetServerDialog, ReinstallDialog } from './wipedialogs.js';
 import { CleanupDialog } from './cleanupdialog.js';
@@ -872,6 +873,7 @@ export const DIALOGS = {
   staging: StagingDialog,
   'connect-git': ConnectGitDialog,
   'ci-run': RunViewer,
+  'deploy-plan': DeployPlanDialog,
   power: PowerDialog,
   password: PasswordDialog,
   port: PortDialog,

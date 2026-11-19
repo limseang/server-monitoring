@@ -362,6 +362,91 @@ await step('Live run view: jobs and steps, self-hosted jobs matched to servers',
   check(done.run.conclusion === 'success' && (await ci()).runs.find((r) => r.run_id === run.id)?.conclusion === 'success', 'finished run: the runs list is updated too');
 });
 
+await step('Deploy plan: standby now, live later (same commit), at a time, and the live-server policy', async () => {
+  const SCRIPT = 'if [ -n "${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi';
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: SCRIPT });
+  let p = await api('GET', `/projects/${project.id}`);
+  const dep = (name) => p.deployments.find((d) => d.server_id === srv[name].id);
+  await api('POST', `/projects/${project.id}/adopt`, { deployment: dep('gc-live').id });
+  for (const d of ['gc-live', 'gc-backup', 'gc-empty']) on(`git -C /srv/${d} pull -q --ff-only || true`);
+  const head = (d) => on(`git -C /srv/${d} rev-parse HEAD`);
+  const heldNow = async () => (await ci()).held;
+
+  // 1. plan: two standbys now, the live one later (when I click)
+  const v5 = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v5.txt', content: 'v5\n' })).sha;
+  const r = await api('POST', `/projects/${project.id}/deploy-plan`, { now: [dep('gc-backup').id, dep('gc-empty').id], later: [{ deployment: dep('gc-live').id }] });
+  check(r.commit === v5, `plan pinned to the newest commit ${v5.slice(0, 7)}`);
+  await waitJob(r.job);
+  check(head('gc-backup') === v5 && head('gc-empty') === v5 && head('gc-live') !== v5, 'standbys updated now, live untouched');
+  let held = await heldNow();
+  check(held.length === 1 && held[0].server_name === 'gc-live' && held[0].commit_sha === v5 && !held[0].run_at && held[0].live, 'live waits for a click, with the same commit');
+
+  // 2. a newer commit meanwhile — "Deploy now" still brings the pinned one
+  await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v6.txt', content: 'v6\n' });
+  const { job: rel } = await api('POST', `/held-deploys/${held[0].id}/deploy`);
+  await waitJob(rel);
+  check(head('gc-live') === v5, 'Deploy now: live gets exactly the commit the standbys got');
+  check(!(await heldNow()).length, 'waiting deploy gone');
+  check((await api('POST', `/held-deploys/${held[0].id}/deploy`, {}, { raw: true })).status === 404, 'it cannot be started twice');
+
+  // 3. later at a time: started by Switchboard's 30-second timer
+  const at = new Date(Date.now() + 5000).toISOString();
+  const r2 = await api('POST', `/projects/${project.id}/deploy-plan`, { now: [], later: [{ deployment: dep('gc-live').id, at }] });
+  check(!r2.job && (await heldNow())[0]?.run_at === at, 'nothing now, one waiting with its time');
+  let started = null;
+  for (let i = 0; i < 80 && !started; i++) {
+    await sleep(1000);
+    started = (await jobsOf(project.id)).find((j) => j.type === 'deploy' && /scheduled/.test(j.title) && j.id > rel.id);
+  }
+  check(!!started, `the timer started it (${started?.title})`);
+  if (started) await waitJob(started);
+  check(r2.commit && head('gc-live') === r2.commit, `live updated at its time, to the commit pinned then (${r2.commit?.slice(0, 7)})`);
+  check((await api('POST', `/projects/${project.id}/deploy-plan`, { later: [{ deployment: dep('gc-live').id, at: '2000-01-01T00:00:00Z' }] }, { raw: true })).status === 400, 'a time in the past is refused');
+
+  // 4. policy "waits for me" in "Switchboard deploys" mode: a new commit updates the standbys, the live one waits
+  await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'pull', ci_test_on: 'none', ci_live_policy: 'hold' });
+  const v7 = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v7.txt', content: 'v7\n' })).sha;
+  await api('POST', `/projects/${project.id}/ci/refresh`);
+  let auto = null;
+  for (let i = 0; i < 30 && !auto; i++) {
+    auto = (await jobsOf(project.id)).find((j) => j.type === 'deploy' && j.title.includes(v7.slice(0, 7)));
+    if (!auto) await sleep(1000);
+  }
+  check(auto && /gc-live later/.test(auto.title), `automatic deploy leaves the live server out (${auto?.title})`);
+  if (auto) await waitJob(auto);
+  held = await heldNow();
+  check(head('gc-backup') === v7 && head('gc-live') !== v7 && held[0]?.commit_sha === v7 && !held[0].run_at, 'standbys have the new commit, live waits for a click');
+
+  // 5. policy "quiet time": the live server's deploy gets the next 03:00 (UTC here)
+  await api('PUT', `/projects/${project.id}/ci`, { ci_live_policy: 'quiet', ci_quiet_time: '03:00', tz_offset: 0 });
+  const v8 = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v8.txt', content: 'v8\n' })).sha;
+  await api('POST', `/projects/${project.id}/ci/refresh`);
+  for (let i = 0; i < 30; i++) {
+    held = await heldNow();
+    if (held[0]?.commit_sha === v8) break;
+    await sleep(1000);
+  }
+  const ra = held[0]?.run_at ? new Date(held[0].run_at) : null;
+  check(held.length === 1 && held[0].commit_sha === v8 && ra && ra.getUTCHours() === 3 && ra.getUTCMinutes() === 0 && ra > new Date() && ra - new Date() <= 86400000, `newer commit replaces the waiting one, at the next 03:00 UTC (${held[0]?.run_at})`);
+  check((await api('PUT', `/projects/${project.id}/ci`, { ci_live_policy: 'quiet', ci_quiet_time: '25:00' }, { raw: true })).status === 400, 'a wrong quiet time is refused');
+  for (const j of (await jobsOf(project.id)).filter((x) => ['queued', 'running'].includes(x.status))) await waitJob(j);
+
+  // 6. a deploy of the live server by hand makes its waiting deploy unnecessary
+  const { job: manual } = await api('POST', `/deployments/${dep('gc-live').id}/deploy`, {});
+  const mj = await waitJob(manual);
+  check(/its waiting deploy is done by this one/.test(mj.log) && !(await heldNow()).length, 'deploying it by hand clears the wait');
+
+  // 7. Switchboard's workflow (runner mode): the live server is not in the deploy job when it waits
+  await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'runner', ci_live_policy: 'hold' });
+  let c = await ci();
+  check(!c.workflow.includes(`sb-gc-live-${srv['gc-live'].id}`) && c.workflow.includes(`sb-gc-backup-${srv['gc-backup'].id}`), 'workflow deploys the standbys only');
+  await api('PUT', `/projects/${project.id}/ci`, { ci_live_policy: 'now' });
+  c = await ci();
+  check(c.workflow.includes(`sb-gc-live-${srv['gc-live'].id}`), 'policy "with the others": live is back in the workflow');
+  await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'pull' });
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: 'git pull -q --ff-only\ngit log -1 --format=%h' });
+});
+
 await step('Developer may check but not connect', async () => {
   const { users } = await api('GET', '/users');
   let dev = users.find((u) => u.username === 'gc-dev');
