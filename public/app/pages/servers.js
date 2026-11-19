@@ -2,6 +2,7 @@ import { ref, computed, watch, onMounted } from '/vendor/vue.js';
 import { store, http, toast, openDialog, confirmBox, runJob, go, bytes, uptimeStr, fmtDate, HEALTH } from '../lib.js';
 import { MeterBar, MenuBtn, JobsTable, Ago, HealthPill } from '../components.js';
 import { PortsTab, PowerTab } from '../serverctl.js';
+import { NginxTab } from '../nginxsites.js';
 import { TrafficTab, LogsTab } from '../trafficview.js';
 import { UsageTab } from '../usageview.js';
 import { useLive, LivePill, useTween } from '../live.js';
@@ -28,7 +29,7 @@ export const ServersPage = {
 
 export const ServerPage = {
   props: { id: Number },
-  components: { LivePill, BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, TrafficTab, LogsTab, UsageTab },
+  components: { LivePill, BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, NginxTab, TrafficTab, LogsTab, UsageTab },
   setup(props) {
     const s = ref(null);
     const tab = ref('overview');
@@ -264,6 +265,7 @@ export const ServerPage = {
       <button class="tab" :class="{ on: tab === 'traffic' }" @click="tab = 'traffic'"><icon name="activity" :size="14" />Traffic</button>
       <button class="tab dev-only" :class="{ on: tab === 'logs' }" @click="tab = 'logs'"><icon name="terminal" :size="14" />Logs</button>
       <button class="tab" :class="{ on: tab === 'ports' }" @click="tab = 'ports'"><icon name="port" :size="14" />Ports & domains</button>
+      <button class="tab admin-only" :class="{ on: tab === 'nginx' }" @click="tab = 'nginx'"><icon name="globe" :size="14" />Nginx sites</button>
       <button class="tab" :class="{ on: tab === 'containers' }" @click="tab = 'containers'"><icon name="box" :size="14" />Containers <span class="muted" v-if="m">{{ m.containers.length }}</span></button>
       <button class="tab" :class="{ on: tab === 'apps' }" @click="tab = 'apps'"><icon name="layers" :size="14" />Apps outside Docker</button>
       <button class="tab admin-only" :class="{ on: tab === 'power' }" @click="tab = 'power'"><icon name="power" :size="14" />Power & access</button>
@@ -301,6 +303,7 @@ export const ServerPage = {
     <traffic-tab v-if="tab === 'traffic'" :server="s" :key="'t' + s.id" />
     <logs-tab v-if="tab === 'logs'" :server="s" :key="'l' + s.id" />
     <ports-tab v-if="tab === 'ports'" :server="s" />
+    <nginx-tab v-if="tab === 'nginx'" :server="s" :key="'n' + s.id" />
     <power-tab v-if="tab === 'power'" :server="s" />
 
     <section v-if="tab === 'containers'">

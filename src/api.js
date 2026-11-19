@@ -53,6 +53,7 @@ import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
 import { TEMPLATES, DB_NAMES } from './ops/stack.js';
 import { templateProjectRow } from './ops/provision.js';
+import * as nginxSites from './ops/nginxsites.js';
 import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, listFolders, makeFolder, cleanFolder } from './ops/serverctl.js';
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
@@ -2554,6 +2555,64 @@ api.delete('/domains/:id', (req, res) => {
   if (!d) throw notFound('Domain not found');
   const job = enqueue({ type: 'domain-remove', title: `Disconnect ${d.host}`, serverId: d.server_id, params: { domain: d.id, deleteDns: bool(req.body?.deleteDns) }, user: who(req) });
   res.json({ job });
+});
+
+/* ---------- nginx sites (sites-available) ---------- */
+api.get('/servers/:id/nginx', async (req, res) => {
+  const s = mustServer(req.params.id);
+  try {
+    res.json({ ok: true, ...(await nginxSites.listSites(s)) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+api.get('/servers/:id/nginx/file', async (req, res) => {
+  const s = mustServer(req.params.id);
+  try {
+    res.json({ text: await nginxSites.readSite(s, str(req.query.dir, 10), str(req.query.name, 100)) });
+  } catch (e) {
+    throw bad(e.message);
+  }
+});
+
+const nginxDone = (req, s, r, what) => {
+  if (r.ok) audit(req, 'warn', `nginx on ${s.name}: ${what}`, { serverId: s.id });
+  return r;
+};
+
+api.post('/servers/:id/nginx/setup', async (req, res) => {
+  const s = mustServer(req.params.id);
+  res.json(nginxDone(req, s, await nginxSites.setupSites(s), 'sites-available set up'));
+});
+
+api.put('/servers/:id/nginx/file', async (req, res) => {
+  const s = mustServer(req.params.id);
+  const dir = str(req.body.dir, 10);
+  const name = str(req.body.name, 100);
+  if (!nginxSites.sitePath(dir, name)) throw bad('Name: letters, numbers, dot, - and _ (files in conf.d end with .conf)');
+  const text = typeof req.body.text === 'string' ? req.body.text : '';
+  try {
+    res.json(nginxDone(req, s, await nginxSites.saveSite(s, { dir, name, text, enable: bool(req.body.enable) }), `${nginxSites.sitePath(dir, name)} saved`));
+  } catch (e) {
+    throw bad(e.message);
+  }
+});
+
+api.post('/servers/:id/nginx/enable', async (req, res) => {
+  const s = mustServer(req.params.id);
+  const name = str(req.body.name, 100);
+  const on = bool(req.body.on);
+  if (!nginxSites.sitePath('sites', name)) throw bad('Unknown site');
+  res.json(nginxDone(req, s, await nginxSites.enableSite(s, name, on), `site ${name} turned ${on ? 'on' : 'off'}`));
+});
+
+api.delete('/servers/:id/nginx/file', async (req, res) => {
+  const s = mustServer(req.params.id);
+  const dir = str(req.body?.dir, 10);
+  const name = str(req.body?.name, 100);
+  if (!nginxSites.sitePath(dir, name)) throw bad('Unknown site');
+  res.json(nginxDone(req, s, await nginxSites.deleteSite(s, dir, name), `${nginxSites.sitePath(dir, name)} deleted`));
 });
 
 /* ---------- users & account ---------- */
