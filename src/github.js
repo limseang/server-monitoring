@@ -122,12 +122,21 @@ export async function putFile(repo, path, content, { branch, message }) {
   return true;
 }
 
-export async function listRuns(repo, { perPage = 30 } = {}) {
-  const r = await gh('GET', `/repos/${repoPath(repo)}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=${perPage}`, { okStatus: [404] });
+/** Runs of one workflow file (`file` = its name, e.g. deploy.yml; default Switchboard's own). */
+export async function listRuns(repo, { perPage = 30, file = WORKFLOW_FILE } = {}) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/actions/workflows/${enc(file)}/runs?per_page=${perPage}`, { okStatus: [404] });
   return r._status === 404 ? [] : r.workflow_runs || [];
 }
 
-export const dispatchWorkflow = (repo, ref) => gh('POST', `/repos/${repoPath(repo)}/actions/workflows/${WORKFLOW_FILE}/dispatches`, { body: { ref } });
+export const dispatchWorkflow = (repo, ref, file = WORKFLOW_FILE) => gh('POST', `/repos/${repoPath(repo)}/actions/workflows/${enc(file)}/dispatches`, { body: { ref } });
+
+/** The workflow files in .github/workflows on a branch (names only). */
+export async function listWorkflowFiles(repo, ref) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/contents/.github/workflows?ref=${enc(ref)}`, { okStatus: [404] });
+  if (r._status === 404) return [];
+  const list = Array.isArray(r) ? r : Object.values(r).filter((x) => x && typeof x === 'object' && x.name);
+  return list.filter((f) => f.type === 'file' && /\.ya?ml$/i.test(f.name)).map((f) => `.github/workflows/${f.name}`);
+}
 
 export const listOpenPulls = async (repo) => {
   const r = await gh('GET', `/repos/${repoPath(repo)}/pulls?state=open&per_page=100`);

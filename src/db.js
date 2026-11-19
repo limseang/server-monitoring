@@ -374,6 +374,12 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_busy_server ON busy_periods (server_id, started_at);
   `,
+  // v13: CI/CD with your own workflow file (Switchboard never rewrites it) and a runner that may run it
+  //      ('restricted' = only Switchboard's deploy commands as sb-runner, 'full' = as the SSH user: Docker, files…)
+  `
+  ALTER TABLE projects ADD COLUMN ci_workflow_path TEXT;
+  ALTER TABLE projects ADD COLUMN ci_runner_access TEXT NOT NULL DEFAULT 'restricted';
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

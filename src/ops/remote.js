@@ -79,6 +79,8 @@ export function gitHint(text) {
   const t = String(text || '');
   if (/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password/i.test(t))
     return 'git needs a login for this repo (HTTPS remote). On the server, switch the remote to SSH with a deploy key (git remote set-url origin git@github.com:OWNER/REPO.git), or save a token with a credential helper for the deploy user.';
+  if (/dubious ownership/i.test(t))
+    return 'The app folder belongs to another user, so git refuses it. Project → CI/CD → Servers and Git → "Connect to Git" fixes it (marks the folder as safe for git), or run on the server as the deploy user: git config --global --add safe.directory <folder>.';
   if (/Host key verification failed/i.test(t))
     return 'The server does not know GitHub\'s SSH host key yet. Log in to the server as the deploy user once and run: ssh -T git@github.com (answer "yes").';
   if (/Permission denied \(publickey\)|Load key .*: (incorrect passphrase|bad permissions)|passphrase/i.test(t))

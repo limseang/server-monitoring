@@ -96,7 +96,7 @@ await step('Clean up, log in, repo with two commits, three server entries for vp
   await api('POST', '/auth/login', { username: 'admin', password: 'admin-password-123' });
   for (const p of await api('GET', '/projects')) if (p.slug.startsWith('git-connect-lab')) await api('DELETE', `/projects/${p.id}`, { confirm: p.slug });
   for (const s of await api('GET', '/servers')) if (s.name.startsWith('gc-')) await api('DELETE', `/servers/${s.id}`);
-  on('rm -rf /srv/gc-live /srv/gc-backup /srv/gc-empty');
+  on('rm -rf /srv/gc-live /srv/gc-backup /srv/gc-empty /srv/gc-owned');
   await api('PUT', '/settings', { github_token: 'gh-test-token' });
   await freshRepo(REPO);
   await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'index.html', content: 'v1\n' });
@@ -195,6 +195,114 @@ await step('Set up CI/CD (Switchboard deploys) checks every server and changes n
   check(on('cat /srv/gc-backup/index.html') === before, 'backup files untouched');
   const c = await ci();
   check(c.enabled && c.servers.length === 3 && c.servers.every((s) => c.git[s.deps[0].id]?.state === 'ok'), 'CI/CD on, all three servers connected');
+});
+
+await step('Folder owned by another user ("dubious ownership") → marked safe, then it can pull and deploy', async () => {
+  // Like files created inside a Docker container (uid 1000) while Switchboard logs in as root.
+  on('rm -rf /srv/gc-owned && id -u gc-other >/dev/null 2>&1 || useradd -M gc-other');
+  on(`git clone -q ${URL_GIT} /srv/gc-owned && chown -R gc-other: /srv/gc-owned`);
+  on("git config --global --unset-all safe.directory /srv/gc-owned || true");
+  check(/dubious ownership/.test(sh('docker exec vps-ci git -C /srv/gc-owned status 2>&1 || true')), 'git refuses the folder for root (as on the real server)');
+  const p = await api('GET', `/projects/${project.id}`);
+  const dep = p.deployments.find((d) => d.server_id === srv['gc-empty'].id);
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-owned' });
+  await api('POST', `/projects/${project.id}/ci/git-check`);
+  const st = gitOf(await ci(), 'gc-empty');
+  check(st?.state === 'unsafe_owner' && /gc-other/.test(st.error || ''), `check: ${st?.state} (${st?.error})`);
+  const { job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-empty'].id, deploy: true });
+  const j = await waitJob(job);
+  check(/marked as safe for git/.test(j.log), 'log: marked as safe');
+  check(on('git config --global --get-all safe.directory').split('\n').includes('/srv/gc-owned'), 'safe.directory set for root, for this folder only');
+  check(on("stat -c %U /srv/gc-owned") === 'gc-other', 'folder owner not changed');
+  const sha = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'v3.txt', content: 'v3\n' })).sha;
+  const { job: dj } = await api('POST', `/deployments/${dep.id}/deploy`, {});
+  await waitJob(dj);
+  check(on('git -C /srv/gc-owned rev-parse HEAD') === sha, `deploy pulled ${sha.slice(0, 7)} into the folder`);
+  check(gitOf(await ci(), 'gc-empty')?.state === 'ok', 'state: connected');
+  // A refused folder that is a checkout of ANOTHER repo is not re-pointed.
+  on('git config --global --unset-all safe.directory /srv/gc-owned');
+  on('git -C /srv/gc-owned config --file .git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git || git config --file /srv/gc-owned/.git/config remote.origin.url git://172.30.0.6/lab-user/gc-other.git');
+  const { job: j2 } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-empty'].id });
+  const l2 = await waitJob(j2);
+  check(/is a checkout of git:\/\/172.30.0.6\/lab-user\/gc-other.git, not lab-user\/gc-app — left as it is/.test(l2.log), 'other repo in a refused folder: left alone');
+  check(on('git config --file /srv/gc-owned/.git/config remote.origin.url') === 'git://172.30.0.6/lab-user/gc-other.git', 'origin unchanged');
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-empty' });
+  on('rm -rf /srv/gc-owned');
+});
+
+await step('Compose folder inside the repo + "pull from Git and rebuild" deploy script (Docker)', async () => {
+  const compose = (port) => `services:\n  web:\n    image: nginx:1.27-alpine\n    container_name: gc-web\n    ports: ["${port}:80"]\n`;
+  on('docker rm -f gc-web >/dev/null 2>&1 || true');
+  await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'docker/docker-compose.yml', content: compose(18080) });
+  on('git -C /srv/gc-live pull -q --ff-only');
+  const sha = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'docker/docker-compose.yml', content: compose(18081) })).sha;
+  const p = await api('GET', `/projects/${project.id}`);
+  const dep = p.deployments.find((d) => d.server_id === srv['gc-live'].id);
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-live/docker' });
+  await api('POST', `/projects/${project.id}/ci/git-check`);
+  const st = gitOf(await ci(), 'gc-live');
+  check(st?.state === 'ok' && st.top === '/srv/gc-live' && st.behind === 1, `the repo is found one folder up (${st?.state}, top ${st?.top}, behind ${st?.behind})`);
+  await api('POST', `/projects/${project.id}/docker-deploy-script`);
+  const ps = await api('GET', `/projects/${project.id}`);
+  check(/docker compose up -d --build --remove-orphans/.test(ps.deploy_script) && /SB_COMMIT/.test(ps.deploy_script), 'deploy script set to "pull + rebuild"');
+  const { job } = await api('POST', `/deployments/${dep.id}/deploy`, {});
+  await waitJob(job);
+  check(on('git -C /srv/gc-live rev-parse HEAD') === sha, `pulled ${sha.slice(0, 7)}`);
+  check(/18081/.test(on("docker port gc-web 80 || true")), `container rebuilt with the new compose file (${on('docker port gc-web 80 || true')})`);
+  on('docker rm -f gc-web >/dev/null 2>&1 || true');
+  await api('PUT', `/deployments/${dep.id}`, { ...dep, app_dir: '/srv/gc-live' });
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: 'git pull -q --ff-only\ngit log -1 --format=%h' });
+});
+
+await step('Your own workflow: example, commit to GitHub, its runs, Run now', async () => {
+  const w = await api('GET', `/projects/${project.id}/ci/workflows`);
+  check(/runs-on: \[self-hosted, '\$\{\{ matrix\.server \}\}'\]/.test(w.example) && /server: 'gc-live', dir: '\/srv\/gc-live'/.test(w.example) && /docker compose up -d --build/.test(w.example), 'example: one job per server on its own runner, git + docker compose');
+  fs.writeFileSync('/tmp/sb-own-workflow.yml', w.example);
+  check(sh(`ruby -ryaml -e 'y = YAML.load_file("/tmp/sb-own-workflow.yml"); puts y["jobs"]["deploy"]["strategy"]["matrix"]["include"].map { |x| x["server"] }.join(",")'`) === 'gc-live,gc-backup,gc-empty', 'example is valid YAML, servers in order');
+  check((await api('PUT', `/projects/${project.id}/ci/workflow`, { path: '../evil.yml', content: w.example }, { raw: true })).status === 400, 'a path outside .github/workflows is refused');
+  check((await api('PUT', `/projects/${project.id}/ci/workflow`, { path: 'switchboard.yml', content: w.example }, { raw: true })).status === 400, "Switchboard's own file name is refused");
+  check((await api('PUT', `/projects/${project.id}/ci/workflow`, { path: 'deploy.yml', content: 'hello' }, { raw: true })).status === 400, 'text that is not a workflow is refused');
+  const r = await api('PUT', `/projects/${project.id}/ci/workflow`, { path: 'deploy.yml', content: w.example });
+  check(r.changed && r.path === '.github/workflows/deploy.yml', 'committed .github/workflows/deploy.yml');
+  check(sh(`docker exec gh-mock git -C /repos/${REPO}.git show main:.github/workflows/deploy.yml`) === w.example.trim(), 'file in the repo = what was saved');
+  const c = await ci();
+  check(c.own_workflow && c.workflow_path === '.github/workflows/deploy.yml', 'project follows deploy.yml');
+  const w2 = await api('GET', `/projects/${project.id}/ci/workflows?path=.github/workflows/deploy.yml`);
+  check(w2.files.includes('.github/workflows/deploy.yml') && w2.content === w.example, 'file listed and read back');
+  await api('POST', `/projects/${project.id}/ci/commit`);
+  check(!/switchboard\.yml/.test(sh(`docker exec gh-mock git -C /repos/${REPO}.git ls-tree -r --name-only main`)), "Switchboard's workflow is not committed in own mode");
+  await gh('POST', '/__runs', { repo: REPO, run: { workflow: 'deploy.yml', head_sha: 'a'.repeat(40), display_title: 'own workflow run' } });
+  await gh('POST', '/__runs', { repo: REPO, run: { workflow: 'switchboard.yml', head_sha: 'b'.repeat(40), display_title: 'other file' } });
+  await api('POST', `/projects/${project.id}/ci/refresh`);
+  const runs = (await ci()).runs;
+  check(runs.some((x) => x.title === 'own workflow run') && !runs.some((x) => x.title === 'other file'), 'runs shown are those of deploy.yml');
+  await api('POST', `/projects/${project.id}/ci/run`, { branch: 'main' });
+  const d = (await (await fetch(`${GH}/__state`)).json()).dispatches.pop();
+  check(d?.workflow === 'deploy.yml', `Run now starts deploy.yml (${d?.workflow})`);
+});
+
+await step('Runner: full access (SSH user) with the server name as label, then back to restricted', async () => {
+  await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'runner', ci_runner_access: 'full' });
+  const runnerOf = async () => (await (await fetch(`${GH}/__state`)).json()).runners[REPO]?.find((x) => x.name === `sb-gc-live-${srv['gc-live'].id}`);
+  let { job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id });
+  let j = await waitJob(job);
+  let r = await runnerOf();
+  check(r && r.user === 'root' && r.labels.split(',').includes('gc-live'), `runner as root with label gc-live (${r?.user}, ${r?.labels})`);
+  check(/runs-on: \[self-hosted, gc-live\]/.test(j.log) && /use runs-on/.test(j.log), 'log tells which runs-on to use');
+  check(onOk('pgrep -u root -f "./run.sh" >/dev/null'), 'runner process runs as root');
+  const c = await ci();
+  check(c.servers.find((x) => x.name === 'gc-live')?.runner_user === 'root', 'CI tab shows the runner user');
+  await api('PUT', `/projects/${project.id}/ci`, { ci_runner_access: 'restricted' });
+  ({ job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id }));
+  j = await waitJob(job);
+  r = await runnerOf();
+  check(/register it again/.test(j.log) && r?.user === 'sb-runner', `switched to restricted: registered again as ${r?.user}`);
+  check(onOk('visudo -cqf /etc/sudoers.d/switchboard-runner'), 'sudo rule for sb-runner in place');
+  const rid = (await ci()).runners.find((x) => x.server_id === srv['gc-live'].id)?.id;
+  ({ job } = await api('DELETE', `/projects/${project.id}/ci/runners/${rid}`));
+  await waitJob(job);
+  check(!onOk('test -d /opt/switchboard-runner/lab-user_gc-app'), 'runner removed');
+  await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'pull', ci_workflow_path: null });
 });
 
 await step('Developer may check but not connect', async () => {
