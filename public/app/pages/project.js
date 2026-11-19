@@ -17,6 +17,13 @@ const SYNC_PRESETS = [
   ['Every 6 hours', '0 */6 * * *'],
   ['Daily 4:00', '0 4 * * *'],
 ];
+// Same as DOCKER_DEPLOY_SCRIPT in src/ops/ci.js
+const DOCKER_SCRIPT = `# Get the new code (the exact commit when CI/CD started the deploy)
+if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi
+# Rebuild the images that have a build: section and restart what changed
+docker compose up -d --build --remove-orphans
+# Remove old image layers so the disk does not fill up
+docker image prune -f`;
 const DEPLOY_EXAMPLE = `git pull --ff-only
 docker compose up -d --build --remove-orphans
 docker compose exec -T app php artisan migrate --force
@@ -70,7 +77,7 @@ const ProjectSettings = {
       }
     }
     const del = () => openDialog('delete-project', { project: p });
-    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE };
+    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT };
   },
   template: `
   <div class="stack">
@@ -138,7 +145,8 @@ const ProjectSettings = {
       </div>
       <div class="hint" style="margin-top:-6px">Run inside the app container (or in the app folder if no container is set). Laravel: <code>php artisan down --retry=60</code> / <code>php artisan up</code>.</div>
       <div class="field"><label>Deploy script</label><textarea v-model="f.deploy_script" class="code" rows="5" :placeholder="DEPLOY_EXAMPLE"></textarea>
-        <span class="hint">Runs in the app folder with bash, stops at the first error. "Deploy to all" runs standby servers first, the live one last.</span></div>
+        <span class="hint">Runs in the app folder with bash, stops at the first error. "Deploy to all" runs standby servers first, the live one last.
+          <button type="button" class="btn btn-xs" @click="f.deploy_script = DOCKER_SCRIPT">Use: pull from Git + rebuild with Docker</button></span></div>
       <label class="check"><input type="checkbox" v-model="f.purge_cache"><span class="check-text"><b>Purge Cloudflare cache after switching</b><span class="hint">Your token needs the "Cache Purge" permission.</span></span></label>
     </div>
 

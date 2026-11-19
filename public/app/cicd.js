@@ -446,7 +446,9 @@ export const CicdTab = {
   components: { ZoneSelect },
   setup(props) {
     const c = ref(null);
-    const f = reactive({ git_repo: '', git_branch: 'main', ci_mode: 'runner', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
+    const f = reactive({ git_repo: '', git_branch: 'main', ci_mode: 'runner', ci_runner_access: 'restricted', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
+    // Your own workflow file (edited here, committed to GitHub; Switchboard never rewrites it)
+    const wf = reactive({ mode: 'switchboard', path: '.github/workflows/deploy.yml', content: '', files: [], example: '', loaded: false, loading: false, missing: false });
     const showYaml = ref(false);
     const busy = ref({});
     const runBranch = ref('');
@@ -462,6 +464,7 @@ export const CicdTab = {
           ci_test_cmd: c.value.test_cmd || c.value.default_tests,
           preview_server_id: c.value.preview.server_id || '',
           preview_zone: c.value.preview.zone,
+          ci_runner_access: c.value.runner_access,
         });
         if (!runBranch.value) runBranch.value = props.project.git_branch || c.value.branch;
       } catch (e) {
@@ -470,6 +473,7 @@ export const CicdTab = {
     }
     onMounted(async () => {
       await load(true);
+      if (c.value?.own_workflow && c.value.is_root) ownMode();
       if (c.value?.is_root && c.value.repo && c.value.servers.length) checkGit();
     });
     watch(() => store.live, () => load());
@@ -496,6 +500,47 @@ export const CicdTab = {
     const notConnected = computed(() => (c.value ? c.value.servers.filter((s) => s.deps.some((d) => gitOf(d) && gitOf(d).state !== 'ok')) : []));
     const checkGit = () => act('git', () => http.post(`/projects/${c.value.root.id}/ci/git-check`));
     const connect = (s) => openDialog('connect-git', { project: props.project, ci: c.value, serverId: s ? s.id : undefined });
+    async function loadWf(path) {
+      wf.loading = true;
+      try {
+        const r = await http.get(`/projects/${c.value.root.id}/ci/workflows${path ? `?path=${encodeURIComponent(path)}` : ''}`);
+        wf.files = r.files;
+        wf.example = r.example;
+        if (path) {
+          wf.path = path;
+          wf.missing = r.content === null;
+          wf.content = r.content ?? r.example;
+        }
+        wf.loaded = true;
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        wf.loading = false;
+      }
+    }
+    async function ownMode() {
+      wf.mode = 'own';
+      await loadWf();
+      await loadWf(c.value.own_workflow ? c.value.workflow_path : wf.files[0] || '.github/workflows/deploy.yml');
+    }
+    const switchboardMode = () =>
+      act('wf', async () => {
+        if (c.value.own_workflow) await http.put(`/projects/${c.value.root.id}/ci`, { ci_workflow_path: null });
+        wf.mode = 'switchboard';
+      }, c.value.own_workflow ? "Switchboard's workflow is used again — click Commit to GitHub (or Set up again) to put it in the repo" : '');
+    const useWf = () => act('wf', () => http.put(`/projects/${c.value.root.id}/ci`, { ci_workflow_path: wf.path }), `Switchboard now follows ${wf.path}`);
+    const commitWf = () => act('wf', () => http.put(`/projects/${c.value.root.id}/ci/workflow`, { path: wf.path, content: wf.content }).then((r) => { wf.missing = false; return r; }), `${wf.path} committed to GitHub`);
+    const useExample = async () => {
+      if (wf.content && wf.content !== wf.example && !(await confirmBox({ title: 'Replace the editor text with the example?', message: 'Nothing is saved to GitHub until you click Commit.', confirmText: 'Use the example' }))) return;
+      wf.content = wf.example;
+    };
+    const ownScript = computed(() => (c.value ? c.value.servers.some((s) => s.deps.some((d) => d.project_id === c.value.root.id && d.deploy_script)) : false));
+    const pullAll = () => runJob(http.post(`/projects/${c.value.root.id}/deploy`, {}));
+    const pullOne = (d) => runJob(http.post(`/deployments/${d.id}/deploy`, {}));
+    async function dockerScript() {
+      if (!(await confirmBox({ title: 'Use the Docker deploy script?', message: 'Deploy then runs in the app folder: git pull (the exact commit when CI/CD starts it), docker compose up -d --build, and removes old images. You can change it later in Settings → Deploy script.', confirmText: 'Use it' }))) return;
+      act('script', () => http.post(`/projects/${c.value.root.id}/docker-deploy-script`), 'Deploy script set: pull from Git and rebuild with Docker');
+    }
     const commit = () => act('commit', () => http.post(`/projects/${props.project.id}/ci/commit`), 'Workflow committed to GitHub');
     const refresh = () => act('refresh', () => http.post(`/projects/${props.project.id}/ci/refresh`));
     const runNow = () => act('run', () => http.post(`/projects/${props.project.id}/ci/run`, { branch: runBranch.value }), `Started on ${runBranch.value} — it shows up below in a few seconds`);
@@ -513,7 +558,7 @@ export const CicdTab = {
       runJob(http.post(`/projects/${c.value.root.id}/staging/${s.id}/data`));
     };
     const runBadge = RUN_BADGE;
-    return { c, f, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
+    return { c, f, wf, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
   },
   template: `
   <div v-if="!c" class="muted">Loading…</div>
@@ -529,7 +574,11 @@ export const CicdTab = {
       <div class="field"><label>How new commits get to your servers</label>
         <div class="seg" style="align-self:flex-start"><button type="button" :class="{ on: f.ci_mode === 'pull' }" @click="f.ci_mode = 'pull'" :disabled="!isAdmin">Switchboard deploys</button><button type="button" :class="{ on: f.ci_mode === 'runner' }" @click="f.ci_mode = 'runner'" :disabled="!isAdmin">GitHub runner on each server</button></div>
         <span class="hint" v-if="f.ci_mode === 'pull'">Every minute Switchboard checks the branch; a new commit is deployed over SSH (after its tests pass on GitHub, if you have tests) — standby servers first, the live one last. Nothing is installed on the servers and nothing has to reach them: ideal for <b>home servers</b> and <b>public repos</b>.</span>
-        <span class="hint" v-else>Tests run on GitHub's machines, then a <b>self-hosted runner</b> on each server deploys the exact commit right away — standby first, live last. The runner may only run Switchboard's deploy/preview commands. Pull-request previews need this mode.</span></div>
+        <span class="hint" v-else>Tests run on GitHub's machines, then a <b>self-hosted runner</b> on each server deploys the exact commit right away — standby first, live last. Pull-request previews need this mode.</span></div>
+      <div class="field" v-if="f.ci_mode === 'runner'"><label>What the runner may do on the server</label>
+        <div class="seg" style="align-self:flex-start"><button type="button" :class="{ on: f.ci_runner_access === 'restricted' }" @click="f.ci_runner_access = 'restricted'" :disabled="!isAdmin">Only Switchboard's deploy</button><button type="button" :class="{ on: f.ci_runner_access === 'full' }" @click="f.ci_runner_access = 'full'" :disabled="!isAdmin">Full — for my own workflow</button></div>
+        <span class="hint" v-if="f.ci_runner_access === 'restricted'">Runs as user <code>sb-runner</code>, which may only run Switchboard's deploy/preview commands. Safest; enough for Switchboard's workflow.</span>
+        <span class="hint" v-else>Runs as the server's SSH user (<code>{{ (c.servers[0] && c.servers[0].runner_user) || 'root' }}</code>), like a runner you install by hand from GitHub's instructions: your workflow can run <b>docker</b>, <b>git</b> and change the app files. Click "Set up again" after changing this.</span></div>
       <div v-if="f.ci_mode === 'runner' && c.repo_private === false" class="alert alert-warn"><span class="alert-icon">⚠</span><span><b>Public repository + self-hosted runner:</b> a stranger's pull request can try to run code on your server. Use "Switchboard deploys", or in GitHub → Settings → Actions → General choose <i>Require approval for all outside collaborators</i>.</span></div>
       <div class="form-row">
         <div class="field"><label>Repository</label><input v-model="f.git_repo" class="code" placeholder="acme/shop" :disabled="!isAdmin"></div>
@@ -543,6 +592,7 @@ export const CicdTab = {
         <button class="btn" @click="save" :disabled="busy.save">Save</button>
         <button class="btn btn-primary" @click="setup" :disabled="!f.git_repo || !c.token">{{ c.enabled ? 'Set up again (runners + workflow)' : 'Set up CI/CD' }}</button>
         <span class="hint" v-if="f.ci_mode === 'pull'">Gives each server read access to the repo{{ f.ci_test_on !== 'none' && f.ci_test_cmd ? ' and commits a tests-only workflow' : '' }}. Last deployed: <template v-for="(sha, slug) in c.deployed" :key="slug"><code>{{ slug }}@{{ (sha || '').slice(0, 7) }}</code> </template></span>
+        <span class="hint" v-else-if="c.own_workflow">Installs the runner on {{ c.servers.map(s => s.name).join(', ') || 'the servers' }}. Your own <code>{{ c.workflow_path }}</code> is used as it is.</span>
         <span class="hint" v-else>Installs the runner on {{ c.servers.map(s => s.name).join(', ') || 'the servers' }} and commits <code>{{ c.workflow_path }}</code>.</span>
       </div>
     </div>
@@ -571,7 +621,8 @@ export const CicdTab = {
 
     <div class="card" v-if="c.is_root && c.repo">
       <div class="card-head"><h3>Servers and Git</h3>
-        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and settings to the servers">Update servers</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
+        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm dev-only" @click="pullAll" :disabled="!ownScript" :title="ownScript ? 'Runs the deploy script on every server: standby first, live last' : 'Set a deploy script first'">Pull & rebuild all</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and project settings to the servers (no deploy)">Send settings</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
+      <div v-if="!ownScript && c.servers.length" class="alert alert-info" style="margin:0 18px 12px"><span class="alert-icon">ℹ</span><span>No deploy script yet, so Switchboard can't update the servers itself. App runs with Docker Compose? <button class="btn btn-xs admin-only" @click="dockerScript" :disabled="busy.script">Use "pull from Git + rebuild"</button> <span class="muted">(or write your own in Settings → Deploy script)</span></span></div>
       <div class="table-wrap"><table class="table" v-if="c.servers.length">
         <thead><tr><th>Server</th><th>App folder</th><th>Git</th><th v-if="c.mode !== 'pull'">Runner</th><th></th></tr></thead>
         <tbody><tr v-for="s in c.servers" :key="s.id">
@@ -587,22 +638,47 @@ export const CicdTab = {
             </template></div></td>
           <td v-if="c.mode !== 'pull'"><template v-for="r in [c.runners.find(x => x.server_id === s.id)]" :key="s.id + 'r'">
             <template v-if="r"><span v-if="r.live" class="badge" :class="r.live.status === 'online' ? (r.live.busy ? 'badge-blue' : 'badge-green') : 'badge-red'">{{ r.live.status === 'online' ? (r.live.busy ? 'busy' : 'online') : r.live.status }}</span><span v-else class="badge badge-gray">installed</span> <span class="small muted">{{ r.version }}</span></template>
-            <span v-else class="muted small">not installed</span></template></td>
+            <span v-else class="muted small">not installed</span>
+            <div class="small muted">as <code>{{ s.runner_user }}</code> · label <code>{{ s.labels[s.labels.length - 1] }}</code></div></template></td>
           <td class="actions">
+            <button v-for="d in s.deps.filter(x => x.project_id === c.root.id)" :key="'p' + d.id" class="btn btn-xs dev-only" @click="pullOne(d)" :disabled="!d.deploy_script" :title="d.deploy_script ? 'Run the deploy script here (pull from Git, rebuild)' : 'Set a deploy script first'">Pull & rebuild</button>
             <button v-if="s.deps.length" class="btn btn-xs admin-only" :class="{ 'btn-primary': s.deps.some(d => !gitOf(d) || gitOf(d).state !== 'ok') || (c.enabled && c.mode !== 'pull' && !s.installed) }" @click="connect(s)">{{ s.deps.every(d => gitOf(d) && gitOf(d).state === 'ok') && (!c.enabled || c.mode === 'pull' || s.installed) ? 'Reconnect' : 'Connect to Git' }}</button>
             <template v-for="r in [c.runners.find(x => x.server_id === s.id)]" :key="s.id + 'x'"><button v-if="r" class="btn btn-xs btn-danger admin-only" @click="removeRunner(r)">Remove runner</button></template>
           </td>
         </tr></tbody>
       </table><div v-else class="empty">No servers in this project yet — "Connect a server" adds one.</div></div>
-      <div class="hint" style="padding:10px 18px 14px">"Connect to Git" gives the server a read-only deploy key and makes its app folder a Git checkout of <code>{{ c.branch }}</code> (a folder that already has files is connected without changing them){{ c.enabled && c.mode !== 'pull' ? ', then installs the runner (user sb-runner in /opt/switchboard-runner)' : '' }}. Remove a runner here before you delete a server.</div>
+      <div class="hint" style="padding:10px 18px 14px">"Connect to Git" gives the server a read-only deploy key and makes its app folder a Git checkout of <code>{{ c.branch }}</code> (a folder that already has files is connected without changing them){{ c.enabled && c.mode !== 'pull' ? ', then installs the runner in /opt/switchboard-runner' : '' }}. "Pull & rebuild" runs the project's deploy script on that server. In your own workflow, pick a server with <code>runs-on: [self-hosted, &lt;its label&gt;]</code>. Remove a runner here before you delete a server.</div>
     </div>
 
     <div class="card card-body form" v-if="c.is_root && c.repo">
       <div class="row between wrap gap-8"><h3>Workflow file</h3>
-        <span v-if="c.up_to_date" class="badge badge-green">up to date in GitHub</span><span v-else class="badge badge-amber">{{ c.committed_at ? 'changed — commit again' : 'not committed yet' }}</span></div>
-      <div class="hint" style="margin:0"><code>{{ c.workflow_path }}</code> on {{ c.projects.map(x => x.branch).join(' and ') }}. It changes when you add servers, staging or previews.</div>
-      <div class="row gap-8 wrap"><button class="btn btn-sm admin-only" @click="commit" :disabled="busy.commit || !c.token">Commit to GitHub</button><button class="btn btn-sm" @click="showYaml = !showYaml">{{ showYaml ? 'Hide' : 'Show' }} file</button></div>
-      <pre v-if="showYaml" class="log" style="min-height:0">{{ c.workflow }}</pre>
+        <template v-if="wf.mode === 'switchboard'"><span v-if="c.up_to_date && !c.own_workflow" class="badge badge-green">up to date in GitHub</span><span v-else class="badge badge-amber">{{ c.committed_at ? 'changed — commit again' : 'not committed yet' }}</span></template>
+        <span v-else-if="c.own_workflow" class="badge badge-green">your own: {{ c.workflow_path.split('/').pop() }}</span><span v-else class="badge badge-amber">not chosen yet</span></div>
+      <div class="seg admin-only" style="align-self:flex-start"><button type="button" :class="{ on: wf.mode === 'switchboard' }" @click="switchboardMode" :disabled="busy.wf">Made by Switchboard</button><button type="button" :class="{ on: wf.mode === 'own' }" @click="ownMode" :disabled="busy.wf">My own workflow</button></div>
+      <template v-if="wf.mode === 'switchboard'">
+        <div class="hint" style="margin:0"><code>{{ c.workflow_path }}</code> on {{ c.projects.map(x => x.branch).join(' and ') }}. Switchboard writes it (and rewrites it when you add servers, staging or previews) — edits in GitHub are overwritten. Want to write it yourself? Choose "My own workflow".</div>
+        <div class="row gap-8 wrap"><button class="btn btn-sm admin-only" @click="commit" :disabled="busy.commit || !c.token">Commit to GitHub</button><button class="btn btn-sm" @click="showYaml = !showYaml">{{ showYaml ? 'Hide' : 'Show' }} file</button></div>
+        <pre v-if="showYaml" class="log" style="min-height:0">{{ c.workflow }}</pre>
+      </template>
+      <template v-else>
+        <div class="hint" style="margin:0">Your file decides what GitHub does on a push; Switchboard <b>never rewrites it</b>. Switchboard still sets up the servers (Git access, runners), shows this file's runs, and "Run now" starts it (it needs <code>workflow_dispatch:</code>). Edit it here or in GitHub.</div>
+        <div v-if="c.mode !== 'pull' && c.runner_access !== 'full'" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Runners only run Switchboard's deploy commands now. If your workflow runs <code>docker</code>, <code>git</code> or changes files, choose <b>Full — for my own workflow</b> above, Save, then "Set up again".</span></div>
+        <div v-if="c.committed_at" class="hint text-amber" style="margin:0">Switchboard's own <code>.github/workflows/switchboard.yml</code> may still be in the repo — delete it in GitHub, or both workflows run on a push.</div>
+        <div class="form-row">
+          <div class="field"><label>File in the repo</label>
+            <div class="folder-go"><input v-model.trim="wf.path" class="code" list="sb-wf-files" placeholder=".github/workflows/deploy.yml"><button type="button" class="btn btn-sm" @click="loadWf(wf.path)" :disabled="wf.loading">{{ wf.loading ? 'Loading…' : 'Open' }}</button></div>
+            <datalist id="sb-wf-files"><option v-for="x in wf.files" :key="x" :value="x" /></datalist>
+            <span class="hint" v-if="wf.files.length">In the repo: <template v-for="x in wf.files" :key="x"><a href="" @click.prevent="loadWf(x)"><code>{{ x.split('/').pop() }}</code></a> </template></span>
+            <span class="hint" v-if="wf.missing">Not in the repo yet — the example is shown; Commit creates it.</span></div>
+        </div>
+        <textarea v-model="wf.content" class="code" rows="22" spellcheck="false" style="font-size:12px;white-space:pre" :disabled="!isAdmin"></textarea>
+        <div class="row gap-8 wrap admin-only">
+          <button class="btn btn-sm btn-primary" @click="commitWf" :disabled="busy.wf || !wf.content || !c.token">Commit to GitHub</button>
+          <button class="btn btn-sm" @click="useWf" :disabled="busy.wf || wf.missing" v-if="!c.own_workflow || c.workflow_path !== wf.path" title="Follow this file without changing it">Use this file as it is</button>
+          <button class="btn btn-sm btn-ghost" @click="useExample">Start from the example</button>
+          <span class="hint">The example: on a push, each server's runner does <code>git pull</code> in the app folder and <code>docker compose up -d --build</code> — standby first, live last.</span>
+        </div>
+      </template>
     </div>
 
     <div class="card">

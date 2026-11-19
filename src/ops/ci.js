@@ -26,6 +26,14 @@ import { TEMPLATES, installHelper, pushProjectConf, ensureRepoAccess, helper, gi
 
 export const RUNNER_USER = 'sb-runner';
 export const runnerLabel = (server) => `sb-${slugify(server.name)}-${server.id}`;
+/** Labels of a server's runner: also its plain name, so your own workflow can say runs-on: [self-hosted, <server name>]. */
+export const runnerLabels = (server) => [...new Set(['switchboard', runnerLabel(server), slugify(server.name)])];
+/** 'full': the runner runs as the SSH user (your own workflow can use Docker and the app files). */
+export const runnerUser = (root, server) => (root.ci_runner_access === 'full' ? appUser(server) : RUNNER_USER);
+/** The workflow file GitHub runs: your own (Switchboard never rewrites it) or Switchboard's. */
+export const ownWorkflow = (root) => !!root.ci_workflow_path;
+export const workflowPathOf = (root) => root.ci_workflow_path || gh.WORKFLOW_PATH;
+export const workflowFileOf = (root) => workflowPathOf(root).split('/').pop();
 const repoDir = (repo) => `/opt/switchboard-runner/${repo.replace(/[^A-Za-z0-9_.-]+/g, '_')}`;
 const ci = (p) => parseJSON(p.ci_state, {}) || {};
 const saveCi = (id, patch) => update('projects', id, { ci_state: JSON.stringify({ ...ci(getProject(id)), ...patch }) });
@@ -142,10 +150,90 @@ export function workflowYaml(root) {
   return `${L.filter((l) => l !== null).join('\n')}\n`;
 }
 
+/** Deploy script for an app that runs with Docker Compose: get the new code, rebuild and restart the containers. */
+export const DOCKER_DEPLOY_SCRIPT = `# Get the new code (the exact commit when CI/CD started the deploy)
+if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi
+# Rebuild the images that have a build: section and restart what changed
+docker compose up -d --build --remove-orphans
+# Remove old image layers so the disk does not fill up
+docker image prune -f`;
+
+/**
+ * A starting point for your own workflow: tests on GitHub (optional), then on each server's own runner
+ * (standby first, live last): git pull in the app folder + docker compose up --build. Edit it as you like.
+ */
+export function exampleWorkflow(root) {
+  const projects = ciProjects(root).filter((p) => deploymentsOf(p.id).length);
+  const p = projects.find((x) => x.id === root.id) || projects[0] || root;
+  const deps = deploymentsOf(p.id).sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
+  const branch = p.git_branch || 'main';
+  const tests = root.ci_test_on !== 'none' && String(root.ci_test_cmd || '').trim();
+  const rows = deps.map((d) => {
+    const s = getServer(d.server_id);
+    return `          - { server: ${q(slugify(s.name))}, dir: ${q(d.app_dir || '/srv/app')} }${d.id === p.active_deployment_id ? '   # live — deployed last' : ''}`;
+  });
+  const L = [
+    `# Deploy ${root.name}: made from Switchboard's example — yours to change. Switchboard never rewrites this file.`,
+    '# Each server runs a GitHub self-hosted runner (Switchboard → CI/CD → Servers and Git) with its own name as a label.',
+    '# The runner must be allowed to run Docker: Switchboard → CI/CD → "What the runner may do" → "Full — for my own workflow".',
+    'name: Deploy',
+    'on:',
+    '  push:',
+    `    branches: [${q(branch)}]`,
+    '  workflow_dispatch:',
+    'permissions:',
+    '  contents: read',
+    'jobs:',
+  ];
+  if (tests) {
+    L.push('  test:', '    runs-on: ubuntu-latest', '    steps:', '      - uses: actions/checkout@v4');
+    if (root.template === 'laravel') L.push('      - uses: shivammathur/setup-php@v2', "        with: { php-version: '8.4', coverage: none }");
+    L.push('      - name: Tests', '        run: |', indent(tests, 10));
+  }
+  L.push(
+    '  deploy:',
+    ...(tests ? ['    needs: test'] : []),
+    '    name: Deploy on ${{ matrix.server }}',
+    '    strategy:',
+    '      max-parallel: 1      # one server at a time',
+    '      fail-fast: true      # stop at the first server that fails',
+    '      matrix:',
+    '        include:',
+    ...(rows.length ? rows : ["          - { server: 'my-server', dir: '/srv/app' }"]),
+    "    runs-on: [self-hosted, '${{ matrix.server }}']",
+    "    concurrency: { group: 'deploy-${{ matrix.server }}', cancel-in-progress: false }",
+    '    timeout-minutes: 45',
+    '    defaults:',
+    '      run:',
+    '        working-directory: ${{ matrix.dir }}',
+    '    steps:',
+    '      - name: Get the new code',
+    '        run: |',
+    `          git fetch -q origin ${branch}`,
+    '          git merge -q --ff-only "$GITHUB_SHA"',
+    '          git log -1 --format="Now at %h: %s"',
+    '      - name: Rebuild and restart the containers',
+    '        run: docker compose up -d --build --remove-orphans',
+  );
+  if (root.template === 'laravel' || /laravel|php/i.test(p.deploy_script || ''))
+    L.push('      - name: Laravel', '        run: |', '          docker compose exec -T app php artisan migrate --force', '          docker compose exec -T app php artisan optimize');
+  L.push(
+    '      # - name: Health check',
+    `      #   run: curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://localhost${p.health_port ? `:${p.health_port}` : ''}${p.health_path || '/'} > /dev/null`,
+    '      - name: Clean up old images',
+    '        run: docker image prune -f',
+  );
+  return `${L.join('\n')}\n`;
+}
+
 export const workflowHash = (yaml) => crypto.createHash('sha256').update(yaml).digest('hex').slice(0, 16);
 
 /** Commit the workflow file to every deploy branch (push events use the file of the pushed commit). */
 export async function commitWorkflow(ctx, root) {
+  if (ownWorkflow(root)) {
+    ctx?.log(`Your own workflow ${root.ci_workflow_path} is used — Switchboard does not change it`);
+    return null;
+  }
   const yaml = workflowYaml(root);
   for (const branch of [...new Set(ciProjects(root).map((p) => p.git_branch || 'main'))]) {
     const changed = await gh.putFile(root.git_repo, gh.WORKFLOW_PATH, yaml, { branch, message: 'Switchboard CI/CD workflow' });
@@ -156,47 +244,68 @@ export async function commitWorkflow(ctx, root) {
 }
 
 /* ------------------------------------------------------------------ runner on a server */
-function runnerScript({ repo, server, url }) {
+function runnerScript({ repo, server, url, user }) {
   const dir = repoDir(repo);
   const safe = repo.replace(/[^A-Za-z0-9_.-]+/g, '_');
+  const labels = runnerLabels(server).join(',');
   return `set -e
-read -r TOKEN
-U=${RUNNER_USER}; DIR=${shq(dir)}
-command -v sudo >/dev/null 2>&1 || { echo '>>> Installing sudo'; DEBIAN_FRONTEND=noninteractive apt-get install -y -q sudo >/dev/null 2>&1 || dnf install -y -q sudo; }
-id -u "$U" >/dev/null 2>&1 || { useradd -m -s /bin/bash "$U"; echo ">>> Created user $U (runs the GitHub runner, no other rights)"; }
-cat > /etc/sudoers.d/switchboard-runner.tmp <<'EOF'
+read -r TOKEN; read -r RTOKEN
+U=${shq(user)}; DIR=${shq(dir)}; LABELS=${shq(labels)}; WANT="$U|$LABELS"
+id -u "$U" >/dev/null 2>&1 || [ "$U" != ${RUNNER_USER} ] || { useradd -m -s /bin/bash "$U"; echo ">>> Created user $U (runs the GitHub runner, no other rights)"; }
+id -u "$U" >/dev/null 2>&1 || { echo "User $U does not exist on this server" >&2; exit 1; }
+if [ "$U" = ${RUNNER_USER} ]; then
+  command -v sudo >/dev/null 2>&1 || { echo '>>> Installing sudo'; DEBIAN_FRONTEND=noninteractive apt-get install -y -q sudo >/dev/null 2>&1 || dnf install -y -q sudo; }
+  cat > /etc/sudoers.d/switchboard-runner.tmp <<'EOF'
 # Written by Switchboard: the GitHub runner may only run these helper commands as root.
 Defaults:${RUNNER_USER} !requiretty
 ${RUNNER_USER} ALL=(root) NOPASSWD: /usr/local/bin/switchboard-helper deploy *, /usr/local/bin/switchboard-helper preview-up *, /usr/local/bin/switchboard-helper preview-down *
 EOF
-chmod 440 /etc/sudoers.d/switchboard-runner.tmp
-visudo -cqf /etc/sudoers.d/switchboard-runner.tmp
-mv /etc/sudoers.d/switchboard-runner.tmp /etc/sudoers.d/switchboard-runner
-mkdir -p "$DIR"; chown "$U": "$DIR"; cd "$DIR"
+  chmod 440 /etc/sudoers.d/switchboard-runner.tmp
+  visudo -cqf /etc/sudoers.d/switchboard-runner.tmp
+  mv /etc/sudoers.d/switchboard-runner.tmp /etc/sudoers.d/switchboard-runner
+  echo ">>> Runner user $U: may only run Switchboard's deploy commands"
+else
+  echo ">>> Runner user $U: full access (your workflow can use Docker and the app files like $U can)"
+fi
+# The GitHub runner refuses root unless told otherwise.
+[ "$U" != root ] || export RUNNER_ALLOW_RUNASROOT=1
+mkdir -p "$DIR"; cd "$DIR"
 if [ ! -x ./config.sh ]; then
   echo ">>> Download the GitHub Actions runner"
   curl -fsSL ${shq(url)} -o /tmp/sb-runner.tgz
   tar xzf /tmp/sb-runner.tgz -C "$DIR"; rm -f /tmp/sb-runner.tgz
-  chown -R "$U": "$DIR"
   if [ -x ./bin/installdependencies.sh ]; then ./bin/installdependencies.sh >/dev/null 2>&1 || echo '(installdependencies.sh failed — the runner may still work)'; fi
 fi
+stop_runner() {
+  if [ -f .service ]; then ./svc.sh stop >/dev/null 2>&1 || true; ./svc.sh uninstall >/dev/null 2>&1 || true; fi
+  if [ -f runner.pid ]; then kill -- "-$(cat runner.pid)" 2>/dev/null || kill "$(cat runner.pid)" 2>/dev/null || true; rm -f runner.pid; fi
+}
+if [ -f .runner ] && [ "$(cat .sb-config 2>/dev/null)" != "$WANT" ]; then
+  echo ">>> Runner user or labels changed: register it again as $U with labels $LABELS"
+  OLDU="$(stat -c %U .runner 2>/dev/null || echo "$U")"
+  stop_runner
+  runuser -u "$OLDU" -- ./config.sh remove --token "$RTOKEN" >/dev/null 2>&1 || rm -f .runner .credentials .credentials_rsaparams
+fi
+chown -R "$U": "$DIR"
+[ "$U" != root ] || { grep -qs '^RUNNER_ALLOW_RUNASROOT=' .env || echo 'RUNNER_ALLOW_RUNASROOT=1' >> .env; }
 if [ -f .runner ]; then echo '>>> Runner already registered'; else
-  echo ">>> Register the runner ${runnerLabel(server)} with ${repo}"
-  runuser -u "$U" -- ./config.sh --unattended --url ${shq(gh.webUrl(repo))} --token "$TOKEN" --name ${shq(runnerLabel(server))} --labels ${shq(`switchboard,${runnerLabel(server)}`)} --work _work --replace
+  echo ">>> Register the runner ${runnerLabel(server)} with ${repo} (labels $LABELS)"
+  runuser -u "$U" -- env RUNNER_ALLOW_RUNASROOT="\${RUNNER_ALLOW_RUNASROOT:-}" ./config.sh --unattended --url ${shq(gh.webUrl(repo))} --token "$TOKEN" --name ${shq(runnerLabel(server))} --labels "$LABELS" --work _work --replace
+  echo "$WANT" > .sb-config
 fi
 if [ -d /run/systemd/system ]; then
   [ -f .service ] || ./svc.sh install "$U"
   ./svc.sh start >/dev/null 2>&1 || true
-  echo ">>> Runner runs as a systemd service ($(cat .service 2>/dev/null))"
+  echo ">>> Runner runs as a systemd service ($(cat .service 2>/dev/null)), as $U"
 else
   if [ -f runner.pid ] && kill -0 "$(cat runner.pid)" 2>/dev/null; then echo '>>> Runner is running'; else
     # setsid: its own session, so it keeps running after this SSH command ends.
-    setsid nohup runuser -u "$U" -- ./run.sh >> runner.log 2>&1 < /dev/null &
+    setsid nohup runuser -u "$U" -- env RUNNER_ALLOW_RUNASROOT="\${RUNNER_ALLOW_RUNASROOT:-}" ./run.sh >> runner.log 2>&1 < /dev/null &
     echo $! > runner.pid
     sleep 2; kill -0 "$(cat runner.pid)" 2>/dev/null || { echo 'The runner stopped right away:' >&2; tail -n 20 runner.log >&2; exit 1; }
-    echo ">>> Runner started (no systemd here: started now and by cron at boot)"
+    echo ">>> Runner started as $U (no systemd here: started now and by cron at boot)"
   fi
-  echo "@reboot root cd $DIR && runuser -u $U -- ./run.sh >> $DIR/runner.log 2>&1" > /etc/cron.d/switchboard-runner-${safe}
+  echo "@reboot root cd $DIR && runuser -u $U -- env RUNNER_ALLOW_RUNASROOT=\${RUNNER_ALLOW_RUNASROOT:-} ./run.sh >> $DIR/runner.log 2>&1" > /etc/cron.d/switchboard-runner-${safe}
 fi`;
 }
 
@@ -205,11 +314,14 @@ async function serverArch(conn) {
   return /aarch64|arm64/.test(m) ? 'arm64' : /armv7|armhf/.test(m) ? 'arm' : 'x64';
 }
 
-async function installRunner(ctx, conn, server, repo) {
+async function installRunner(ctx, conn, server, repo, root) {
   const arch = await serverArch(conn);
   const rel = await gh.latestRunner(arch);
   const token = await gh.runnerRegistrationToken(repo);
-  await runRemote(ctx, conn, asRoot(server, runnerScript({ repo, server, url: rel.url })), { stdin: `${token}\n`, timeout: 15 * 60000 });
+  const rtoken = await gh.runnerRemoveToken(repo).catch(() => '');
+  const user = runnerUser(root, server);
+  await runRemote(ctx, conn, asRoot(server, runnerScript({ repo, server, url: rel.url, user })), { stdin: `${token}\n${rtoken}\n`, timeout: 15 * 60000 });
+  ctx.log(`Runner on ${server.name}: labels ${runnerLabels(server).join(', ')} — in your own workflow use runs-on: [self-hosted, ${slugify(server.name)}]`);
   const row = { repo, server_id: server.id, name: runnerLabel(server), label: runnerLabel(server), version: rel.version, status: 'installed', error: null, installed_at: now() };
   const ex = get('SELECT id FROM runners WHERE repo = ? AND server_id = ?', repo, server.id);
   if (ex) update('runners', ex.id, row);
@@ -235,7 +347,7 @@ async function setupServers(ctx, root, { runners, git = false, only = null }) {
       else if (root.git_repo && root.template) await ensureRepoAccess(ctx, conn, server, root.git_repo, { addKey: gh.addDeployKey });
       // A preview-only server has no checkout of its own, but builds previews from the repo.
       if (git && !deps.length && root.git_repo && gh.hasToken()) await ensureRepoAccess(ctx, conn, server, root.git_repo, { addKey: gh.addDeployKey });
-      if (runners) await installRunner(ctx, conn, server, root.git_repo);
+      if (runners) await installRunner(ctx, conn, server, root.git_repo, root);
     } finally {
       conn.end();
     }
@@ -262,12 +374,14 @@ function gitScript({ mode, dir, url, branch, sshCmd }) {
 export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=true SSH_ASKPASS=true SSH_ASKPASS_REQUIRE=never
 out() { printf 'SB_GIT %s=%s\\n' "$1" "$(printf %s "$2" | tr '\\n' ' ')"; }
 gssh() { s="$(git config --get core.sshCommand 2>/dev/null || true)"; echo "\${s:-\${SSHC:-ssh}} -o BatchMode=yes -o ConnectTimeout=20"; }
+# The checkout that holds the app folder: the folder itself, or a parent (e.g. the compose file lives in <repo>/docker).
+top() { d="$DIR"; while [ -n "$d" ] && [ "$d" != / ]; do [ -e "$d/.git" ] && { echo "$d"; return 0; }; d="$(dirname "$d")"; done; return 0; }
 # A folder owned by another user (e.g. files made inside a Docker container): git refuses it ("dubious
 # ownership") for every command, also the deploy script's git pull. Mark just this folder as safe for the SSH user.
 trust() {
-  if git -C "$DIR" rev-parse --git-dir 2>&1 | grep -q 'dubious ownership'; then
-    git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$DIR" || git config --global --add safe.directory "$DIR"
-    echo ">>> $DIR belongs to user $(ls -ld "$DIR" | awk '{print $3}'), not $(id -un): marked as safe for git (git config --global safe.directory) — no owner changed"
+  if git -C "$1" rev-parse --git-dir 2>&1 | grep -q 'dubious ownership'; then
+    git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$1" || git config --global --add safe.directory "$1"
+    echo ">>> $1 belongs to user $(ls -ld "$1" | awk '{print $3}'), not $(id -un): marked as safe for git (git config --global safe.directory) — no owner changed"
   fi
 }
 fetch() { GIT_SSH_COMMAND="$(gssh)" git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; }
@@ -282,17 +396,20 @@ command -v git >/dev/null 2>&1 || { out state no_git_tool; exit 0; }
 ${
   mode === 'check'
     ? `[ -d "$DIR" ] || { out state missing; exit 0; }
-[ -d "$DIR/.git" ] || { out state not_git; out files "$(ls -A "$DIR" 2>/dev/null | wc -l | tr -d ' ')"; exit 0; }
-cd "$DIR" || { out state error; out error "cannot open $DIR"; exit 0; }
+G="$(top)"
+[ -n "$G" ] || { out state not_git; out files "$(ls -A "$DIR" 2>/dev/null | wc -l | tr -d ' ')"; exit 0; }
+cd "$G" || { out state error; out error "cannot open $G"; exit 0; }
+out top "$G"
 out remote "$(git config -f .git/config --get remote.origin.url 2>/dev/null || true)"
 if err="$(fetch 2>&1)"; then out state ok
 elif printf %s "$err" | grep -q 'dubious ownership'; then out state unsafe_owner; out error "the folder belongs to user $(ls -ld . | awk '{print $3}'), git refuses it for $(id -un)"
 else out state no_access; out error "$(printf %s "$err" | tail -n 3)"; fi
 report`
     : `set -e
-if [ -d "$DIR/.git" ]; then
-  cd "$DIR"
-  trust
+G="$(top)"
+if [ -n "$G" ]; then
+  cd "$G"
+  trust "$G"
   OLD="$(git remote get-url origin 2>/dev/null || true)"
   if [ -z "$OLD" ]; then git remote add origin "$URL"; echo ">>> origin set to $URL"
   elif [ "$OLD" != "$URL" ]; then git remote set-url origin "$URL"; echo ">>> origin was $OLD — now $URL"; fi
@@ -302,15 +419,15 @@ if [ -d "$DIR/.git" ]; then
 elif [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
   echo ">>> $DIR is empty: clone $URL (branch $BRANCH)"
   GIT_SSH_COMMAND="$(gssh)" git clone -q --branch "$BRANCH" "$URL" "$DIR"
-  cd "$DIR"
-  trust
+  cd "$DIR"; G="$DIR"
+  trust "$G"
   [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
   out done cloned
 else
   echo ">>> $DIR already has files but no Git: connect it to $URL ($BRANCH) — no file is changed"
-  cd "$DIR"
+  cd "$DIR"; G="$DIR"
   git init -q
-  trust
+  trust "$G"
   git symbolic-ref HEAD "refs/heads/$BRANCH"
   git remote add origin "$URL"
   [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
@@ -320,6 +437,7 @@ else
   out done attached
 fi
 out state ok
+out top "$G"
 out remote "$URL"
 report`
 }`;
@@ -369,8 +487,13 @@ export async function connectGit(ctx, conn, server, root, project, dep) {
   const before = await checkGit(conn, root, project, dep);
   const sameRepo = !before.remote || repoOfUrl(before.remote) === repoOfUrl(root.git_repo);
   if (before.state === 'ok' && sameRepo) {
-    ctx.log(`${where} is already a Git checkout of ${root.git_repo} and can pull — left as it is`);
+    ctx.log(`${where} is already a Git checkout of ${root.git_repo}${before.top && before.top !== dep.app_dir.replace(/\/+$/, '') ? ` (repository folder ${before.top})` : ''} and can pull — left as it is`);
     saveGit(root, dep, before);
+    return before;
+  }
+  if (before.top && before.top !== dep.app_dir.replace(/\/+$/, '') && !sameRepo) {
+    ctx.warn(`${dep.app_dir} is inside ${before.top}, a checkout of ${before.remote || 'another repository'} — not ${root.git_repo}. Left as it is: check the app folder (Servers tab).`);
+    saveGit(root, dep, { ...before, state: 'other_repo' });
     return before;
   }
   if (before.state === 'unsafe_owner' && !sameRepo) {
@@ -471,10 +594,10 @@ defineJob('ci-connect', async (ctx, p) => {
       ctx.log(`${r.full_name} — ${r.private ? 'private' : 'public'}, default branch ${r.default_branch}`);
     } else ctx.warn('No GitHub token (Settings → GitHub): no deploy key, runner or workflow update — only the folder is connected');
     await setupServers(ctx, root, { runners: runner && gh.hasToken(), git: true, only: server.id });
-    if (runner && gh.hasToken()) {
+    if (runner && gh.hasToken() && !ownWorkflow(root)) {
       ctx.step('Commit the workflow file (adds this server to the deploy jobs)');
       await commitWorkflow(ctx, root);
-    }
+    } else if (runner && ownWorkflow(root)) ctx.log(`Your own workflow ${root.ci_workflow_path} decides what runs — use runs-on: [self-hosted, ${slugify(server.name)}] for this server`);
     const how = !root.ci_enabled ? 'CI/CD is not on for this project: deploys run when you click Deploy (or turn on CI/CD)' : runner ? 'every push now also deploys here, through the GitHub runner' : 'Switchboard now deploys every new commit here too';
     ctx.log(`${server.name} is connected — ${how}`);
     if (p.deploy) {
@@ -514,7 +637,7 @@ defineJob('ci-setup', async (ctx, p) => {
     await setupServers(ctx, root, { runners: !pull, git: true });
     const tests = root.ci_test_on !== 'none' && String(root.ci_test_cmd || '').trim();
     if (p.commit !== false && (!pull || tests)) {
-      ctx.step(pull ? 'Commit the workflow file (tests only — Switchboard deploys)' : 'Commit the workflow file');
+      ctx.step(ownWorkflow(root) ? `Workflow: your own ${root.ci_workflow_path}` : pull ? 'Commit the workflow file (tests only — Switchboard deploys)' : 'Commit the workflow file');
       await commitWorkflow(ctx, root);
     }
     if (pull) {
@@ -559,8 +682,10 @@ defineJob('runner-remove', async (ctx, p) => {
         `read -r TOKEN; DIR=${shq(dir)}; [ -d "$DIR" ] || { echo 'Runner folder already gone'; exit 0; }
 cd "$DIR"
 if [ -f .service ]; then ./svc.sh stop || true; ./svc.sh uninstall || true; fi
-if [ -f runner.pid ]; then kill -- "-$(cat runner.pid)" 2>/dev/null || kill "$(cat runner.pid)" 2>/dev/null || true; pkill -u ${RUNNER_USER} 2>/dev/null || true; fi
-[ -z "$TOKEN" ] || runuser -u ${RUNNER_USER} -- ./config.sh remove --token "$TOKEN" || echo '(could not unregister — remove it in GitHub → Settings → Actions → Runners)'
+OU="$(stat -c %U .runner 2>/dev/null || echo ${RUNNER_USER})"
+if [ -f runner.pid ]; then kill -- "-$(cat runner.pid)" 2>/dev/null || kill "$(cat runner.pid)" 2>/dev/null || true; [ "$OU" != ${RUNNER_USER} ] || pkill -u ${RUNNER_USER} 2>/dev/null || true; fi
+[ "$OU" != root ] || export RUNNER_ALLOW_RUNASROOT=1
+[ -z "$TOKEN" ] || runuser -u "$OU" -- env RUNNER_ALLOW_RUNASROOT="\${RUNNER_ALLOW_RUNASROOT:-}" ./config.sh remove --token "$TOKEN" || echo '(could not unregister — remove it in GitHub → Settings → Actions → Runners)'
 rm -f /etc/cron.d/switchboard-runner-${r.repo.replace(/[^A-Za-z0-9_.-]+/g, '_')}
 cd / && rm -rf "$DIR"
 echo 'Runner removed'`,
@@ -590,7 +715,7 @@ defineJob('preview-down', async (ctx, p) => {
 const RECENT_MS = 15 * 60000;
 
 async function pollRuns(root) {
-  const runs = await gh.listRuns(root.git_repo, { perPage: 30 });
+  const runs = await gh.listRuns(root.git_repo, { perPage: 30, file: workflowFileOf(root) });
   for (const r of runs) {
     const prev = get('SELECT * FROM ci_runs WHERE project_id = ? AND run_id = ?', root.id, r.id);
     const row = {

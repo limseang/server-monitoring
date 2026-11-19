@@ -182,6 +182,10 @@ http
         if (req.method === 'GET') {
           const blob = tryGit(['-C', bare(repo), 'rev-parse', `${ref}:${file}`]);
           if (!blob) return send(res, 404, { message: 'Not Found' });
+          if (tryGit(['-C', bare(repo), 'cat-file', '-t', blob]) === 'tree') {
+            const out = tryGit(['-C', bare(repo), 'ls-tree', `${ref}:${file}`]) || '';
+            return send(res, 200, out.split('\n').filter(Boolean).map((l) => ({ name: l.split('\t')[1], path: `${file}/${l.split('\t')[1]}`, type: l.split(' ')[1] === 'tree' ? 'dir' : 'file' })));
+          }
           const content = execFileSync('git', ['-C', bare(repo), 'show', `${ref}:${file}`]);
           return send(res, 200, { sha: blob, path: file, content: content.toString('base64') });
         }
@@ -192,9 +196,13 @@ http
           return send(res, cur ? 200 : 201, { commit: { sha } });
         }
       }
-      if (rest === '/actions/workflows/switchboard.yml/runs') return send(res, 200, { total_count: (S.runs[repo] || []).length, workflow_runs: S.runs[repo] || [] });
-      if (rest === '/actions/workflows/switchboard.yml/dispatches' && req.method === 'POST') {
-        S.dispatches.push({ repo, ref: body.ref, at: new Date().toISOString() });
+      // Runs are kept per repo; a run made with "workflow" belongs to that file (default switchboard.yml).
+      if ((m = rest.match(/^\/actions\/workflows\/([^/]+)\/runs$/))) {
+        const runs = (S.runs[repo] || []).filter((r) => (r.workflow || 'switchboard.yml') === decodeURIComponent(m[1]));
+        return send(res, 200, { total_count: runs.length, workflow_runs: runs });
+      }
+      if ((m = rest.match(/^\/actions\/workflows\/([^/]+)\/dispatches$/)) && req.method === 'POST') {
+        S.dispatches.push({ repo, ref: body.ref, workflow: decodeURIComponent(m[1]), at: new Date().toISOString() });
         return send(res, 204);
       }
       if (rest === '/pulls') return send(res, 200, S.pulls[repo] || []);

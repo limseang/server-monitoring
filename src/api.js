@@ -57,7 +57,7 @@ import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, list
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, depsOn, gitStates, checkAllGit } from './ops/ci.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -2047,8 +2047,11 @@ api.get('/projects/:id/ci', async (req, res) => {
     test_cmd: root.ci_test_cmd || '',
     default_tests: root.template ? TEMPLATES[root.template].tests : '',
     workflow: yaml,
-    workflow_path: gh.WORKFLOW_PATH,
-    up_to_date: !!yaml && st.committed_hash === workflowHash(yaml),
+    workflow_path: workflowPathOf(root),
+    own_workflow: ownWorkflow(root),
+    runner_access: root.ci_runner_access === 'full' ? 'full' : 'restricted',
+    docker_deploy_script: DOCKER_DEPLOY_SCRIPT,
+    up_to_date: ownWorkflow(root) || (!!yaml && st.committed_hash === workflowHash(yaml)),
     committed_at: st.committed_at || null,
     polled_at: st.polled_at || null,
     error: st.error || null,
@@ -2059,6 +2062,8 @@ api.get('/projects/:id/ci', async (req, res) => {
       name: s.name,
       ip: s.ip,
       label: runnerLabel(s),
+      labels: runnerLabels(s),
+      runner_user: runnerUser(root, s),
       installed: runners.some((r) => r.server_id === s.id),
       deps: depsOn(root, s).map(({ project, dep }) => ({ id: dep.id, project: project.name, project_id: project.id, branch: project.git_branch || root.git_branch || 'main', dir: dep.app_dir || '', active: project.active_deployment_id === dep.id, deploy_script: !!String(project.deploy_script || '').trim() })),
     })),
@@ -2083,6 +2088,8 @@ api.put('/projects/:id/ci', (req, res) => {
   if (b.ci_test_on !== undefined) row.ci_test_on = b.ci_test_on === 'none' ? 'none' : 'github';
   if (b.ci_mode !== undefined) row.ci_mode = b.ci_mode === 'pull' ? 'pull' : 'runner';
   if (b.ci_test_cmd !== undefined) row.ci_test_cmd = str(b.ci_test_cmd, 5000) || null;
+  if (b.ci_runner_access !== undefined) row.ci_runner_access = b.ci_runner_access === 'full' ? 'full' : 'restricted';
+  if (b.ci_workflow_path !== undefined) row.ci_workflow_path = b.ci_workflow_path ? workflowPathInput(b.ci_workflow_path) : null;
   if (b.preview_server_id !== undefined) {
     row.preview_server_id = b.preview_server_id ? mustServer(b.preview_server_id).id : null;
     if (row.preview_server_id && !p.template) throw bad('Pull request previews need a project made from a template (Switchboard must know how to build it)');
@@ -2142,6 +2149,55 @@ api.post('/projects/:id/ci/git-check', async (req, res) => {
   res.json({ git: await checkAllGit(p) });
 });
 
+const workflowPathInput = (v) => {
+  let path = str(v, 200).replace(/^\/+/, '');
+  if (!path.includes('/')) path = `.github/workflows/${path}`;
+  if (!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(path)) throw bad('Workflow file: a .yml file in .github/workflows, like .github/workflows/deploy.yml');
+  if (path === gh.WORKFLOW_PATH) throw bad(`${gh.WORKFLOW_PATH} is Switchboard's own file — choose "Made by Switchboard", or give your file another name`);
+  return path;
+};
+
+/** Your own workflow: the files in .github/workflows, one file's content, the example to start from. */
+api.get('/projects/:id/ci/workflows', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo) throw bad('Set the GitHub repository first');
+  const branch = p.git_branch || 'main';
+  const files = gh.hasToken() ? await gh.listWorkflowFiles(p.git_repo, branch) : [];
+  let content = null;
+  if (req.query.path) {
+    const path = workflowPathInput(req.query.path);
+    content = (await gh.getFile(p.git_repo, path, branch))?.content ?? null;
+  }
+  res.json({ branch, files: files.filter((f) => f !== gh.WORKFLOW_PATH), content, example: exampleWorkflow(p) });
+});
+
+/** Save your own workflow file to GitHub (a commit on the live branch). */
+api.put('/projects/:id/ci/workflow', async (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  if (!p.git_repo) throw bad('Set the GitHub repository first');
+  if (!gh.hasToken()) throw bad('Add a GitHub token first (Settings → GitHub)');
+  const path = workflowPathInput(req.body.path || p.ci_workflow_path);
+  const content = String(req.body.content ?? '');
+  if (!content.trim()) throw bad('The workflow file is empty');
+  if (content.length > 200000) throw bad('The workflow file is too big');
+  if (!/^\s*jobs\s*:/m.test(content) || !/^\s*on\s*:/m.test(content)) throw bad('This does not look like a GitHub workflow (it needs "on:" and "jobs:")');
+  const branch = p.git_branch || 'main';
+  const changed = await gh.putFile(p.git_repo, path, content.endsWith('\n') ? content : `${content}\n`, { branch, message: str(req.body.message, 200) || `Update ${path.split('/').pop()} (from Switchboard)` });
+  if (p.ci_workflow_path !== path) update('projects', p.id, { ci_workflow_path: path });
+  audit(req, 'info', `${p.name}: workflow ${path} ${changed ? 'committed' : 'unchanged'} on ${branch}`, { projectId: p.id });
+  bus.emit('state', { projectId: p.id });
+  res.json({ ok: true, changed, path });
+});
+
+/** Use the Docker Compose "pull and rebuild" deploy script for this project. */
+api.post('/projects/:id/docker-deploy-script', (req, res) => {
+  const p = mustProject(req.params.id);
+  update('projects', p.id, { deploy_script: DOCKER_DEPLOY_SCRIPT });
+  audit(req, 'info', `${p.name}: deploy script set to "pull from Git and rebuild with Docker"`, { projectId: p.id });
+  bus.emit('state', { projectId: p.id });
+  res.json({ ok: true });
+});
+
 api.post('/projects/:id/ci/commit', async (req, res) => {
   const p = rootOf(mustProject(req.params.id));
   if (!p.git_repo) throw bad('Set the GitHub repository first');
@@ -2161,7 +2217,7 @@ api.post('/projects/:id/ci/run', async (req, res) => {
   const root = rootOf(p);
   if (!root.git_repo) throw bad('No GitHub repository set');
   const branch = branchInput(req.body.branch, p.git_branch || root.git_branch);
-  await gh.dispatchWorkflow(root.git_repo, branch);
+  await gh.dispatchWorkflow(root.git_repo, branch, workflowFileOf(root));
   audit(req, 'info', `CI/CD run started on ${branch} (${root.name})`, { projectId: root.id });
   setTimeout(() => pollProject(root.id).catch(() => {}), 4000);
   res.json({ ok: true });
