@@ -128,7 +128,14 @@ export async function listRuns(repo, { perPage = 30, file = WORKFLOW_FILE } = {}
   return r._status === 404 ? [] : r.workflow_runs || [];
 }
 
-export const dispatchWorkflow = (repo, ref, file = WORKFLOW_FILE) => gh('POST', `/repos/${repoPath(repo)}/actions/workflows/${enc(file)}/dispatches`, { body: { ref } });
+export const dispatchWorkflow = (repo, ref, file = WORKFLOW_FILE, inputs = null) =>
+  gh('POST', `/repos/${repoPath(repo)}/actions/workflows/${enc(file)}/dispatches`, { body: { ref, ...(inputs ? { inputs } : {}) } });
+
+/** Set a repository variable (Actions → Variables), creating it when it does not exist. Token: Variables read & write. */
+export async function setVariable(repo, name, value) {
+  const r = await gh('PATCH', `/repos/${repoPath(repo)}/actions/variables/${enc(name)}`, { body: { name, value }, okStatus: [404] });
+  if (r?._status === 404) await gh('POST', `/repos/${repoPath(repo)}/actions/variables`, { body: { name, value } });
+}
 
 /** The newest commits of a branch (for "deploy another commit" / rollback). */
 export async function listCommits(repo, branch, perPage = 25) {

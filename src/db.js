@@ -401,6 +401,21 @@ const MIGRATIONS = [
   `
   ALTER TABLE jobs ADD COLUMN progress TEXT;
   `,
+  // v16: a held deploy that your own GitHub workflow runs (Switchboard starts it with workflow_dispatch) instead of SSH
+  `
+  ALTER TABLE held_deploys ADD COLUMN via TEXT;
+  `,
+  // v17: workflow templates for the visual flow editor (save a flow once, start other projects from it)
+  `
+  CREATE TABLE flow_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    content TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

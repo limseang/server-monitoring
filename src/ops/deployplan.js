@@ -43,8 +43,8 @@ export const heldOf = (projectId) =>
   );
 
 /** Keep one held deploy per server: a newer commit replaces an older one that was still waiting. */
-export function holdDeploy({ project, dep, commit = null, runAt = null, reason = '', user = 'system' }) {
-  const row = { project_id: project.id, deployment_id: dep.id, commit_sha: isSha(commit) ? commit : null, run_at: runAt || null, reason: String(reason).slice(0, 200), created_by: user, created_at: now() };
+export function holdDeploy({ project, dep, commit = null, runAt = null, reason = '', user = 'system', via = null }) {
+  const row = { project_id: project.id, deployment_id: dep.id, commit_sha: isSha(commit) ? commit : null, run_at: runAt || null, reason: String(reason).slice(0, 200), created_by: user, created_at: now(), via: via === 'workflow' ? 'workflow' : null };
   const ex = get('SELECT id FROM held_deploys WHERE deployment_id = ?', dep.id);
   if (ex) update('held_deploys', ex.id, row);
   else insert('held_deploys', row);
@@ -53,10 +53,20 @@ export function holdDeploy({ project, dep, commit = null, runAt = null, reason =
   bus.emit('state', { projectId: project.id });
 }
 
-/** Deploy a held server now (its commit), and forget the hold. */
-export function releaseHeld(row, { user = 'system', why = '' } = {}) {
+/**
+ * Deploy a held server now (its commit), and forget the hold. Returns the Switchboard job, or null when your own
+ * GitHub workflow does the deploy (via 'workflow': started with workflow_dispatch; the hold is kept if that fails).
+ */
+export async function releaseHeld(row, { user = 'system', why = '' } = {}) {
   const project = getProject(row.project_id);
   const dep = getDeployment(row.deployment_id);
+  if (row.via === 'workflow' && project && dep) {
+    const { startWorkflowDeploy } = await import('./ci.js');
+    await startWorkflowDeploy(project, dep, row.commit_sha, { user, why });
+    run('DELETE FROM held_deploys WHERE id = ?', row.id);
+    bus.emit('state', { projectId: project.id });
+    return null;
+  }
   run('DELETE FROM held_deploys WHERE id = ?', row.id);
   if (!project || !dep) return null;
   const job = enqueue({
@@ -77,10 +87,14 @@ export function cancelHeld(row, user) {
 }
 
 /** Loop (every 30 s): release held deploys whose time has come. */
-export function runDueHeld() {
+export async function runDueHeld() {
   for (const row of all('SELECT * FROM held_deploys WHERE run_at IS NOT NULL AND run_at <= ?', now())) {
-    const job = releaseHeld(row, { why: 'scheduled' });
-    if (job) logEvent('info', `${getProject(row.project_id)?.name}: scheduled deploy started (job #${job.id})`, { projectId: row.project_id });
+    try {
+      const job = await releaseHeld(row, { why: 'scheduled' });
+      if (job) logEvent('info', `${getProject(row.project_id)?.name}: scheduled deploy started (job #${job.id})`, { projectId: row.project_id });
+    } catch (e) {
+      alert('error', `${getProject(row.project_id)?.name}: the scheduled deploy could not start — ${e.message}`, { projectId: row.project_id });
+    }
   }
 }
 

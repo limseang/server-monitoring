@@ -58,8 +58,9 @@ import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, list
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
 import { watchServer, tailLog } from './live.js';
+import { parseFlow, applyFlow, remapServers } from './ops/flow.js';
 import { POLICIES, parseQuiet, nextQuietTime, heldOf, releaseHeld, cancelHeld, runPlan } from './ops/deployplan.js';
-import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, activeRuns, forgetActive, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
+import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, activeRuns, forgetActive, serversPlan, SERVERS_VAR, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -2058,6 +2059,8 @@ api.get('/projects/:id/ci', async (req, res) => {
     quiet_time: parseQuiet(root.ci_quiet_time)?.time || '',
     next_quiet: root.ci_quiet_time ? nextQuietTime(root.ci_quiet_time) : null,
     held: heldOf(root.id),
+    // Own workflow: what Switchboard tells it (repository variable) — where to deploy after you approve.
+    servers_var: ownWorkflow(root) ? { name: SERVERS_VAR, plan: serversPlan(root), saved_at: st.servers_var_at || null, error: st.servers_var_error || null } : null,
     up_to_date: ownWorkflow(root) || (!!yaml && st.committed_hash === workflowHash(yaml)),
     committed_at: st.committed_at || null,
     polled_at: st.polled_at || null,
@@ -2252,11 +2255,11 @@ const mustHeld = (id) => {
   if (!row) throw notFound('This waiting deploy is gone (already deployed or cancelled)');
   return row;
 };
-api.post('/held-deploys/:id/deploy', (req, res) => {
+api.post('/held-deploys/:id/deploy', async (req, res) => {
   const row = mustHeld(req.params.id);
-  const job = releaseHeld(row, { user: who(req), why: 'started by hand' });
+  const job = await releaseHeld(row, { user: who(req), why: 'started by hand' });
   audit(req, 'info', `${row.project_name}: waiting deploy on ${row.server_name} started now`, { projectId: row.project_id });
-  res.json({ job });
+  res.json({ job, message: job ? null : `GitHub deploys ${row.server_name} now — watch it under "Running now"` });
 });
 api.delete('/held-deploys/:id', (req, res) => {
   cancelHeld(mustHeld(req.params.id), who(req));
@@ -2311,6 +2314,83 @@ api.put('/projects/:id/ci/workflow', async (req, res) => {
   audit(req, 'info', `${p.name}: workflow ${path} ${changed ? 'committed' : 'unchanged'} on ${branch}`, { projectId: p.id });
   bus.emit('state', { projectId: p.id });
   res.json({ ok: true, changed, path });
+});
+
+/* ------------------------------------------------------------------ visual flow editor (src/ops/flow.js) */
+/** The servers of a project as the flow editor shows them: name, runner label, app folder, live. */
+api.get('/projects/:id/ci/flow/servers', (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  res.json({ project: { id: p.id, name: p.name, repo: p.git_repo || '', branch: p.git_branch || 'main', workflow_path: p.ci_workflow_path || '' }, servers: serversPlan(p).servers });
+});
+
+/** Workflow text → flow (jobs, steps, triggers) for the picture. */
+api.post('/projects/:id/ci/flow/parse', (req, res) => {
+  const p = rootOf(mustProject(req.params.id));
+  const content = String(req.body.content ?? '');
+  if (content.length > 200000) throw bad('The workflow file is too big');
+  res.json({ ...parseFlow(content), servers: serversPlan(p).servers });
+});
+
+/** The edited flow → workflow text (only what changed is rewritten; comments stay). */
+api.post('/projects/:id/ci/flow/apply', (req, res) => {
+  mustProject(req.params.id);
+  const content = String(req.body.content ?? '');
+  if (content.length > 200000) throw bad('The workflow file is too big');
+  if (!req.body.flow || typeof req.body.flow !== 'object') throw bad('No flow');
+  try {
+    res.json({ content: applyFlow(content, req.body.flow) });
+  } catch (e) {
+    throw bad(e.message);
+  }
+});
+
+/**
+ * Copy a workflow to another project: its servers are swapped by `map` ({ old runner label: new label | 'github' }),
+ * then the file is committed to that project's repository. Body: { to, content, path, map, follow }.
+ */
+api.post('/projects/:id/ci/flow/copy', async (req, res) => {
+  const from = rootOf(mustProject(req.params.id));
+  const to = rootOf(mustProject(req.body.to));
+  if (!to.git_repo) throw bad(`${to.name} has no GitHub repository yet (its CI/CD tab)`);
+  if (!gh.hasToken()) throw bad('Add a GitHub token first (Settings → GitHub)');
+  const path = workflowPathInput(req.body.path || '.github/workflows/deploy.yml');
+  const map = req.body.map && typeof req.body.map === 'object' ? Object.fromEntries(Object.entries(req.body.map).map(([k, v]) => [String(k), String(v || '')])) : {};
+  let content;
+  try {
+    content = remapServers(String(req.body.content ?? ''), map);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  const branch = to.git_branch || 'main';
+  const changed = await gh.putFile(to.git_repo, path, content.endsWith('\n') ? content : `${content}\n`, { branch, message: `Add ${path.split('/').pop()} (copied from ${from.name} in Switchboard)` });
+  if (req.body.follow === true && to.ci_workflow_path !== path) {
+    update('projects', to.id, { ci_workflow_path: path });
+    run('DELETE FROM ci_runs WHERE project_id = ?', to.id);
+  }
+  audit(req, 'info', `Workflow copied from ${from.name} to ${to.name} (${to.git_repo}: ${path})`, { projectId: to.id });
+  bus.emit('state', { projectId: to.id });
+  res.json({ ok: true, changed, path, repo: to.git_repo, project: to.id });
+});
+
+/** Saved flows: start a project's workflow from one of them. */
+api.get('/flow-templates', (req, res) => res.json(all('SELECT id, name, description, content, created_by, created_at FROM flow_templates ORDER BY name')));
+api.post('/flow-templates', (req, res) => {
+  const name = str(req.body.name, 80);
+  const content = String(req.body.content ?? '');
+  if (!name) throw bad('Give the template a name');
+  if (!content.trim() || content.length > 200000) throw bad('The workflow is empty or too big');
+  const { flow, errors } = parseFlow(content);
+  if (!flow) throw bad(errors[0] || 'Not a workflow');
+  const id = insert('flow_templates', { name, description: str(req.body.description, 300), content, created_by: who(req), created_at: now() });
+  audit(req, 'info', `Workflow template "${name}" saved`);
+  res.json({ id });
+});
+api.delete('/flow-templates/:id', (req, res) => {
+  const row = get('SELECT * FROM flow_templates WHERE id = ?', toId(req.params.id));
+  if (!row) throw notFound('Template not found');
+  run('DELETE FROM flow_templates WHERE id = ?', row.id);
+  audit(req, 'warn', `Workflow template "${row.name}" deleted`);
+  res.json({ ok: true });
 });
 
 /** Use the Docker Compose "pull and rebuild" deploy script for this project. */

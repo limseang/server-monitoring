@@ -1,6 +1,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
 import { store, http, toast, closeDialog, go, showJob, runJob, confirmBox, openDialog, fmtDate, isPrivateIp } from './lib.js';
 import { whenText } from './deployplan.js';
+import { FlowEditor } from './flow.js';
 
 /* ------------------------------------------------------------------ Cloudflare zone picker */
 export const ZoneSelect = {
@@ -456,7 +457,7 @@ const PREVIEW_BADGE = { waiting: ['badge-gray', 'waiting for CI'], building: ['b
 export const CicdTab = {
   props: { project: Object },
   emits: ['reload'],
-  components: { ZoneSelect },
+  components: { ZoneSelect, FlowEditor },
   setup(props) {
     const c = ref(null);
     const f = reactive({ ci_live_policy: 'now', ci_quiet_time: '02:00', git_repo: '', git_branch: 'main', ci_mode: 'runner', ci_runner_access: 'restricted', ci_test_on: 'github', ci_test_cmd: '', preview_server_id: '', preview_zone: null });
@@ -600,7 +601,14 @@ export const CicdTab = {
     const pullAll = () => openDialog('deploy-plan', { projectId: c.value.root.id });
     const rollBack = () => openDialog('deploy-plan', { projectId: c.value.root.id, rollback: true });
     const heldFor = (d) => (c.value.held || []).find((h) => h.deployment_id === d.id);
-    const deployHeld = (h) => runJob(http.post(`/held-deploys/${h.id}/deploy`));
+    const deployHeld = async (h) => {
+      const r = await runJob(http.post(`/held-deploys/${h.id}/deploy`));
+      if (r?.message) toast(r.message, 'success');
+      if (r) {
+        load();
+        setTimeout(loadActive, 4000);
+      }
+    };
     async function cancelHeldDeploy(h) {
       if (!(await confirmBox({ title: `Cancel the waiting deploy on ${h.server_name}?`, message: 'The server keeps the code it has now. The next deploy brings it up to date.', confirmText: 'Cancel it' }))) return;
       act('held', () => http.del(`/held-deploys/${h.id}`), 'Waiting deploy cancelled');
@@ -665,7 +673,7 @@ export const CicdTab = {
         <div v-if="f.ci_live_policy === 'quiet'" class="row gap-8" style="align-items:center"><input type="time" v-model="f.ci_quiet_time" class="dp-time" :disabled="!isAdmin"><span class="hint" style="margin:0">every day, your time{{ c.next_quiet && c.live_policy === 'quiet' ? ' — next: ' + whenText(c.next_quiet) : '' }}</span></div>
         <span class="hint" v-if="f.ci_live_policy === 'now'">Standby servers first, then the live one — it can show errors for a few seconds while it rebuilds.</span>
         <span class="hint" v-else>Standby servers get the new commit right away; the live server keeps serving visitors and gets the <b>same commit</b> {{ f.ci_live_policy === 'quiet' ? 'at the quiet time' : 'when you click "Deploy now" (shown at the top of this tab)' }}.{{ f.ci_mode === 'runner' && !c.own_workflow ? ' The workflow file changes: commit it again after saving.' : '' }}</span>
-        <span class="hint text-amber" v-if="f.ci_live_policy !== 'now' && c.own_workflow && f.ci_mode === 'runner'">Your own workflow decides which servers it deploys — this setting only applies to Switchboard's deploys (Pull & rebuild, "Switchboard deploys" mode).</span>
+        <span class="hint" v-if="c.own_workflow && f.ci_mode === 'runner'">Your own workflow can follow this: Switchboard saves the project's servers in the repository variable <code>SWITCHBOARD_SERVERS</code> (see "Where your workflow deploys" below). A workflow that reads it deploys the other servers after you approve; the live one waits here for "Deploy now".</span>
       </div>
       <div class="row gap-8 wrap admin-only">
         <button class="btn" @click="save" :disabled="busy.save">Save</button>
@@ -755,9 +763,21 @@ export const CicdTab = {
       <template v-if="wf.mode === 'switchboard'">
         <div class="hint" style="margin:0"><code>{{ c.workflow_path }}</code> on {{ c.projects.map(x => x.branch).join(' and ') }}. Switchboard writes it (and rewrites it when you add servers, staging or previews) — edits in GitHub are overwritten. Want to write it yourself? Choose "My own workflow".</div>
         <div class="row gap-8 wrap"><button class="btn btn-sm admin-only" @click="commit" :disabled="busy.commit || !c.token">Commit to GitHub</button><button class="btn btn-sm" @click="showYaml = !showYaml">{{ showYaml ? 'Hide' : 'Show' }} file</button></div>
+        <flow-editor v-if="c.workflow" :project-id="c.root.id" :content="c.workflow" readonly compact :branch="c.branch" :path="c.workflow_path" />
         <pre v-if="showYaml" class="log" style="min-height:0">{{ c.workflow }}</pre>
       </template>
       <template v-else>
+        <div v-if="c.servers_var" class="sv-plan">
+          <div class="row between wrap gap-8"><b>Where your workflow deploys</b><span class="small muted">repository variable <code>{{ c.servers_var.name }}</code><template v-if="c.servers_var.saved_at"> · saved <ago :at="c.servers_var.saved_at" /></template></span></div>
+          <div class="sv-flow">
+            <span class="sv-step">✅ You approve</span><span class="sv-arrow">→</span>
+            <span class="sv-step" v-if="c.servers_var.plan.now.length">🚀 Deploy now: <b v-for="(s, i) in c.servers_var.plan.now" :key="s.label">{{ i ? ', ' : '' }}{{ s.name }}<span v-if="s.live" class="badge badge-green" style="margin-left:4px">LIVE</span></b></span>
+            <span class="sv-step muted" v-else>No servers in this project</span>
+            <template v-if="c.servers_var.plan.live"><span class="sv-arrow">→</span><span class="sv-step sv-wait">⏸ <b>{{ c.servers_var.plan.live.name }}</b> <span class="badge badge-green">LIVE</span> waits for you {{ c.live_policy === 'quiet' ? '(or the quiet time)' : '' }}</span></template>
+          </div>
+          <div class="hint" style="margin:0">Runner labels: <code v-for="s in c.servers_var.plan.servers" :key="s.label" style="margin-right:6px">{{ s.label }}</code> — each server needs a runner with that label. {{ c.servers_var.plan.live ? '' : c.servers_var.plan.servers.length > 1 ? 'Choose "Waits for me" above to keep the live server back.' : '' }}</div>
+          <div v-if="c.servers_var.error" class="alert alert-error" style="margin:0"><span class="alert-icon">✖</span><span>{{ c.servers_var.error }}</span></div>
+        </div>
         <div class="hint" style="margin:0">Your file decides what GitHub does on a push; Switchboard <b>never rewrites it</b>. Switchboard still sets up the servers (Git access, runners), shows this file's runs, and "Run now" starts it (it needs <code>workflow_dispatch:</code>). Edit it here or in GitHub.</div>
         <div v-if="c.mode !== 'pull' && c.runner_access !== 'full'" class="alert alert-warn"><span class="alert-icon">⚠</span><span>Runners only run Switchboard's deploy commands now. If your workflow runs <code>docker</code>, <code>git</code> or changes files, choose <b>Full — for my own workflow</b> above, Save, then "Set up again".</span></div>
         <div v-if="c.committed_at" class="hint text-amber" style="margin:0">Switchboard's own <code>.github/workflows/switchboard.yml</code> may still be in the repo — delete it in GitHub, or both workflows run on a push.</div>
@@ -768,7 +788,7 @@ export const CicdTab = {
             <span class="hint" v-if="wf.files.length">In the repo: <template v-for="x in wf.files" :key="x"><a href="" @click.prevent="loadWf(x)"><code>{{ x.split('/').pop() }}</code></a> </template></span>
             <span class="hint" v-if="wf.missing">Not in the repo yet — the example is shown; Commit creates it.</span></div>
         </div>
-        <textarea v-model="wf.content" class="code" rows="22" spellcheck="false" style="font-size:12px;white-space:pre" :disabled="!isAdmin"></textarea>
+        <flow-editor v-if="wf.loaded" v-model:content="wf.content" :project-id="c.root.id" :readonly="!isAdmin" :branch="c.branch" :path="wf.path" />
         <div class="row gap-8 wrap admin-only">
           <button class="btn btn-sm btn-primary" @click="commitWf" :disabled="busy.wf || !wf.content || !c.token">Commit to GitHub</button>
           <button class="btn btn-sm" @click="useWf" :disabled="busy.wf || wf.missing" v-if="!c.own_workflow || c.workflow_path !== wf.path" title="Follow this file without changing it">Use this file as it is</button>
