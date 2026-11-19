@@ -154,3 +154,14 @@
 .held-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .held-row + .held-row { margin-top: 6px; }
 @media (max-width: 700px) { .dp-choice { align-items: flex-start; } }
+
+.dp-commits { display: flex; flex-direction: column; max-height: 232px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); }
+.dp-commit { display: grid; grid-template-columns: 18px auto 1fr auto; gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+.dp-commit + .dp-commit { border-top: 1px solid var(--border); }
+.dp-commit:hover { background: var(--hover); }
+.dp-commit.on { background: var(--accent-bg); }
+.dp-commit.on.older { background: var(--amber-bg); }
+.dp-sha { color: var(--accent); font-weight: 650; }
+.dp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 700px) { .dp-commit { grid-template-columns: 18px auto 1fr; } .dp-tags { grid-column: 2 / -1; justify-content: flex-start; } }

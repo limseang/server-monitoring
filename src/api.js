@@ -2194,9 +2194,28 @@ api.post('/projects/:id/deploy-plan', async (req, res) => {
   const root = rootOf(p);
   let commit = /^[0-9a-f]{7,40}$/.test(String(req.body.commit || '')) ? req.body.commit : null;
   if (!commit && later.length && root.git_repo && gh.hasToken()) commit = await gh.branchSha(root.git_repo, p.git_branch || root.git_branch || 'main').catch(() => null);
-  const job = runPlan({ project: p, nowIds, later: later.map((l) => ({ deployment: l.deployment, at: l.at ? l.at.toISOString() : null })), commit, user: who(req) });
+  const job = runPlan({ project: p, nowIds, later: later.map((l) => ({ deployment: l.deployment, at: l.at ? l.at.toISOString() : null })), commit, liveFirst: req.body.live_first === true, rollback: req.body.rollback === true, user: who(req) });
   audit(req, 'info', `${p.name}: deploy plan — now ${nowIds.length}, later ${later.length}${commit ? ` (commit ${commit.slice(0, 7)})` : ''}`, { projectId: p.id });
   res.json({ job, commit, held: heldOf(root.id) });
+});
+
+/** The newest commits of the project's branch: CI result of each, and which servers are on which commit. */
+api.get('/projects/:id/commits', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const root = rootOf(p);
+  if (!root.git_repo || !gh.hasToken()) throw bad('Needs the GitHub repository and a token (CI/CD tab, Settings → GitHub)');
+  const branch = p.git_branch || root.git_branch || 'main';
+  const commits = await gh.listCommits(root.git_repo, branch, 25);
+  const runs = all('SELECT sha, status, conclusion, html_url, run_number, run_id FROM ci_runs WHERE project_id = ? AND event != ? ORDER BY run_id DESC', root.id, 'pull_request');
+  const git = gitStates(root);
+  const servers = deploymentsOf(p.id).map((d) => ({ deployment: d.id, server_name: d.server_name, live: d.id === p.active_deployment_id, commit: git[d.id]?.commit || null }));
+  const held = heldOf(root.id);
+  res.json({
+    branch,
+    commits: commits.map((c, i) => ({ ...c, newest: i === 0, run: runs.find((r) => r.sha === c.sha) || null, on: servers.filter((s) => s.commit === c.sha).map((s) => s.server_name) })),
+    servers,
+    held,
+  });
 });
 
 const mustHeld = (id) => {

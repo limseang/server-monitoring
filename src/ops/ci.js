@@ -156,8 +156,8 @@ export function workflowYaml(root) {
 }
 
 /** Deploy script for an app that runs with Docker Compose: get the new code, rebuild and restart the containers. */
-export const DOCKER_DEPLOY_SCRIPT = `# Get the new code (the exact commit when CI/CD started the deploy)
-if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi
+export const DOCKER_DEPLOY_SCRIPT = `# Get the code: the exact commit when one was chosen (newer, or older for a rollback), else the newest
+if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git reset -q --keep "$SB_COMMIT"; else git pull -q --ff-only; fi
 # Rebuild the images that have a build: section and restart what changed
 docker compose up -d --build --remove-orphans
 # Remove old image layers so the disk does not fill up
@@ -215,7 +215,7 @@ export function exampleWorkflow(root) {
     '      - name: Get the new code',
     '        run: |',
     `          git fetch -q origin ${branch}`,
-    '          git merge -q --ff-only "$GITHUB_SHA"',
+    '          git reset -q --keep "$GITHUB_SHA"   # also works when you re-run an older run (rollback)',
     '          git log -1 --format="Now at %h: %s"',
     '      - name: Rebuild and restart the containers',
     '        run: docker compose up -d --build --remove-orphans',
@@ -563,6 +563,13 @@ D=${shq(dep.app_dir)}
     saveGit(root, dep, { state: 'no_access', error: err || e.message });
     throw e;
   }
+}
+
+/** After a deploy: remember which commit this server is on now (shown in Servers and Git and the commit list). */
+export function noteGitCommit(project, dep, sha) {
+  const root = rootOf(project);
+  const st = gitStates(root)[dep.id] || {};
+  saveGit(root, dep, { ...st, state: st.state && st.state !== 'ok' && st.state !== 'other_repo' ? st.state : st.state || 'ok', commit: sha, behind: st.remote_commit === sha ? 0 : st.behind });
 }
 
 /** Read-only look at every server of the project (in parallel). */

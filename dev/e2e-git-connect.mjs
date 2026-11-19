@@ -252,6 +252,9 @@ await step('Deploy straight away into a sub-folder of a checkout owned by anothe
 });
 
 await step('Compose folder inside the repo + "pull from Git and rebuild" deploy script (Docker)', async () => {
+  // From here on no background CI/CD: its own deploys of the test's new commits would race the checks.
+  await api('POST', `/projects/${project.id}/ci/disable`);
+  for (const j of (await jobsOf(project.id)).filter((x) => ['queued', 'running'].includes(x.status))) await waitJob(j);
   const compose = (port) => `services:\n  web:\n    image: nginx:1.27-alpine\n    container_name: gc-web\n    ports: ["${port}:80"]\n`;
   on('docker rm -f gc-web >/dev/null 2>&1 || true');
   await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'docker/docker-compose.yml', content: compose(18080) });
@@ -305,7 +308,7 @@ await step('Your own workflow: example, commit to GitHub, its runs, Run now', as
 await step('Runner: full access (SSH user) with the server name as label, then back to restricted', async () => {
   await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'runner', ci_runner_access: 'full' });
   const runnerOf = async () => (await (await fetch(`${GH}/__state`)).json()).runners[REPO]?.find((x) => x.name === `sb-gc-live-${srv['gc-live'].id}`);
-  let { job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id });
+  let { job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id, runner: true });
   let j = await waitJob(job);
   let r = await runnerOf();
   check(r && r.user === 'root' && r.labels.split(',').includes('gc-live'), `runner as root with label gc-live (${r?.user}, ${r?.labels})`);
@@ -314,7 +317,7 @@ await step('Runner: full access (SSH user) with the server name as label, then b
   const c = await ci();
   check(c.servers.find((x) => x.name === 'gc-live')?.runner_user === 'root', 'CI tab shows the runner user');
   await api('PUT', `/projects/${project.id}/ci`, { ci_runner_access: 'restricted' });
-  ({ job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id }));
+  ({ job } = await api('POST', `/projects/${project.id}/ci/connect`, { server_id: srv['gc-live'].id, runner: true }));
   j = await waitJob(job);
   r = await runnerOf();
   check(/register it again/.test(j.log) && r?.user === 'sb-runner', `switched to restricted: registered again as ${r?.user}`);
@@ -365,6 +368,10 @@ await step('Live run view: jobs and steps, self-hosted jobs matched to servers',
 await step('Deploy plan: standby now, live later (same commit), at a time, and the live-server policy', async () => {
   const SCRIPT = 'if [ -n "${SB_COMMIT:-}" ]; then git fetch -q origin && git merge -q --ff-only "$SB_COMMIT"; else git pull -q --ff-only; fi';
   await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: SCRIPT });
+  // No background CI/CD meanwhile: its own deploys of new test commits would clear the waits this step checks.
+  // (/ci/refresh below still runs a check when the test asks for one.)
+  await api('POST', `/projects/${project.id}/ci/disable`);
+  for (const j of (await jobsOf(project.id)).filter((x) => ['queued', 'running'].includes(x.status))) await waitJob(j);
   let p = await api('GET', `/projects/${project.id}`);
   const dep = (name) => p.deployments.find((d) => d.server_id === srv[name].id);
   await api('POST', `/projects/${project.id}/adopt`, { deployment: dep('gc-live').id });
@@ -444,6 +451,49 @@ await step('Deploy plan: standby now, live later (same commit), at a time, and t
   c = await ci();
   check(c.workflow.includes(`sb-gc-live-${srv['gc-live'].id}`), 'policy "with the others": live is back in the workflow');
   await api('PUT', `/projects/${project.id}/ci`, { ci_mode: 'pull' });
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: 'git pull -q --ff-only\ngit log -1 --format=%h' });
+});
+
+await step('Roll back: errors after a deploy → deploy an older commit of main again', async () => {
+  const SCRIPT = 'if [ -n "${SB_COMMIT:-}" ]; then git fetch -q origin && git reset -q --keep "$SB_COMMIT"; else git pull -q --ff-only; fi';
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: SCRIPT });
+  await api('PUT', `/projects/${project.id}/ci`, { ci_live_policy: 'now' });
+  for (const h of (await ci()).held) await api('DELETE', `/held-deploys/${h.id}`);
+  for (const j of (await jobsOf(project.id)).filter((x) => ['queued', 'running'].includes(x.status))) await waitJob(j);
+  const p = await api('GET', `/projects/${project.id}`);
+  const ids = p.deployments.map((d) => d.id);
+  const head = (d) => on(`git -C /srv/${d} rev-parse HEAD`);
+  const good = on('git -C /srv/gc-live rev-parse origin/main') && (await api('GET', `/projects/${project.id}/commits`)).commits[0].sha;
+  const bad = (await gh('POST', '/__commit', { repo: REPO, branch: 'main', file: 'broken.txt', content: 'oops\n' })).sha;
+  let r = await api('POST', `/projects/${project.id}/deploy-plan`, { now: ids });
+  await waitJob(r.job);
+  check(['gc-live', 'gc-backup', 'gc-empty'].every((d) => head(d) === bad), `all servers on the new (bad) commit ${bad.slice(0, 7)}`);
+
+  const list = await api('GET', `/projects/${project.id}/commits`);
+  check(list.commits[0].sha === bad && list.commits[0].newest && list.commits[1].sha === good, 'commit list: newest first, the one before next');
+  check(list.commits[0].on.length === 3 && list.servers.find((x) => x.live)?.commit === bad, `each server's commit is known after the deploy (${list.commits[0].on.join(', ')})`);
+
+  r = await api('POST', `/projects/${project.id}/deploy-plan`, { now: ids, commit: good, rollback: true, live_first: true });
+  check(/^Roll back .* to /.test(r.job.title), `job: ${r.job.title}`);
+  const j = await waitJob(r.job);
+  check(['gc-live', 'gc-backup', 'gc-empty'].every((d) => head(d) === good), `all servers back on ${good.slice(0, 7)}`);
+  check(/going BACK from/.test(j.log), 'log says it goes back');
+  check(j.log.indexOf('Deploy on gc-live') < j.log.indexOf('Deploy on gc-backup'), 'live server first');
+  check(on('cat /srv/gc-backup/index.html') === 'v1 edited on backup', 'edits made on a server are kept');
+  check((await api('GET', `/projects/${project.id}/commits`)).commits[1].on.length === 3, 'commit list shows the servers on the older commit');
+
+  // A deploy script with a plain "git pull" moves the code forward again: the deploy says so.
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: 'git pull -q --ff-only' });
+  const dep = p.deployments.find((d) => d.server_id === srv['gc-empty'].id);
+  r = await api('POST', `/projects/${project.id}/deploy-plan`, { now: [dep.id], commit: good, rollback: true });
+  const j2 = await waitJob(r.job);
+  check(/is at .*, not .*: the deploy script moved the code/.test(j2.log), 'warns when the deploy script ignores the chosen commit');
+
+  // Forward again: the newest commit
+  await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: SCRIPT });
+  r = await api('POST', `/projects/${project.id}/deploy-plan`, { now: ids });
+  await waitJob(r.job);
+  check(['gc-live', 'gc-backup', 'gc-empty'].every((d) => head(d) === bad), 'and forward again to the newest');
   await api('PUT', `/projects/${project.id}`, { name: 'Git Connect Lab', deploy_script: 'git pull -q --ff-only\ngit log -1 --format=%h' });
 });
 

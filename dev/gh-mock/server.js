@@ -203,6 +203,16 @@ http
           return send(res, cur ? 200 : 201, { commit: { sha } });
         }
       }
+      if (rest === '/commits') {
+        const ref = url.searchParams.get('sha') || 'main';
+        const n = Number(url.searchParams.get('per_page')) || 30;
+        const out = tryGit(['-C', bare(repo), 'log', `-${n}`, '--format=%H%x09%an%x09%cI%x09%s', ref]);
+        if (out === null) return send(res, 404, { message: 'Not Found' });
+        return send(res, 200, out.split('\n').filter(Boolean).map((l) => {
+          const [sha, name, date, msg] = l.split('\t');
+          return { sha, author: { login: LOGIN }, commit: { message: msg, author: { name, date }, committer: { date } } };
+        }));
+      }
       if ((m = rest.match(/^\/actions\/runs\/(\d+)(\/jobs)?$/))) {
         const r = (S.runs[repo] || []).find((x) => x.id === Number(m[1]));
         if (!r) return send(res, 404, { message: 'Not Found' });

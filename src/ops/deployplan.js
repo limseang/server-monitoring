@@ -88,7 +88,7 @@ export function runDueHeld() {
  * Run a plan: `nowIds` deployed in one job (standby first, live last), `later` [{ deployment, at }] held.
  * `commit` pins every part of the plan to the same code (null: each deploy takes the newest).
  */
-export function runPlan({ project, nowIds = [], later = [], commit = null, user }) {
+export function runPlan({ project, nowIds = [], later = [], commit = null, liveFirst = false, rollback = false, user }) {
   const deps = deploymentsOf(project.id);
   const byId = new Map(deps.map((d) => [d.id, d]));
   const nowDeps = nowIds.map((id) => byId.get(Number(id))).filter(Boolean);
@@ -97,9 +97,9 @@ export function runPlan({ project, nowIds = [], later = [], commit = null, user 
     const names = nowDeps.map((d) => d.server_name).join(', ');
     job = enqueue({
       type: 'deploy',
-      title: `Deploy ${project.name} on ${names}${isSha(commit) ? ` @ ${commit.slice(0, 7)}` : ''}${later.length ? ' (others later)' : ''}`,
+      title: `${rollback ? 'Roll back' : 'Deploy'} ${project.name} on ${names}${isSha(commit) ? ` ${rollback ? 'to' : '@'} ${commit.slice(0, 7)}` : ''}${later.length ? ' (others later)' : ''}`,
       projectId: project.id,
-      params: { deployments: nowDeps.map((d) => d.id), ...(isSha(commit) ? { commit } : {}) },
+      params: { deployments: nowDeps.map((d) => d.id), ...(isSha(commit) ? { commit } : {}), ...(liveFirst ? { liveFirst: true } : {}) },
       user,
     });
   }

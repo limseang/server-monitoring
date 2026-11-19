@@ -1,5 +1,5 @@
 import { ref, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
-import { http, closeDialog } from './lib.js';
+import { http, closeDialog, openDialog } from './lib.js';
 
 /*
  * Live view of one CI/CD run (GitHub Actions): its jobs and steps, read through Switchboard every few seconds
@@ -318,7 +318,9 @@ export const RunViewer = {
       return a ? dur(b - a) : '';
     });
     const eventText = (e) => ({ push: 'push', pull_request: 'pull request', workflow_dispatch: 'run by hand', schedule: 'schedule' })[e] || e;
-    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog };
+    // Errors after this run's deploy? Deploy an older commit of the branch again.
+    const rollBack = () => openDialog('deploy-plan', { projectId: props.projectId, rollback: true });
+    return { data, error, view, now, running, st, total, eventText, LABEL, BADGE, closeDialog, rollBack };
   },
   template: `
   <modal :title="data ? 'Run #' + data.run.number + ' · ' + data.run.title : 'Run'" size="xl" @close="closeDialog">
@@ -345,6 +347,7 @@ export const RunViewer = {
     </div>
     <template #footer>
       <span class="muted small" v-if="data">{{ running ? 'Updates every 5 seconds' : 'Finished' }}</span>
+      <button v-if="data && !running && data.run.event !== 'pull_request'" class="btn dev-only" :class="{ 'btn-danger': st === 'failure' }" @click="rollBack" title="Deploy an older commit of the branch again">↩ Roll back…</button>
       <a v-if="data" class="btn btn-ghost" :href="data.run.html_url" target="_blank" rel="noopener">Open in GitHub ↗</a>
       <button class="btn" @click="closeDialog">Close</button>
     </template>

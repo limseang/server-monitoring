@@ -554,6 +554,7 @@ export const CicdTab = {
     };
     const ownScript = computed(() => (c.value ? c.value.servers.some((s) => s.deps.some((d) => d.project_id === c.value.root.id && d.deploy_script)) : false));
     const pullAll = () => openDialog('deploy-plan', { projectId: c.value.root.id });
+    const rollBack = () => openDialog('deploy-plan', { projectId: c.value.root.id, rollback: true });
     const heldFor = (d) => (c.value.held || []).find((h) => h.deployment_id === d.id);
     const deployHeld = (h) => runJob(http.post(`/held-deploys/${h.id}/deploy`));
     async function cancelHeldDeploy(h) {
@@ -582,7 +583,7 @@ export const CicdTab = {
       runJob(http.post(`/projects/${c.value.root.id}/staging/${s.id}/data`));
     };
     const runBadge = RUN_BADGE;
-    return { c, f, wf, viewRun, liveRun, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
+    return { c, f, wf, viewRun, liveRun, rollBack, heldFor, deployHeld, cancelHeldDeploy, whenText, loadWf, ownMode, switchboardMode, useWf, commitWf, useExample, ownScript, pullAll, pullOne, dockerScript, showYaml, busy, isAdmin, runBranch, load, save, setup, updateServers, gitOf, gitBadge, notConnected, checkGit, connect, commit, refresh, runNow, removeRunner, removePreview, addStaging, stagingData, runBadge, PREVIEW_BADGE, fmtDate };
   },
   template: `
   <div v-if="!c" class="muted">Loading…</div>
@@ -656,7 +657,7 @@ export const CicdTab = {
 
     <div class="card" v-if="c.is_root && c.repo">
       <div class="card-head"><h3>Servers and Git</h3>
-        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm dev-only" @click="pullAll" :disabled="!ownScript" :title="ownScript ? 'Choose which servers update now and which later' : 'Set a deploy script first'">Pull & rebuild…</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and project settings to the servers (no deploy)">Send settings</button><button class="btn btn-sm admin-only" @click="connect(null, true)" :disabled="!c.token" title="Install a GitHub self-hosted runner on a server">+ Self-hosted runner</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
+        <div class="row gap-6 wrap"><button class="btn btn-sm" @click="checkGit(); load(true)" :disabled="busy.git"><span v-if="busy.git" class="spinner"></span>Check servers</button><button class="btn btn-sm dev-only" @click="pullAll" :disabled="!ownScript" :title="ownScript ? 'Choose which servers update now and which later' : 'Set a deploy script first'">Pull & rebuild…</button><button class="btn btn-sm dev-only" @click="rollBack" :disabled="!ownScript || !c.token" title="Deploy an older commit of the branch again (errors after a deploy?)">↩ Roll back…</button><button class="btn btn-sm admin-only" @click="updateServers" title="Send the latest deploy script and project settings to the servers (no deploy)">Send settings</button><button class="btn btn-sm admin-only" @click="connect(null, true)" :disabled="!c.token" title="Install a GitHub self-hosted runner on a server">+ Self-hosted runner</button><button class="btn btn-sm btn-primary admin-only" @click="connect()">+ Connect a server</button></div></div>
       <div v-if="!ownScript && c.servers.length" class="alert alert-info" style="margin:0 18px 12px"><span class="alert-icon">ℹ</span><span>No deploy script yet, so Switchboard can't update the servers itself. App runs with Docker Compose? <button class="btn btn-xs admin-only" @click="dockerScript" :disabled="busy.script">Use "pull from Git + rebuild"</button> <span class="muted">(or write your own in Settings → Deploy script)</span></span></div>
       <div class="table-wrap"><table class="table" v-if="c.servers.length">
         <thead><tr><th>Server</th><th>App folder</th><th>Git</th><th v-if="c.mode !== 'pull' || c.runners.length">Runner</th><th></th></tr></thead>

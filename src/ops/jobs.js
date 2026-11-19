@@ -6,7 +6,8 @@ import { defineJob } from '../jobs.js';
 import { getProject, getServer, getDeployment, deploymentsOf } from '../models.js';
 import { probe } from '../health.js';
 import { fmtBytes, sleep } from '../util.js';
-import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, GIT_TRUST, gitHint } from './remote.js';
+import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, GIT_TRUST, gitCheckoutCommit, gitHint } from './remote.js';
+import { noteGitCommit } from './ci.js';
 import { syncDatabase, backupDeployment, importFromFile, countTables, backupAbsPath, pruneBackups, requireDb } from './database.js';
 import { syncFiles, parseSyncPaths } from './files.js';
 import { setMaintenance } from './app.js';
@@ -350,13 +351,15 @@ defineJob('deploy', async (ctx, p) => {
   const script = String(project.deploy_script || '').trim();
   if (!script) throw new Error('No deploy script set for this project (Project → Settings → Deploy script)');
   const isActive = (d) => (d.id === project.active_deployment_id ? 1 : 0);
-  // Deploy standby servers first, the live one last.
+  // Standby servers first, the live one last — or the live one FIRST when rolling back (visitors see the errors there).
+  const order = (a, b) => (p.liveFirst ? isActive(b) - isActive(a) : isActive(a) - isActive(b));
   // all · a chosen list (deploy plan: the others wait) · one server
   const targets = p.all
-    ? deploymentsOf(project.id).sort((a, b) => isActive(a) - isActive(b))
+    ? deploymentsOf(project.id).sort(order)
     : Array.isArray(p.deployments)
-      ? p.deployments.map((id) => mustDep(project, id)).sort((a, b) => isActive(a) - isActive(b))
+      ? p.deployments.map((id) => mustDep(project, id)).sort(order)
       : [mustDep(project, p.deployment)];
+  const commit = /^[0-9a-f]{7,40}$/.test(String(p.commit || '')) ? p.commit : null;
   try {
     const lb = isLb(project);
     if (lb && targets.length > 1) ctx.log('Load balanced: rolling deploy — one server at a time is taken out, deployed and put back, so visitors are never cut off');
@@ -377,7 +380,23 @@ defineJob('deploy', async (ctx, p) => {
           }
           // git never waits for a login/passphrase/host-key answer or a dead network (it fails with a hint instead).
           try {
+            // A deploy of one exact commit: Switchboard moves the checkout there first — also BACK, for a rollback.
+            if (commit && dep.app_dir) {
+              const mv = await runRemote(null, conn, shellScript(gitCheckoutCommit(commit, project.git_branch || 'main'), { cwd: dep.app_dir, prelude: GIT_NO_WAIT }), { quiet: true, timeout: 10 * 60000 });
+              const m = String(mv.stdout).match(/^SB_MOVE (\w+)(?: (\w+) (\w+))?/m);
+              if (m?.[1] === 'back') ctx.warn(`${dep.server_name}: going BACK from ${m[2].slice(0, 7)} to ${m[3].slice(0, 7)} (rollback)`);
+              else if (m?.[1] === 'forward') ctx.log(`${dep.server_name}: code moved from ${m[2].slice(0, 7)} to ${m[3].slice(0, 7)}`);
+              else if (m?.[1] === 'same') ctx.log(`${dep.server_name}: already at ${m[3].slice(0, 7)}`);
+            }
             await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true, prelude: GIT_NO_WAIT }), { timeout: 60 * 60000 });
+            // Which commit is the server on now? (A script with a plain "git pull" moves it to the newest again.)
+            if (dep.app_dir) {
+              const at = (await runRemote(null, conn, shellScript('git rev-parse HEAD 2>/dev/null || true', { cwd: dep.app_dir }), { quiet: true, okCodes: [0, 1, 128] }).catch(() => null))?.stdout?.trim();
+              if (/^[0-9a-f]{40}$/.test(at || '')) {
+                noteGitCommit(project, dep, at);
+                if (commit && !at.startsWith(commit) && !commit.startsWith(at)) ctx.warn(`${dep.server_name} is at ${at.slice(0, 7)}, not ${commit.slice(0, 7)}: the deploy script moved the code (it does not use $SB_COMMIT — e.g. a plain "git pull"). Use CI/CD → "pull from Git + rebuild", or make your script skip "git pull" when $SB_COMMIT is set.`);
+              }
+            }
           } catch (e) {
             const hint = gitHint(`${e.result?.stderr || ''}\n${e.result?.stdout || ''}\n${e.message}`);
             if (hint) {
