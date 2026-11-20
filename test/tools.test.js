@@ -56,3 +56,17 @@ test('template needs: Docker apps need Docker; apps without Docker need Node.js 
   // A project made from the Laravel template deploys through the helper (no "docker" in its script) — still needs Docker.
   assert.deepEqual(projectNeeds({ template: 'laravel', deploy_script: 'switchboard-helper deploy x' }).sort(), ['docker', 'git']);
 });
+
+test('starter apps are real projects with folders (Vue/Vite front-end, Node app) and a README', async () => {
+  const { scaffoldFiles } = await import('../src/ops/stack.js');
+  const fe = scaffoldFiles('frontend', 'Cinema Admin');
+  for (const f of ['package.json', 'vite.config.js', 'index.html', 'src/main.js', 'src/App.vue', 'src/components/HelloCard.vue', 'public/favicon.svg', 'README.md', '.gitignore']) assert.ok(fe[f], f);
+  const pkg = JSON.parse(fe['package.json']);
+  assert.equal(pkg.name, 'cinema-admin');
+  assert.equal(pkg.scripts.build, 'vite build');
+  const node = scaffoldFiles('pm2', 'Cinema Admin');
+  assert.equal(JSON.parse(node['package.json']).scripts.start, 'node src/server.js');
+  assert.ok(node['src/routes.js'].includes("'/up'"));
+  assert.ok(scaffoldFiles('static', 'X')['index.html']);
+  assert.ok(fe['.gitignore'].includes('node_modules/') && fe['.gitignore'].includes('.env'));
+});

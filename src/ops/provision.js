@@ -97,6 +97,7 @@ async function writeScaffold(ctx, conn, server, dir, files) {
   const user = appUser(server);
   const cmds = ['set -e', `mkdir -p ${shq(dir)}`];
   for (const [rel, content] of Object.entries(files)) {
+    if (rel.includes('/')) cmds.push(`mkdir -p ${shq(`${dir}/${rel.slice(0, rel.lastIndexOf('/'))}`)}`);
     cmds.push(`printf %s ${shq(Buffer.from(content).toString('base64'))} | base64 -d > ${shq(`${dir}/${rel}`)}`);
   }
   cmds.push(`chown -R ${shq(user)}: ${shq(dir)}`);
@@ -296,6 +297,70 @@ defineJob('provision', async (ctx, p) => {
     alert('error', `${project.name}: setup FAILED — ${e.message}`, { projectId: project.id, jobId: ctx.id, link: `#/projects/${project.id}` });
     throw e;
   }
+});
+
+/**
+ * LINK WITH GITHUB — a project started as a starter app (no repository) gets one later:
+ * a new GitHub repository, the live server's code as its first commit, the other servers connected to it,
+ * and (if asked) CI/CD so every push is deployed. Then the project page shows how to clone it on a PC.
+ */
+defineJob('link-github', async (ctx, p) => {
+  let project = getProject(ctx.job.project_id);
+  if (!project) throw new Error('Project not found');
+  if (project.git_repo) throw new Error(`${project.name} is already linked to ${project.git_repo}`);
+  const repo = String(p.repo || '');
+  if (!gh.REPO_RE.test(repo)) throw new Error('Repository must look like owner/name');
+  const branch = project.git_branch || 'main';
+  const deps = deploymentsOf(project.id).sort((a, b) => (b.id === project.active_deployment_id) - (a.id === project.active_deployment_id));
+  if (!deps.length) throw new Error('This project has no server yet');
+
+  ctx.step(`GitHub repository ${repo}`);
+  const existing = await gh.getRepo(repo).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+  if (existing) {
+    // Only an EMPTY repository may be used: the server's code becomes its first commit.
+    const sha = await gh.branchSha(repo, branch).catch(() => null);
+    if (sha) throw new Error(`${repo} already has code on ${branch}. Pick a new name — or, to use that code, connect it on the CI/CD tab (Servers and Git).`);
+    ctx.log(`${repo} exists and is empty — using it`);
+  } else {
+    await gh.createRepo(repo, { privateRepo: p.privateRepo !== false, description: `${project.name} (made with Switchboard)` });
+    ctx.log(`Created ${p.privateRepo !== false ? 'private' : 'public'} repository ${gh.webUrl(repo)}`);
+  }
+  update('projects', project.id, { git_repo: repo, git_branch: branch });
+  project = getProject(project.id);
+  let pushed = false;
+  try {
+    const { connectGit } = await import('./ci.js');
+    for (const dep of deps) {
+      const server = getServer(dep.server_id);
+      ctx.step(`${pushed ? 'Connect' : 'First commit from'} ${server.name}`);
+      const conn = await connectTo(ctx, server);
+      try {
+        await ensureRepoAccess(ctx, conn, server, repo, { write: !pushed, addKey: gh.addDeployKey });
+        await pushProjectConf(ctx, conn, server, project, dep);
+        if (!pushed) {
+          await helper(ctx, conn, server, ['init-repo', project.slug]);
+          pushed = true;
+          ctx.log(`The code in ${dep.app_dir} on ${server.name} is now on GitHub: ${gh.webUrl(repo)}`);
+        } else {
+          await connectGit(ctx, conn, server, project, project, dep);
+        }
+      } finally {
+        conn.end();
+      }
+    }
+  } catch (e) {
+    // Nothing reached GitHub: the project goes back to "not linked", so the button is there to try again.
+    if (!pushed) update('projects', project.id, { git_repo: null });
+    bus.emit('state', { projectId: project.id });
+    throw e;
+  }
+  if (p.ci) {
+    update('projects', project.id, { ci_mode: 'pull' });
+    const job = enqueue({ type: 'ci-setup', title: `Set up CI/CD for ${project.name}`, projectId: project.id, params: { commit: true }, user: ctx.user });
+    ctx.log(`Next: CI/CD setup (job #${job.id}) — every push to ${branch} will be deployed`);
+  }
+  bus.emit('state', { projectId: project.id });
+  logEvent('success', `${project.name}: linked to GitHub ${repo}`, { projectId: project.id, jobId: ctx.id, user: ctx.user });
 });
 
 /** Copy the live database of the main project into its staging copy (no backup when the staging server says so). */

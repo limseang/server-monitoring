@@ -13,6 +13,7 @@ import { RemoveDeploymentDialog, DeleteProjectDialog, ResetServerDialog, Reinsta
 import { CleanupDialog } from './cleanupdialog.js';
 import { SshGuardDialog } from './sshguard.js';
 import { CopyProjectDialog } from './copydialog.js';
+import { LinkGithubDialog, CloneGuideDialog } from './gitlink.js';
 import { ServerToolsNeeded } from './servertools.js';
 
 /* ======================================================================= SERVER */
@@ -931,6 +932,8 @@ export const DIALOGS = {
   domain: DomainDialog,
   proxy: ProxyDialog,
   deployment: DeploymentDialog,
+  'link-github': LinkGithubDialog,
+  'clone-guide': CloneGuideDialog,
   'connect-project': ConnectProjectDialog,
   switch: SwitchDialog,
   sync: SyncDialog,
