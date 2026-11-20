@@ -33,7 +33,7 @@ const DEVELOPER = [
   ['DELETE', /^\/held-deploys\/\d+$/],
   ['POST', /^\/deployments\/\d+\/(deploy|maintenance|backup)$/],
   ['POST', /^\/deployments\/\d+\/command$/, (req) => req.body?.where === 'app'],
-  ['POST', /^\/projects\/\d+\/(check|dns\/refresh)$/],
+  ['POST', /^\/projects\/\d+\/(check|dns\/refresh|tool-check)$/],
   ['POST', /^\/servers\/\d+\/traffic\/collect$/],
   ['POST', /^\/jobs\/(\d+)\/cancel$/, ownJob],
   ['POST', /^\/projects\/\d+\/ci\/(refresh|run|git-check)$/],

@@ -12,6 +12,7 @@ import './ops/serverctl.js';
 import './ops/backupstore.js';
 import './ops/dbaccess.js';
 import './ops/sshguard.js';
+import './ops/tools.js';
 import { api } from './api.js';
 import { startMonitor, stopMonitor } from './monitor.js';
 

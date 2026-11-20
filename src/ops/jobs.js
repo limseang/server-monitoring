@@ -23,6 +23,7 @@ import { runOsUpgrade } from './osupgrade.js';
 import { closeForSwitch, openForSwitch, dbAccessOn } from './dbaccess.js';
 import { installOriginCert, certHostnames } from './origincert.js';
 import { sslStatus, sslProblems, applySsl } from './cfssl.js';
+import { requireTools } from './tools.js';
 
 function mustProject(id) {
   const p = getProject(id);
@@ -417,6 +418,8 @@ defineJob('deploy', async (ctx, p) => {
               if (m?.[3]) setS(dep.id, { from: m[2], to: m[3], dir: m[1] });
             }
             setS(dep.id, { phase: 'script' });
+            // Node.js / Docker / PM2 missing? Say so plainly now, instead of a cryptic "npm not found" from the script.
+            await requireTools(ctx, conn, getServer(dep.server_id), project);
             await runRemote(ctx, conn, shellScript(env + script, { cwd: dep.app_dir, strict: true, prelude: GIT_NO_WAIT }), { timeout: 60 * 60000 });
             // Which commit is the server on now? (A script with a plain "git pull" moves it to the newest again.)
             if (dep.app_dir) {

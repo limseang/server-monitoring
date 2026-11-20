@@ -8,6 +8,7 @@ import { UsageTab } from '../usageview.js';
 import { useLive, LivePill, useTween } from '../live.js';
 import { ServerCard } from './overview.js';
 import { BillingCard } from '../billing.js';
+import { ToolsTab } from '../servertools.js';
 
 export const ServersPage = {
   components: { ServerCard },
@@ -29,7 +30,7 @@ export const ServersPage = {
 
 export const ServerPage = {
   props: { id: Number },
-  components: { LivePill, BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, NginxTab, TrafficTab, LogsTab, UsageTab },
+  components: { LivePill, BillingCard, MeterBar, MenuBtn, JobsTable, Ago, HealthPill, PortsTab, PowerTab, NginxTab, TrafficTab, LogsTab, UsageTab, ToolsTab },
   setup(props) {
     const s = ref(null);
     const tab = ref('overview');
@@ -200,6 +201,11 @@ export const ServerPage = {
         history.replaceState(null, '', `#/servers/${v.id}`);
         cleanup();
       }
+      // From a "missing tool" warning: #/servers/<id>?tools=1 opens the Tools tab.
+      if (v && /[?&]tools=1/.test(location.hash)) {
+        history.replaceState(null, '', `#/servers/${v.id}`);
+        tab.value = 'tools';
+      }
       // From a "failed SSH logins" alert: #/servers/<id>?protect-ssh=1
       if (v && store.user?.role === 'admin' && /[?&]protect-ssh=1/.test(location.hash)) {
         history.replaceState(null, '', `#/servers/${v.id}`);
@@ -267,6 +273,7 @@ export const ServerPage = {
       <button class="tab" :class="{ on: tab === 'ports' }" @click="tab = 'ports'"><icon name="port" :size="14" />Ports & domains</button>
       <button class="tab admin-only" :class="{ on: tab === 'nginx' }" @click="tab = 'nginx'"><icon name="globe" :size="14" />Nginx sites</button>
       <button class="tab" :class="{ on: tab === 'containers' }" @click="tab = 'containers'"><icon name="box" :size="14" />Containers <span class="muted" v-if="m">{{ m.containers.length }}</span></button>
+      <button class="tab" :class="{ on: tab === 'tools' }" @click="tab = 'tools'"><icon name="box" :size="14" />Tools<span v-if="s.tools && s.tools.list" class="muted"> {{ Object.values(s.tools.list).filter(Boolean).length }}/{{ Object.keys(s.tools.list).length }}</span></button>
       <button class="tab" :class="{ on: tab === 'apps' }" @click="tab = 'apps'"><icon name="layers" :size="14" />Apps outside Docker</button>
       <button class="tab admin-only" :class="{ on: tab === 'power' }" @click="tab = 'power'"><icon name="power" :size="14" />Power & access</button>
       <button class="tab" :class="{ on: tab === 'jobs' }" @click="tab = 'jobs'"><icon name="jobs" :size="14" />Jobs</button>
@@ -305,6 +312,7 @@ export const ServerPage = {
     <ports-tab v-if="tab === 'ports'" :server="s" />
     <nginx-tab v-if="tab === 'nginx'" :server="s" :key="'n' + s.id" />
     <power-tab v-if="tab === 'power'" :server="s" />
+    <tools-tab v-if="tab === 'tools'" :server="s" :key="'tl' + s.id" />
 
     <section v-if="tab === 'containers'">
       <div class="section-head"><h2>Containers <span class="muted" v-if="m">{{ m.containers.length }}</span></h2><input v-model="filter" placeholder="Filter…" style="max-width:220px;height:30px"></div>
