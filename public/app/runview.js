@@ -1,11 +1,13 @@
 import { ref, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
 import { http, toast, confirmBox, closeDialog, openDialog, showJob } from './lib.js';
+import { IsoFlow } from './servermap.js';
 
 /*
  * Live view of one CI/CD run (GitHub Actions): its jobs and steps, read through Switchboard every few seconds
  * while it runs. Two views of the same data:
  *   professional — summary + a timeline of jobs (bars on a time axis), steps under each job
  *   animated     — commit → GitHub's machines → your servers, with code flowing to the server that deploys now
+ *   3D           — the same, with the commit as a box and your servers as 3D servers
  */
 
 const POLL_MS = 5000;
@@ -119,8 +121,9 @@ const ProView = {
 /* ------------------------------------------------------------------ animated view */
 const W = 980;
 const AnimView = {
-  props: { data: Object, now: Number },
+  props: { data: Object, now: Number, iso: Boolean },
   emits: ['deploy', 'deploy-to'],
+  components: { IsoFlow },
   setup(props) {
     const motion = !reducedMotion();
     const hosted = computed(() => props.data.jobs.filter((j) => j.where !== 'server'));
@@ -223,7 +226,23 @@ const AnimView = {
     const trim = (t, n) => (String(t || '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t || ''));
     // Where a held server's gate sits: on its connection, just before the server.
     const gates = computed(() => serverBoxes.value.filter((s) => s.state === 'held').map((s) => ({ id: s.id, x: s.x - 18, y: s.y + s.h / 2 })));
-    return { gates, W, H, motion, hosted, panel, serverBoxes, commit, edges, overall, runState, headline, elapsed, trim, stateOf, jobProgress, currentStep, stepsDone, ICON, hostedState };
+    // 3D view: one line per server, the same words as the flat picture
+    const doing = (s) => {
+      if (s.state === 'held') return 'waits for you';
+      if (s.target) return s.target.live ? 'live — not on this commit' : 'not on this commit';
+      if (!s.job) return s.released ? 'got its turn later' : props.data.run.status !== 'completed' ? 'waits for its turn' : 'no job in this run';
+      const step = currentStep(s.job);
+      if (step) return trim(step.name, 24);
+      if (s.state === 'success') return /deploy/i.test(s.job.name) ? 'Deployed' : 'Passed';
+      return s.state === 'failure' ? 'Failed' : s.state === 'queued' ? 'Waiting…' : `${stepsDone(s.job)}/${s.job.steps.length} steps`;
+    };
+    const isoServers = computed(() => serverBoxes.value.map((s) => ({ id: s.id, name: s.name, live: !!(props.data.targets || []).find((t) => t.server_id === s.id)?.live, state: s.state, frac: s.job ? jobProgress(s.job, props.now) : 0, label: doing(s) })));
+    const isoSource = computed(() => {
+      const h = hosted.value;
+      const sub = h.length ? `GitHub ${h.filter((j) => stateOf(j) === 'success').length}/${h.length} jobs` : trim(props.data.run.branch, 18);
+      return { title: (props.data.run.sha || '').slice(0, 7) || 'commit', sub, state: h.length ? hostedState.value : runState.value };
+    });
+    return { isoServers, isoSource, gates, W, H, motion, hosted, panel, serverBoxes, commit, edges, overall, runState, headline, elapsed, trim, stateOf, jobProgress, currentStep, stepsDone, ICON, hostedState };
   },
   template: `
   <div class="rv-anim" :class="'run-' + runState">
@@ -232,7 +251,8 @@ const AnimView = {
       <span class="mono muted">{{ elapsed }}</span>
     </div>
     <div class="rv-progress" :class="'st-' + runState"><span :style="{ width: Math.round(overall * 100) + '%' }"></span></div>
-    <svg class="rv-scene" :viewBox="'0 0 ' + W + ' ' + H" role="img" :aria-label="headline">
+    <iso-flow v-if="iso" :source="isoSource" :servers="isoServers" />
+    <svg v-else class="rv-scene" :viewBox="'0 0 ' + W + ' ' + H" role="img" :aria-label="headline">
       <defs>
         <radialGradient id="rv-glow"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35" /><stop offset="100%" stop-color="var(--accent)" stop-opacity="0" /></radialGradient>
       </defs>
@@ -327,7 +347,7 @@ export const RunViewer = {
     try {
       saved = localStorage.getItem(VIEW_KEY) || 'pro';
     } catch {}
-    const view = ref(saved === 'anim' ? 'anim' : 'pro');
+    const view = ref(['anim', '3d'].includes(saved) ? saved : 'pro');
     watch(view, (v) => {
       try {
         localStorage.setItem(VIEW_KEY, v);
@@ -461,6 +481,7 @@ export const RunViewer = {
         <div class="seg rv-switch" role="tablist" aria-label="View">
           <button type="button" role="tab" :aria-selected="view === 'pro'" :class="{ on: view === 'pro' }" @click="view = 'pro'">Professional</button>
           <button type="button" role="tab" :aria-selected="view === 'anim'" :class="{ on: view === 'anim' }" @click="view = 'anim'">Animated</button>
+          <button type="button" role="tab" :aria-selected="view === '3d'" :class="{ on: view === '3d' }" @click="view = '3d'">3D</button>
         </div>
       </div>
       <div v-if="error" class="hint text-amber">Could not refresh: {{ error }} (showing the last data)</div>
@@ -469,7 +490,7 @@ export const RunViewer = {
         <button class="btn btn-sm btn-primary dev-only" @click="deployHeld(h)" :disabled="deploying"><span v-if="deploying" class="spinner"></span>Deploy {{ h.server_name }} now</button>
       </div>
       <pro-view v-if="view === 'pro'" :data="data" :now="now" />
-      <anim-view v-else :data="data" :now="now" @deploy="deployHeld" @deploy-to="deployTo" />
+      <anim-view v-else :data="data" :now="now" :iso="view === '3d'" @deploy="deployHeld" @deploy-to="deployTo" />
       <div v-if="canSend && (data.targets || []).length" class="rv-send">
         <div class="rv-send-head"><b>Send <code>{{ (data.run.sha || '').slice(0, 7) }}</code> to your servers</b><span class="muted small">the code of this run — {{ data.own_workflow ? 'your workflow deploys it on that server only (no new build)' : "Switchboard's deploy script runs on that server" }}</span></div>
         <div v-if="whyNoWait" class="hint text-amber" style="margin:0">⏸ Why the live server did not wait: {{ whyNoWait }}</div>

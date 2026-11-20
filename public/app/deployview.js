@@ -1,5 +1,6 @@
 import { ref, computed, watch, onMounted, onUnmounted } from '/vendor/vue.js';
 import { dur } from './runview.js';
+import { IsoFlow } from './servermap.js';
 
 /*
  * Live view of a Switchboard deploy job (also a rollback): each server's phase and the commits it moves between.
@@ -7,6 +8,7 @@ import { dur } from './runview.js';
  *   professional — a table: server, from → to, phases, time, result
  *   animated     — each server travels along its own track from the old commit to the new one;
  *                  a rollback runs right-to-left like a rewind
+ *   3D           — the commit as a box, code packets flowing into 3D servers (amber + rewind for a rollback)
  */
 
 const VIEW_KEY = 'sb-run-view';
@@ -74,7 +76,8 @@ const W = 980;
 const XA = 170;
 const XB = 810;
 const DeployAnim = {
-  props: { progress: Object, now: Number, status: String },
+  props: { progress: Object, now: Number, status: String, iso: Boolean },
+  components: { IsoFlow },
   setup(props) {
     const motion = !reducedMotion();
     const back = computed(() => props.progress.rollback || props.progress.servers.some((s) => s.dir === 'back'));
@@ -104,7 +107,10 @@ const DeployAnim = {
     const elapsed = computed(() => dur((finished.value ? Math.max(...props.progress.servers.map((s) => ms(s.finished_at) || 0)) || props.now : props.now) - ms(props.progress.started_at)));
     const fromLabel = computed(() => short(props.progress.servers.find((s) => s.from)?.from) || (back.value ? 'now' : 'old'));
     const toLabel = computed(() => short(props.progress.commit) || short(props.progress.servers.find((s) => s.to)?.to) || 'newest');
-    return { W, H, XA, XB, motion, back, xFrom, xTo, laneY, x, frac, headline, state, pct, elapsed, fromLabel, toLabel, short, PHASES, phaseState };
+    const doing = (s) => (s.state === 'running' ? (PHASES.find((p) => p[0] === s.phase) || ['', 'Starting'])[1] : s.state === 'success' ? (back.value ? 'Rolled back' : 'Deployed') : s.state === 'failure' ? 'Failed' : s.state === 'skipped' ? 'Not run' : 'Waiting');
+    const isoServers = computed(() => props.progress.servers.map((s) => ({ id: s.id, name: s.name, live: s.live, state: s.state, frac: frac(s), label: doing(s) })));
+    const isoSource = computed(() => ({ title: toLabel.value, sub: back.value ? 'older commit' : 'new code', state: state.value }));
+    return { isoServers, isoSource, W, H, XA, XB, motion, back, xFrom, xTo, laneY, x, frac, headline, state, pct, elapsed, fromLabel, toLabel, short, PHASES, phaseState };
   },
   template: `
   <div class="rv-anim dv-anim" :class="['run-' + state, { 'dv-rewind': back && state === 'running' && motion }]">
@@ -117,7 +123,8 @@ const DeployAnim = {
       <span class="mono muted">{{ elapsed }}</span>
     </div>
     <div class="rv-progress" :class="'st-' + state"><span :style="{ width: pct + '%' }"></span></div>
-    <svg class="rv-scene" :viewBox="'0 0 ' + W + ' ' + H" role="img" :aria-label="headline">
+    <iso-flow v-if="iso" :source="isoSource" :servers="isoServers" :back="back" />
+    <svg v-else class="rv-scene" :viewBox="'0 0 ' + W + ' ' + H" role="img" :aria-label="headline">
       <!-- the two ends: the code the servers had, and the code they get -->
       <g class="dv-end" :transform="'translate(' + xFrom + ',40)'">
         <rect x="-52" y="-17" width="104" height="30" rx="15" class="dv-pill from" /><text y="3" text-anchor="middle" class="mono rv-t-small">{{ fromLabel }}</text>
@@ -168,7 +175,7 @@ export const DeployLive = {
     try {
       saved = localStorage.getItem(VIEW_KEY) || 'pro';
     } catch {}
-    const view = ref(saved === 'anim' ? 'anim' : 'pro');
+    const view = ref(['anim', '3d'].includes(saved) ? saved : 'pro');
     watch(view, (v) => {
       try {
         localStorage.setItem(VIEW_KEY, v);
@@ -188,9 +195,10 @@ export const DeployLive = {
       <div class="seg rv-switch" role="tablist" aria-label="View">
         <button type="button" role="tab" :aria-selected="view === 'pro'" :class="{ on: view === 'pro' }" @click="view = 'pro'">Professional</button>
         <button type="button" role="tab" :aria-selected="view === 'anim'" :class="{ on: view === 'anim' }" @click="view = 'anim'">Animated</button>
+        <button type="button" role="tab" :aria-selected="view === '3d'" :class="{ on: view === '3d' }" @click="view = '3d'">3D</button>
       </div>
     </div>
     <deploy-pro v-if="view === 'pro'" :progress="progress" :now="now" />
-    <deploy-anim v-else :progress="progress" :now="now" :status="status" />
+    <deploy-anim v-else :progress="progress" :now="now" :status="status" :iso="view === '3d'" />
   </div>`,
 };
