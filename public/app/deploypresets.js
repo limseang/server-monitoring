@@ -10,13 +10,16 @@ DIR=$(pwd)
 as_owner() {
   if [ "$(id -u)" = 0 ] && [ "$OWNER" != root ]; then su - "$OWNER" -s /bin/bash -c "set -e; cd '$DIR'; $1"; else bash -c "set -e; $1"; fi
 }
-NODE='[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null && { nvm use -s >/dev/null 2>&1 || true; }; command -v npm >/dev/null || { echo "npm not found for $(whoami) — install Node.js on this server first"; exit 1; }'
+# Node.js: the runner's own nvm first; if it has none (e.g. a folder owned by root, Node installed with nvm for ubuntu),
+# use the SSH user's nvm, then any other user's.
+NODE='for h in "$HOME" "$(getent passwd "\${SUDO_USER:-}" | cut -d: -f6)" /home/*; do [ -n "$h" ] && [ -s "$h/.nvm/nvm.sh" ] || continue; export NVM_DIR="$h/.nvm"; . "$h/.nvm/nvm.sh" >/dev/null || true; nvm use -s >/dev/null 2>&1 || true; command -v npm >/dev/null && break; done; command -v npm >/dev/null || { echo "npm not found for $(whoami) — install Node.js on this server first"; exit 1; }; echo "Node.js $(node -v) from $(command -v node)"'
 # Get the code: the exact commit when one was chosen (newer, or older for a rollback), else the newest.
 # Git runs as the SSH user, like Switchboard's own git steps; then every file it touched goes back to the owner.
 if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git reset -q --keep "$SB_COMMIT"; else git pull -q --ff-only; fi
 if [ "$OWNER" != "$(id -un)" ] && [ "$(id -u)" = 0 ]; then
   find "$DIR" -path "$DIR/node_modules" -prune -o ! -user "$OWNER" -exec chown -h "$OWNER:$GROUP" {} +
 fi
+[ -f package.json ] || { echo "No package.json in $DIR: this folder does not hold the app's code (maybe only the built site). Set the app folder to the folder with the code, or connect an empty folder to Git (Servers and Git) so the code is cloned into it."; exit 1; }
 # Install exactly what the lock file says (npm, pnpm or yarn), then build
 INSTALL='export COREPACK_ENABLE_DOWNLOAD_PROMPT=0; if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack yarn install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi'`;
 

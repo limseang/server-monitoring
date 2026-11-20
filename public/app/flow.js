@@ -42,6 +42,7 @@ export const STEP_LIBRARY = [
   { key: 'health', icon: '🩺', title: 'Health check', hint: 'Fail if the app does not answer', make: () => step('Health check', { run: 'curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://localhost/ > /dev/null' }) },
   { key: 'telegram', icon: '📣', title: 'Message on Telegram', hint: 'Needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets', make: () => step('Message on Telegram', { run: 'curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \\\n  --data-urlencode chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \\\n  --data-urlencode text="✅ ${{ github.repository }}: ${{ github.workflow }} finished (${{ github.sha }})"' }) },
   { key: 'wait', icon: '⏱️', title: 'Wait a little', hint: 'Give a service time to start', make: () => step('Wait 10 seconds', { run: 'sleep 10' }) },
+  { key: 'build-site', icon: '🟩', title: 'Build the site on the server (no Docker)', hint: "Vue / React / Vite: install + npm run build with the server user's Node.js", make: (s) => step('Install and build', { run: `cd ${appFolder(s)}\nif [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use -s >/dev/null 2>&1 || true; fi\nif [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi\nnpm run build` }) },
 ];
 
 /** Whole jobs you can add (`s` = the server picked for it, `servers` = the project's). */
@@ -54,6 +55,8 @@ export const JOB_LIBRARY = [
     make: () => job('build', 'Build the Docker image', GH, [STEP_LIBRARY[0].make(), step('Log in to GitHub Packages', { uses: 'docker/login-action@v3', with: { registry: 'ghcr.io', username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' } }), step('Build and push', { run: 'IMAGE=ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr "[:upper:]" "[:lower:]")\ndocker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .\ndocker push --all-tags "$IMAGE"' })]) },
   { key: 'deploy', icon: '🚀', title: 'Deploy on a server', hint: 'On your server: git pull + Docker Compose rebuild', server: true,
     make: (s) => job(`deploy-${slug(s?.label)}`, `Deploy on ${s?.name || 'server'}`, s ? onServer(s) : { kind: 'server', label: 'my-server' }, [STEP_LIBRARY[4].make(s), STEP_LIBRARY[5].make(s), STEP_LIBRARY[8].make(s)]) },
+  { key: 'deploy-site', icon: '🚀', title: 'Deploy on a server — no Docker', hint: 'On your server: git pull + npm run build (Vue / React)', server: true,
+    make: (s) => job(`deploy-${slug(s?.label)}`, `Deploy on ${s?.name || 'server'}`, s ? onServer(s) : { kind: 'server', label: 'my-server' }, [STEP_LIBRARY[4].make(s), STEP_LIBRARY.find((x) => x.key === 'build-site').make(s)]) },
   { key: 'health', icon: '🩺', title: 'Check a server is healthy', hint: 'On your server: the app answers', server: true,
     make: (s) => job(`check-${slug(s?.label)}`, `Check ${s?.name || 'server'}`, s ? onServer(s) : { kind: 'server', label: 'my-server' }, [STEP_LIBRARY[8].make(s)]) },
   { key: 'live-waits', icon: '⏸️', title: 'Live server waits for Switchboard', hint: 'Switchboard holds the live server until you click "Deploy now"', server: false,
