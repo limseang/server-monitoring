@@ -7,6 +7,7 @@ import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
 import { StatusHero } from '../statushero.js';
 import { ProxyTab } from '../proxy.js';
+import { FRONTEND_SCRIPT, PM2_SCRIPT } from '../deploypresets.js';
 
 const BACKUP_PRESETS = [
   ['Daily 3:00', '0 3 * * *'],
@@ -78,7 +79,7 @@ const ProjectSettings = {
       }
     }
     const del = () => openDialog('delete-project', { project: p });
-    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT };
+    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT, FRONTEND_SCRIPT, PM2_SCRIPT };
   },
   template: `
   <div class="stack">
@@ -147,7 +148,11 @@ const ProjectSettings = {
       <div class="hint" style="margin-top:-6px">Run inside the app container (or in the app folder if no container is set). Laravel: <code>php artisan down --retry=60</code> / <code>php artisan up</code>.</div>
       <div class="field"><label>Deploy script</label><textarea v-model="f.deploy_script" class="code" rows="5" :placeholder="DEPLOY_EXAMPLE"></textarea>
         <span class="hint">Runs in the app folder with bash, stops at the first error. "Deploy to all" runs standby servers first, the live one last.
-          <button type="button" class="btn btn-xs" @click="f.deploy_script = DOCKER_SCRIPT">Use: pull from Git + rebuild with Docker</button></span></div>
+          <span class="row gap-6 wrap mt-8">
+            <button type="button" class="btn btn-xs" @click="f.deploy_script = DOCKER_SCRIPT" title="docker compose up -d --build">🐳 Use: Docker Compose</button>
+            <button type="button" class="btn btn-xs" @click="f.deploy_script = FRONTEND_SCRIPT" title="Vue, React, Vite, Angular: git pull, install, npm run build. nginx serves the built folder (Web proxy → Website files).">📁 Use: Front-end build (Vue / React)</button>
+            <button type="button" class="btn btn-xs" @click="f.deploy_script = PM2_SCRIPT" title="Nuxt, Next, Express… with PM2: git pull, install, build, pm2 reload">⚙ Use: Node app with PM2</button>
+          </span></span></div>
       <label class="check"><input type="checkbox" v-model="f.purge_cache"><span class="check-text"><b>Purge Cloudflare cache after switching</b><span class="hint">Your token needs the "Cache Purge" permission.</span></span></label>
     </div>
 

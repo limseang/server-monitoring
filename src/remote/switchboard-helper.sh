@@ -13,6 +13,7 @@
 #   switchboard-helper preview-down <project> <pr>      remove a pull request preview
 #   switchboard-helper preview-list <project>
 #   switchboard-helper edge-site <name> <port> <host...>    web proxy: domain → 127.0.0.1:<port>
+#   switchboard-helper edge-static <name> <folder> <spa 0|1> <host...>  web proxy: domain → website files
 #   switchboard-helper edge-rm <name>
 #   switchboard-helper version
 set -euo pipefail
@@ -113,11 +114,33 @@ map $http_upgrade $sb_upgrade { default upgrade; '' close; }
 map $http_x_forwarded_proto $sb_proto { default $http_x_forwarded_proto; '' $scheme; }
 EOF
   if [ "$mode" = container ] && ! docker ps --format '{{.Names}}' | grep -qx switchboard-edge; then
-    docker rm -f switchboard-edge >/dev/null 2>&1 || true
-    docker run -d --name switchboard-edge --restart unless-stopped --network host \
-      -v "$ETC/edge/conf.d:/etc/nginx/conf.d:ro" -v "$ETC/edge/ssl:$ETC/edge/ssl:ro" "$EDGE_IMAGE" >/dev/null
-    sleep 1
+    edge_container_run
   fi
+}
+
+# (Re)create the nginx container. Website folders (edge-static) are mounted read-only at /sb-static/<name>:
+# the folder's PARENT is mounted, because builds (npm run build) often delete and recreate dist/ — a mount of
+# dist itself would keep pointing at the deleted folder.
+static_mount_src() { local d=$1 p; p=$(dirname "$d"); if [ "$p" = / ]; then echo "$d"; else echo "$p"; fi; }
+static_root_in() { local d=$1 p; p=$(dirname "$d"); if [ "$p" = / ]; then echo "/sb-static/$2"; else echo "/sb-static/$2/$(basename "$d")"; fi; }
+edge_container_run() {
+  local mounts=() f n d
+  mkdir -p "$ETC/edge/static"
+  for f in "$ETC"/edge/static/*; do
+    [ -f "$f" ] || continue
+    n=${f##*/}
+    d=$(cat "$f")
+    [ -d "$(static_mount_src "$d")" ] && mounts+=(-v "$(static_mount_src "$d"):/sb-static/$n:ro")
+  done
+  docker rm -f switchboard-edge >/dev/null 2>&1 || true
+  docker run -d --name switchboard-edge --restart unless-stopped --network host \
+    -v "$ETC/edge/conf.d:/etc/nginx/conf.d:ro" -v "$ETC/edge/ssl:$ETC/edge/ssl:ro" ${mounts[@]+"${mounts[@]}"} "$EDGE_IMAGE" >/dev/null
+  sleep 1
+}
+
+# Does the container see the folder (mounted at /sb-static/<name> from the same place)?
+edge_has_mount() {
+  docker inspect switchboard-edge --format '{{range .Mounts}}{{.Source}}={{.Destination}}{{println}}{{end}}' 2>/dev/null | grep -qx "$2=/sb-static/$1"
 }
 
 # edge_site <name> <port> <host...>
@@ -168,9 +191,62 @@ EOF
   say "Web proxy: $* → 127.0.0.1:$port"
 }
 
+# edge_static <name> <folder> <spa 0|1> <host...> — serve built website files (Vue/React/Angular "dist"…).
+# spa=1: unknown paths get index.html, so refreshing /about in a single-page app does not give 404.
+edge_static() {
+  local name=$1 dir=$2 spa=$3 root fallback='=404'
+  shift 3
+  local f crt="$ETC/edge/ssl/cert.pem" key="$ETC/edge/ssl/key.pem"
+  if [ -s "$ETC/edge/ssl/site-$name.pem" ] && [ -s "$ETC/edge/ssl/site-$name.key" ]; then
+    crt="$ETC/edge/ssl/site-$name.pem"
+    key="$ETC/edge/ssl/site-$name.key"
+  fi
+  mkdir -p "$ETC/edge/static"
+  echo "$dir" >"$ETC/edge/static/$name"
+  if [ "$(edge_mode)" = host ]; then root=$dir; else root=$(static_root_in "$dir" "$name"); fi
+  [ "$spa" = 1 ] && fallback='/index.html'
+  f="$(edge_dir)/sb-$name.conf"
+  cat >"$f.tmp" <<NGINX
+# Switchboard: $name → folder $dir
+server {
+  listen 80;
+  listen 443 ssl;
+  server_name $*;
+  ssl_certificate $crt;
+  ssl_certificate_key $key;
+  root $root;
+  index index.html;
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml text/plain;
+  # Built files have a hash in their name: cache them long. index.html is never cached, so a new deploy shows at once.
+  location ~* \.(?:js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|map)\$ {
+    expires 30d;
+    add_header Cache-Control "public";
+    try_files \$uri =404;
+  }
+  location = /index.html { add_header Cache-Control "no-cache"; }
+  location / {
+    try_files \$uri \$uri/ $fallback;
+  }
+}
+NGINX
+  mv "$f.tmp" "$f"
+  if [ "$(edge_mode)" = container ] && ! edge_has_mount "$name" "$(static_mount_src "$dir")"; then
+    say "Web proxy: give the nginx container the folder $dir (it restarts in a second)"
+    edge_container_run
+  fi
+  if ! edge_reload; then
+    rm -f "$f" "$ETC/edge/static/$name"
+    edge_reload || true
+    die "nginx rejected the site config for $name"
+  fi
+  say "Web proxy: $* → folder $dir$([ "$spa" = 1 ] && echo ' (single-page app)')"
+}
+
 edge_rm() {
   local f
   f="$(edge_dir)/sb-$1.conf"
+  rm -f "$ETC/edge/static/$1"
   [ -f "$f" ] || return 0
   rm -f "$f"
   edge_reload || true
@@ -442,6 +518,22 @@ cmd_edge_site() {
   edge_site "$@"
 }
 
+cmd_edge_static() {
+  [[ "${1:-}" =~ ^[a-z0-9][a-z0-9.-]{0,120}$ ]] || die "bad site name: ${1:-}"
+  local dir=${2:-}
+  dir=${dir%/}
+  [[ "$dir" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "bad folder: $dir"
+  [[ "$dir" =~ (^|/)\.\.?(/|$) ]] && die "bad folder: $dir"
+  case "$dir" in /etc|/etc/*|/root|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/boot|/boot/*|/bin|/sbin|/usr|/lib|/lib64|/var|/home|/srv|"$ETC"|"$ETC"/*) die "won't serve $dir to the internet — choose the folder with the built website (e.g. .../dist)" ;; esac
+  [ -d "$dir" ] || die "folder $dir does not exist on this server"
+  [[ "${3:-}" =~ ^[01]$ ]] || die 'spa must be 0 or 1'
+  [ $# -ge 4 ] || die 'give at least one host name'
+  local h
+  for h in "${@:4}"; do [[ "$h" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || die "bad host name: $h"; done
+  edge_init
+  edge_static "$1" "$dir" "$3" "${@:4}"
+}
+
 cmd_edge_rm() {
   [[ "${1:-}" =~ ^[a-z0-9][a-z0-9.-]{0,120}$ ]] || die "bad site name: ${1:-}"
   [ -n "$(edge_mode)" ] || { say 'No web proxy on this server'; return 0; }
@@ -452,6 +544,7 @@ cmd_edge_rm() {
 case "${1:-}" in
   setup) shift; cmd_setup "$@" ;;
   edge-site) shift; cmd_edge_site "$@" ;;
+  edge-static) shift; cmd_edge_static "$@" ;;
   edge-rm) shift; cmd_edge_rm "$@" ;;
   scaffold-laravel) shift; cmd_scaffold_laravel "$@" ;;
   init-repo) shift; cmd_init_repo "$@" ;;
@@ -460,5 +553,5 @@ case "${1:-}" in
   preview-down) shift; cmd_preview_down "$@" ;;
   preview-list) shift; cmd_preview_list "$@" ;;
   version) echo '__VERSION__' ;;
-  *) sed -n '2,17p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac

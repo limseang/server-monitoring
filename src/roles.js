@@ -44,7 +44,7 @@ const DEVELOPER = [
 ];
 
 // GETs that only admins may make (secrets, data dumps, server internals).
-const ADMIN_ONLY_GET = [/^\/github\//, /^\/servers\/\d+\/users$/, /^\/backups\/\d+\/download$/, /^\/users$/, /^\/servers\/\d+\/discover/, /^\/cloudflare\//, /^\/servers\/\d+\/clone/, /^\/servers\/\d+\/folders/, /^\/servers\/\d+\/nginx/];
+const ADMIN_ONLY_GET = [/^\/github\//, /^\/servers\/\d+\/users$/, /^\/backups\/\d+\/download$/, /^\/users$/, /^\/servers\/\d+\/discover/, /^\/cloudflare\//, /^\/servers\/\d+\/clone/, /^\/servers\/\d+\/folders/, /^\/servers\/\d+\/nginx/, /^\/projects\/\d+\/proxy\/folders$/];
 
 function match(list, req) {
   for (const [method, re, extra] of list) {

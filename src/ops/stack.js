@@ -14,7 +14,7 @@ import { asRoot, runRemote, shq } from './remote.js';
  *   /etc/switchboard/projects/<slug>.deploy.sh      the project's deploy script
  */
 
-export const HELPER_VERSION = '5';
+export const HELPER_VERSION = '6';
 export const HELPER = '/usr/local/bin/switchboard-helper';
 export const EDGE_IMAGE = 'nginx:1.27-alpine';
 const REMOTE_DIR = path.join(config.root, 'src/remote');

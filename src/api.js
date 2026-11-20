@@ -54,7 +54,8 @@ import * as gh from './github.js';
 import { TEMPLATES, DB_NAMES } from './ops/stack.js';
 import { templateProjectRow } from './ops/provision.js';
 import * as nginxSites from './ops/nginxsites.js';
-import { parseHosts } from './ops/proxy.js';
+import './ops/proxy.js';
+import { parseHosts, cleanSiteFolder, findFoldersScript, parseFolders } from './ops/proxycheck.js';
 import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, listFolders, makeFolder, cleanFolder } from './ops/serverctl.js';
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
@@ -2687,6 +2688,14 @@ api.post('/projects/:id/proxy', (req, res) => {
   const servers = (Array.isArray(req.body.servers) ? req.body.servers : []).map((s) => {
     const d = deps.find((x) => x.id === Number(s?.deployment));
     if (!d) throw bad('Unknown server for this project');
+    if (s.folder) {
+      // a front-end that does not run in Docker: nginx serves its built files
+      try {
+        return { deployment: d.id, folder: cleanSiteFolder(s.folder), spa: s.spa !== false };
+      } catch (e) {
+        throw bad(`${d.server_name}: ${e.message}`);
+      }
+    }
     const port = int(s.port, 0, 1, 65535);
     if (!port) throw bad(`Choose the port of the app on ${d.server_name}`);
     if ([22, 80, 443].includes(port)) throw bad(`Port ${port} is not the app (it is SSH or the web proxy itself) — choose the app's own port on ${d.server_name}`);
@@ -2702,6 +2711,22 @@ api.post('/projects/:id/proxy', (req, res) => {
   });
   audit(req, 'info', `Web proxy for ${p.name}: ${hosts.join(', ')}`, { projectId: p.id, jobId: job.id });
   res.json({ job });
+});
+
+// Built website folders on each server of the project (Vue/React "dist" and friends), for the setup dialog.
+api.get('/projects/:id/proxy/folders', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const out = {};
+  await Promise.all(deploymentsOf(p.id).map(async (d) => {
+    try {
+      const s = getServer(d.server_id);
+      const r = await withSSH(s, (conn) => exec(conn, asRoot(s, findFoldersScript([d.app_dir].filter(Boolean)))), { timeout: 20000 });
+      out[d.id] = { ok: true, folders: parseFolders(r.stdout) };
+    } catch (e) {
+      out[d.id] = { ok: false, folders: [], error: e.message };
+    }
+  }));
+  res.json(out);
 });
 
 api.delete('/projects/:id/proxy', (req, res) => {

@@ -15,7 +15,7 @@ import { reducedMotion } from './live.js';
  *   ProxyLive    the job window's live view (job progress kind "proxy")
  */
 
-const PHASE_TEXT = { check: 'Looking for your app…', write: 'Writing the nginx config…', test: 'Testing it…', done: 'Working', '': 'Waiting' };
+const PHASE_TEXT = { check: 'Looking for your app or files…', write: 'Writing the nginx config…', test: 'Testing it…', done: 'Working', '': 'Waiting' };
 
 export const ProxyFlow = {
   props: { rows: Array, hosts: Array, remove: Boolean },
@@ -39,7 +39,12 @@ export const ProxyFlow = {
       const a = (Math.PI / 3) * k + Math.PI / 6;
       return `${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`;
     }).join(' ');
-    return { still, H, view, hostText, hex, PHASE_TEXT };
+    // the last part of a folder, short enough for the box: /var/www/shop/dist → dist
+    const leaf = (f) => {
+      const x = String(f || '').split('/').filter(Boolean).pop() || '/';
+      return x.length > 7 ? `${x.slice(0, 6)}…` : x;
+    };
+    return { still, H, view, hostText, hex, leaf, PHASE_TEXT };
   },
   template: `
   <svg class="pf" :class="{ 'pf-still': still }" :viewBox="'0 0 480 ' + H" role="img" :aria-label="'Visitors of ' + hostText + ' go through nginx to your app'">
@@ -49,7 +54,7 @@ export const ProxyFlow = {
     </defs>
     <text x="40" y="12" text-anchor="middle" class="pf-cap">visitors</text>
     <text x="240" y="12" text-anchor="middle" class="pf-cap">nginx</text>
-    <text x="440" y="12" text-anchor="middle" class="pf-cap">your app</text>
+    <text x="440" y="12" text-anchor="middle" class="pf-cap">your app / site</text>
 
     <g v-for="r in view" :key="r.id" class="pf-row" :class="['pf-' + r.st, 'ph-' + (r.phase || 'none')]">
       <!-- wires -->
@@ -85,8 +90,14 @@ export const ProxyFlow = {
       <!-- the app -->
       <g :transform="'translate(408,' + (r.y - 15) + ')'" class="pf-app">
         <rect width="64" height="30" rx="7" />
-        <circle cx="10" cy="10" r="2" class="pf-led" /><circle cx="10" cy="20" r="2" class="pf-led l2" />
-        <text x="38" y="19.5" text-anchor="middle" class="pf-port">{{ r.port ? ':' + r.port : ':?' }}</text>
+        <template v-if="r.folder">
+          <path d="M7 9.5 h6 l2 2.2 h9 v9.8 h-17 z" class="pf-folder" />
+          <text x="44" y="19.5" text-anchor="middle" class="pf-port">{{ leaf(r.folder) }}</text>
+        </template>
+        <template v-else>
+          <circle cx="10" cy="10" r="2" class="pf-led" /><circle cx="10" cy="20" r="2" class="pf-led l2" />
+          <text x="38" y="19.5" text-anchor="middle" class="pf-port">{{ r.port ? ':' + r.port : ':?' }}</text>
+        </template>
         <circle v-if="r.st === 'running' && r.phase === 'check' && !still" cx="32" cy="15" r="16" class="pf-radar" />
       </g>
 
@@ -103,10 +114,27 @@ export const ProxyDialog = {
     const p = props.project;
     const hosts = ref((p.proxy?.hosts || [p.domain].filter(Boolean)).join(' '));
     const scans = reactive({});
+    const folders = reactive({});
     const rows = reactive(
-      p.deployments.map((d) => ({ id: d.id, server_id: d.server_id, name: d.server_name, live: d.is_active, on: true, port: d.proxy_state?.port || d.app_port || '' })),
+      p.deployments.map((d) => {
+        const st = d.proxy_state || {};
+        return {
+          id: d.id, server_id: d.server_id, name: d.server_name, live: d.is_active, on: true,
+          // "port": an app that runs (Docker, PM2, Node…) · "folder": built website files (Vue/React dist)
+          kind: st.kind === 'folder' ? 'folder' : st.kind === 'port' ? 'port' : d.app_container ? 'port' : '',
+          port: st.port || d.app_port || '', folder: st.folder || '', spa: st.spa !== false,
+        };
+      }),
     );
     onMounted(() => {
+      http.get(`/projects/${p.id}/proxy/folders`).then((x) => {
+        for (const r of rows) {
+          folders[r.id] = x[r.id]?.folders || [];
+          if (!r.folder && folders[r.id][0]) r.folder = folders[r.id][0];
+          // no container and built files found → most likely a front-end: start with "Website files"
+          if (!r.kind) r.kind = folders[r.id].length && !(scans[r.id] || []).some((q) => q.project?.id === p.id) ? 'folder' : 'port';
+        }
+      }).catch(() => rows.forEach((r) => ((folders[r.id] = []), r.kind || (r.kind = 'port'))));
       for (const r of rows) {
         http.get(`/servers/${r.server_id}/ports`).then((x) => {
           // what an app can be: not SSH, DNS or the web proxy itself; this project's containers first
@@ -120,15 +148,17 @@ export const ProxyDialog = {
     const list = computed(() => String(hosts.value).toLowerCase().split(/[\s,]+/).filter(Boolean));
     const hostOk = computed(() => list.value.length > 0 && list.value.every((h) => /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/.test(h)));
     const chosen = computed(() => rows.filter((r) => r.on));
-    const preview = computed(() => rows.map((r) => ({ ...r, state: r.on ? 'preview' : 'off' })));
+    const preview = computed(() => rows.map((r) => ({ ...r, port: r.kind === 'folder' ? null : r.port, folder: r.kind === 'folder' ? r.folder : null, state: r.on ? 'preview' : 'off' })));
     const portOk = (r) => /^\d{1,5}$/.test(String(r.port)) && ![22, 80, 443].includes(Number(r.port));
-    const ready = computed(() => hostOk.value && chosen.value.length && chosen.value.every(portOk));
+    const folderOk = (r) => /^\/[A-Za-z0-9._/@+-]+$/.test(String(r.folder).trim()) && !/(^|\/)\.\.?(\/|$)/.test(r.folder);
+    const rowOk = (r) => (r.kind === 'folder' ? folderOk(r) : portOk(r));
+    const ready = computed(() => hostOk.value && chosen.value.length && chosen.value.every(rowOk));
     const addWww = computed(() => list.value.length === 1 && list.value[0].split('.').length === 2 ? `www.${list.value[0]}` : '');
     const busy = ref(false);
     async function go() {
       busy.value = true;
       try {
-        const r = await http.post(`/projects/${p.id}/proxy`, { hosts: hosts.value, servers: chosen.value.map((x) => ({ deployment: x.id, port: Number(x.port) })) });
+        const r = await http.post(`/projects/${p.id}/proxy`, { hosts: hosts.value, servers: chosen.value.map((x) => (x.kind === 'folder' ? { deployment: x.id, folder: x.folder.trim(), spa: x.spa } : { deployment: x.id, port: Number(x.port) })) });
         closeDialog();
         showJob(r.job.id);
       } catch (e) {
@@ -138,14 +168,14 @@ export const ProxyDialog = {
       }
     }
     const pname = (q) => `${q.port} — ${q.container || q.process || 'program'}${q.project ? ' · ' + q.project.name : ''}`;
-    return { p, hosts, list, hostOk, rows, scans, preview, portOk, ready, addWww, busy, go, pname, closeDialog };
+    return { p, hosts, list, hostOk, rows, scans, folders, preview, portOk, folderOk, ready, addWww, busy, go, pname, closeDialog };
   },
   template: `
   <modal :title="(p.proxy ? 'Change' : 'Set up') + ' the web proxy — ' + p.name" @close="closeDialog">
     <div class="form px-form">
       <div class="px-hero">
         <proxy-flow :rows="preview.filter(r => r.on).length ? preview.filter(r => r.on) : preview" :hosts="list" />
-        <p class="small muted" style="margin:6px 0 0">Visitors type <b>{{ list[0] || 'your domain' }}</b> → <b>nginx</b> on your server receives them → it passes them to <b>your app</b>. HTTPS behind Cloudflare, websockets and big uploads are set up for you.</p>
+        <p class="small muted" style="margin:6px 0 0">Visitors type <b>{{ list[0] || 'your domain' }}</b> → <b>nginx</b> on your server receives them → it passes them to <b>your app</b>, or shows your <b>website files</b> (a built Vue / React / Angular site). HTTPS behind Cloudflare is set up for you.</p>
       </div>
 
       <div class="px-step"><span class="px-num">1</span><div class="grow">
@@ -155,20 +185,36 @@ export const ProxyDialog = {
       </div></div>
 
       <div class="px-step"><span class="px-num">2</span><div class="grow">
-        <label class="px-label">Where does your app listen on each server?</label>
+        <label class="px-label">What should visitors get on each server?</label>
         <div class="px-servers">
-          <label v-for="r in rows" :key="r.id" class="px-srv" :class="{ off: !r.on }">
-            <input type="checkbox" v-model="r.on">
-            <span class="px-srv-name"><b>{{ r.name }}</b><span v-if="r.live" class="badge badge-green">LIVE</span></span>
-            <select v-if="scans[r.id] && scans[r.id].length" v-model="r.port" :disabled="!r.on">
-              <option v-for="q in scans[r.id]" :key="q.port" :value="q.port">{{ pname(q) }}</option>
-              <option v-if="r.port && !scans[r.id].some(q => q.port === Number(r.port))" :value="r.port">{{ r.port }} — typed</option>
-            </select>
-            <span v-else-if="!scans[r.id]" class="tiny muted"><span class="spinner"></span> looking…</span>
-            <input v-model="r.port" class="code px-port" :class="{ bad: r.on && r.port && !portOk(r) }" placeholder="port" :disabled="!r.on" inputmode="numeric">
-          </label>
+          <div v-for="r in rows" :key="r.id" class="px-srv-card" :class="{ off: !r.on }">
+            <div class="px-srv-top">
+              <label class="px-srv-name"><input type="checkbox" v-model="r.on"><b>{{ r.name }}</b><span v-if="r.live" class="badge badge-green">LIVE</span></label>
+              <div class="seg px-kind" role="tablist">
+                <button type="button" :class="{ on: r.kind === 'port' }" :disabled="!r.on" @click="r.kind = 'port'" title="Docker, PM2, Node, PHP… anything that answers on a port">⚙ App on a port</button>
+                <button type="button" :class="{ on: r.kind === 'folder' }" :disabled="!r.on" @click="r.kind = 'folder'" title="A built front-end: Vue, React, Angular, plain HTML">📁 Website files</button>
+              </div>
+            </div>
+            <div v-if="r.kind === 'folder'" class="px-srv-row">
+              <select v-if="folders[r.id] && folders[r.id].length" v-model="r.folder" :disabled="!r.on">
+                <option v-for="f in folders[r.id]" :key="f" :value="f">{{ f }}</option>
+                <option v-if="r.folder && !folders[r.id].includes(r.folder)" :value="r.folder">{{ r.folder }} — typed</option>
+              </select>
+              <span v-else-if="!folders[r.id]" class="tiny muted"><span class="spinner"></span> looking for built sites…</span>
+              <input v-model="r.folder" class="code" :class="{ bad: r.on && r.folder && !folderOk(r) }" placeholder="/var/www/my-site/dist" :disabled="!r.on">
+              <label class="check small px-spa"><input type="checkbox" v-model="r.spa" :disabled="!r.on"><span>Single-page app (Vue / React router) — refreshing a page does not give 404</span></label>
+            </div>
+            <div v-else class="px-srv-row">
+              <select v-if="scans[r.id] && scans[r.id].length" v-model="r.port" :disabled="!r.on">
+                <option v-for="q in scans[r.id]" :key="q.port" :value="q.port">{{ pname(q) }}</option>
+                <option v-if="r.port && !scans[r.id].some(q => q.port === Number(r.port))" :value="r.port">{{ r.port }} — typed</option>
+              </select>
+              <span v-else-if="!scans[r.id]" class="tiny muted"><span class="spinner"></span> looking…</span>
+              <input v-model="r.port" class="code px-port" :class="{ bad: r.on && r.port && !portOk(r) }" placeholder="port" :disabled="!r.on" inputmode="numeric">
+            </div>
+          </div>
         </div>
-        <div class="hint">Keep every server ticked: then switching servers keeps the site working.</div>
+        <div class="hint">Keep every server ticked: then switching servers keeps the site working. Website files: the folder with <code>index.html</code> after the build (<code>npm run build</code> → usually <code>dist</code>).</div>
       </div></div>
     </div>
     <template #footer>
@@ -187,14 +233,14 @@ export const ProxyTab = {
     const rows = computed(() =>
       p.value.deployments.map((d) => {
         const s = d.proxy_state;
-        return { id: d.id, name: d.server_name, live: d.is_active, port: s?.port || d.app_port || null, code: s?.code || null, error: s?.error || null, note: s?.note || null, at: s?.at, state: !s ? 'off' : s.ok ? 'success' : 'failure' };
+        return { id: d.id, name: d.server_name, live: d.is_active, port: s?.folder ? null : s?.port || d.app_port || null, folder: s?.folder || null, spa: s?.spa, code: s?.code || null, error: s?.error || null, note: s?.note || null, at: s?.at, state: !s ? 'off' : s.ok ? 'success' : 'failure' };
       }),
     );
     const any = computed(() => rows.value.some((r) => r.state !== 'off'));
     const open = () => openDialog('proxy', { project: p.value });
     const again = () => runJob(http.post(`/projects/${p.value.id}/proxy`, {
       hosts: p.value.proxy.hosts.join(' '),
-      servers: rows.value.filter((r) => r.state !== 'off' && r.port).map((r) => ({ deployment: r.id, port: r.port })),
+      servers: rows.value.filter((r) => r.state !== 'off' && (r.port || r.folder)).map((r) => (r.folder ? { deployment: r.id, folder: r.folder, spa: r.spa !== false } : { deployment: r.id, port: r.port })),
     }));
     async function remove() {
       const ok = await confirmBox({ title: 'Remove the web proxy?', message: `nginx stops sending ${p.value.proxy?.hosts?.join(', ') || 'the domain'} to the app on every server. Your app keeps running; visitors can't reach it through the domain until you set it up again.`, confirmText: 'Remove', danger: true });
@@ -216,7 +262,7 @@ export const ProxyTab = {
       <proxy-flow :rows="rows" :hosts="p.proxy ? p.proxy.hosts : (p.domain ? [p.domain] : [])" />
       <div v-if="any && p.proxy" class="px-hosts"><a v-for="h in p.proxy.hosts" :key="h" :href="'https://' + h" target="_blank" rel="noopener" class="mono small">{{ h }} ↗</a></div>
       <div v-for="r in rows.filter(r => r.error || r.note)" :key="r.id" class="small" :class="r.error ? 'text-red' : 'muted'">{{ r.name }}: {{ r.error || r.note }}</div>
-      <p v-if="!any" class="small muted" style="margin:8px 0 0">Not set up yet. Does your app answer on a port like 8080 or 3000 but not on your domain? Click <b>Set up web proxy</b> — Switchboard puts nginx in front of it on each server. Works even if nginx is not installed.</p>
+      <p v-if="!any" class="small muted" style="margin:8px 0 0">Not set up yet. Does your app answer on a port like 8080 or 3000 but not on your domain — or is it a built Vue / React site in a folder? Click <b>Set up web proxy</b> — Switchboard puts nginx in front of it on each server. Works even if nginx is not installed.</p>
     </div>
   </div>`,
 };
