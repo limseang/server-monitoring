@@ -1303,6 +1303,10 @@ api.get('/projects/:id', (req, res) => {
     parent_name: p.parent_id ? getProject(p.parent_id)?.name : null,
     // How to clone it on a PC (the project page's "Use on my PC")
     git_urls: p.git_repo ? { ssh: gh.gitUrl(p.git_repo), https: `${gh.webUrl(p.git_repo)}.git`, web: gh.webUrl(p.git_repo) } : null,
+    // For the "How to use" guide: the app has Switchboard's Makefile, and which optional parts it runs
+    has_makefile: !!(parseJSON(p.template_opts, {}) || {}).makefile,
+    ssh_users: Object.fromEntries(data.deployments.map((d) => [d.server_id, getServer(d.server_id)?.ssh_user || 'root'])),
+    services: (parseJSON(p.template_opts, {}) || {}).services || null,
     group_parts: p.group_name ? all('SELECT id, name FROM projects WHERE group_name = ? AND id != ? ORDER BY name', p.group_name, p.id) : [],
     traffic: trafficNow(data.deployments.map((d) => d.server_id)),
     tool_check: { needs: projectNeeds(p), servers: missingFor(p) },
@@ -2012,7 +2016,7 @@ function uniqueSlug(name) {
 
 api.get('/templates', (req, res) => {
   res.json({
-    templates: Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, dbs: t.dbs, host: !!t.host, needs: templateNeeds(id) })),
+    templates: Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, dbs: t.dbs, host: !!t.host, services: t.services || [], needs: templateNeeds(id) })),
     dbs: DB_NAMES,
     github: gh.hasToken(),
   });
@@ -2086,7 +2090,9 @@ api.post('/projects/from-template', (req, res) => {
   let healthPath = str(b.health_path, 200) || '/';
   if (!healthPath.startsWith('/')) healthPath = `/${healthPath}`;
   const appDir = b.folder ? appFolderInput(b.folder) : null;
-  const row = templateProjectRow({ name, template, db, domain, repo, branch, extraHosts, appPort, healthPath });
+  const allServices = (t.services || []).map((s) => s.key);
+  const services = Array.isArray(b.services) ? b.services.filter((k) => allServices.includes(k)) : allServices;
+  const row = templateProjectRow({ name, template, db, domain, repo, branch, extraHosts, appPort, healthPath, services: allServices.length ? services : null });
   const id = insert('projects', { ...row, slug: uniqueSlug(name), created_at: now() });
   const job = enqueue({
     type: 'provision',
@@ -2567,7 +2573,7 @@ api.post('/projects/:id/staging', (req, res) => {
   const branch = branchInput(req.body.branch, 'staging');
   const label = str(req.body.label, 30) || 'staging';
   const opts = parseJSON(p.template_opts, {}) || {};
-  const row = templateProjectRow({ name: `${p.name} (${label})`, template: p.template, db: opts.db || 'none', domain, repo: p.git_repo, branch, env: 'staging', parentId: p.id });
+  const row = templateProjectRow({ name: `${p.name} (${label})`, template: p.template, db: opts.db || 'none', domain, repo: p.git_repo, branch, env: 'staging', parentId: p.id, services: opts.services || null });
   row.ci_test_cmd = null;
   const id = insert('projects', { ...row, slug: uniqueSlug(`${p.slug}-${label}`), created_at: now() });
   const job = enqueue({

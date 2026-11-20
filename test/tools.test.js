@@ -70,3 +70,21 @@ test('starter apps are real projects with folders (Vue/Vite front-end, Node app)
   assert.ok(scaffoldFiles('static', 'X')['index.html']);
   assert.ok(fe['.gitignore'].includes('node_modules/') && fe['.gitignore'].includes('.env'));
 });
+
+test('Laravel stack: chosen parts become compose profiles, a Makefile controls it, .env for a PC', async () => {
+  const { makeFiles, composeFile, projectConf } = await import('../src/ops/stack.js');
+  const yml = composeFile('laravel', 'mysql');
+  assert.match(yml, /queue:\n\s+<<: \*app\n\s+profiles: \[queue\]/);
+  assert.match(yml, /redis:\n\s+image: redis:7-alpine\n\s+profiles: \[redis\]/);
+  assert.match(yml, /redis: \{ condition: service_started, required: false \}/);
+  const mf = makeFiles('laravel', 'cinema-api', 'mysql', ['queue']);
+  for (const t of ['start', 'stop', 'restart', 'logs', 'shell', 'artisan', 'migrate', 'db', 'setup']) assert.match(mf.Makefile, new RegExp(`^${t}: ## `, 'm'), t);
+  for (const line of mf.Makefile.split('\n')) if (/^ +\S/.test(line)) assert.fail(`Makefile line must start with a tab: ${line}`);
+  assert.match(mf['.switchboard/local-env.sh'], /setv COMPOSE_PROFILES 'queue'/);
+  assert.match(mf['.switchboard/local-env.sh'], /setv CACHE_STORE 'database'/); // no Redis chosen
+  assert.deepEqual(makeFiles('frontend', 'x'), {}); // no Docker: no Makefile
+  assert.ok(!makeFiles('node', 'x').Makefile.includes('artisan'));
+  const conf = (opts) => projectConf({ slug: 'a', name: 'A', template: 'laravel', template_opts: JSON.stringify(opts) }, { app_dir: '/srv/a' }, { ssh_user: 'root' });
+  assert.match(conf({ db: 'mysql', services: ['queue'] }), /SB_SERVICES='?queue'?/);
+  assert.match(conf({ db: 'mysql' }), /SB_SERVICES='?queue,scheduler,redis'?/); // made before the choice: everything
+});

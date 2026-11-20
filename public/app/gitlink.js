@@ -1,7 +1,7 @@
 // Starter project → "Link with GitHub": a new repository with the server's code, a congratulation,
 // and how to clone / run / pull / push it on your own computer ("Use on my PC").
 import { ref, reactive, computed, onMounted, onUnmounted } from '/vendor/vue.js';
-import { store, http, toast, closeDialog, openDialog } from './lib.js';
+import { store, http, toast, closeDialog, openDialog, runJob } from './lib.js';
 import { Modal } from './components.js';
 
 /** Commands to get the project onto a PC and work with it, for this kind of app. */
@@ -9,11 +9,15 @@ export function cloneSteps(p) {
   const urls = p.git_urls || {};
   const folder = (p.git_repo || '').split('/')[1] || p.slug;
   const branch = p.git_branch || 'main';
-  const run = {
-    laravel: { title: 'Run it', cmd: 'composer install\ncp .env.example .env\nphp artisan key:generate\nphp artisan serve        # http://localhost:8000', note: 'Needs PHP 8.4 and Composer on your PC.' },
+  const port = p.template === 'laravel' ? 8000 : 3000;
+  const run = p.has_makefile
+    ? { title: 'Run it (with Docker)', cmd: `make setup               # first time: makes .env, builds and starts — http://localhost:${port}\nmake                     # shows every command: make start, make stop, make logs…`, note: 'Needs Docker Desktop on your PC (docker.com). The whole stack runs the same as on the server.' }
+    : {
+    laravel:{ title: 'Run it', cmd: 'composer install\ncp .env.example .env\nphp artisan key:generate\nphp artisan serve        # http://localhost:8000', note: 'Needs PHP 8.4 and Composer on your PC.' },
     frontend: { title: 'Run it', cmd: 'npm install\nnpm run dev              # http://localhost:5173 — changes show at once', note: 'Needs Node.js on your PC (nodejs.org).' },
     static: { title: 'Look at it', cmd: 'npx serve .              # http://localhost:3000', note: 'Or just open index.html in your browser.' },
   }[p.template] || { title: 'Run it', cmd: 'npm install\nnpm start                # http://localhost:3000', note: 'Needs Node.js on your PC (nodejs.org).' };
+  if (p.has_makefile) run.cmd += '\nmake build               # after you change code: rebuild and restart';
   const deploys = p.ci_enabled ? `Switchboard deploys every push to ${branch} by itself.` : 'Then click Deploy on the project page (or turn on CI/CD to deploy every push).';
   return [
     { title: '1. Get the code (first time)', cmd: `git clone ${urls.https || ''}\ncd ${folder}`, note: `With an SSH key on GitHub you can use: git clone ${urls.ssh || ''}` },
@@ -142,4 +146,117 @@ export const LinkGithubDialog = {
       <template v-else><button class="btn" @click="closeDialog">Close (keeps running)</button></template>
     </template>
   </modal>`,
+};
+
+/** Commands on the server itself (SSH), for this kind of app. */
+export function serverSteps(p) {
+  const dep = p.deployments.find((d) => d.is_active) || p.deployments[0];
+  if (!dep) return [];
+  const user = p.ssh_users?.[dep.server_id] || 'root';
+  const cd = `ssh ${user}@${dep.server_ip}\ncd ${dep.app_dir || '~'}`;
+  const docker = user === 'root' ? '' : ' (if Docker says "permission denied", log out and in again, or put sudo in front)';
+  if (p.has_makefile) {
+    return [
+      { title: `On ${dep.server_name}: go to the app`, cmd: cd, note: '' },
+      { title: 'Control the whole stack', cmd: `make ps                   # what is running\nmake logs                 # follow the logs\nmake restart              # restart everything\nmake stop / make start${p.template === 'laravel' ? '\nmake artisan c="migrate:status"\nmake tinker' : ''}`, note: `"make" alone lists every command${docker}.` },
+    ];
+  }
+  if (p.template === 'frontend') return [{ title: `On ${dep.server_name}`, cmd: `${cd}\nnpm run build             # build again by hand (deploys do this for you)`, note: 'nginx serves the built folder (dist).' }];
+  if (p.template === 'pm2') return [{ title: `On ${dep.server_name}`, cmd: `${cd}\npm2 list\npm2 logs`, note: '' }];
+  return [{ title: `On ${dep.server_name}`, cmd: `${cd}\ndocker compose ps\ndocker compose logs -f`, note: '' }];
+}
+
+const StepList = {
+  props: { steps: Array },
+  setup: () => ({ copy: (t) => navigator.clipboard?.writeText(t.replace(/\s+#.*$/gm, '')).then(() => toast('Copied', 'success')) }),
+  template: `
+  <div class="stack" style="gap:10px">
+    <div v-for="s in steps" :key="s.title">
+      <div class="row between"><b class="small">{{ s.title }}</b><button class="btn btn-xs" @click="copy(s.cmd)">Copy</button></div>
+      <pre class="mono small" style="margin:4px 0;padding:8px 10px;background:var(--bg-2, rgba(0,0,0,.25));border-radius:8px;white-space:pre-wrap">{{ s.cmd }}</pre>
+      <div v-if="s.note" class="tiny muted">{{ s.note }}</div>
+    </div>
+  </div>`,
+};
+
+/** 📘 How to use: on the server, on your computer, and deploy-on-push. */
+export const ProjectGuideDialog = {
+  props: { project: Object },
+  components: { Modal, CloneGuide, StepList },
+  setup(props) {
+    const p = computed(() => props.project);
+    const tab = ref('server');
+    const server = computed(() => serverSteps(p.value));
+    const turningOn = ref(false);
+    async function ciOn() {
+      turningOn.value = true;
+      try {
+        await http.put(`/projects/${p.value.id}/ci`, { ci_mode: 'pull' });
+        const r = await http.post(`/projects/${p.value.id}/ci/setup`, { commit: true });
+        closeDialog();
+        if (r?.job) runJob(Promise.resolve(r));
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        turningOn.value = false;
+      }
+    }
+    const link = () => openDialog('link-github', { project: p.value });
+    const parts = computed(() => (p.value.services || []).join(', '));
+    return { p, tab, server, ciOn, turningOn, link, parts, closeDialog };
+  },
+  template: `
+  <modal :title="'How to use ' + p.name" @close="closeDialog">
+    <div class="form">
+      <div v-if="p.template === 'laravel'" class="small muted">One Docker stack: app (PHP + nginx), database{{ parts ? ', ' + parts : '' }}. {{ p.has_makefile ? 'Control it with make (Makefile in the app folder).' : '' }}</div>
+      <div class="row gap-6">
+        <button class="btn btn-sm" :class="{ 'btn-primary': tab === 'server' }" @click="tab = 'server'">🖥️ On the server</button>
+        <button class="btn btn-sm" :class="{ 'btn-primary': tab === 'pc' }" @click="tab = 'pc'">💻 On your computer</button>
+        <button class="btn btn-sm" :class="{ 'btn-primary': tab === 'ci' }" @click="tab = 'ci'">🚀 Deploy</button>
+      </div>
+      <step-list v-if="tab === 'server'" :steps="server" />
+      <template v-if="tab === 'pc'">
+        <clone-guide v-if="p.git_repo && p.git_urls" :project="p" />
+        <div v-else class="alert alert-info" style="align-items:center"><span class="alert-icon">🐙</span><span class="grow">The code is only on the server for now. Link it with GitHub to get it onto your computer.</span><button class="admin-only btn btn-sm btn-primary" @click="link">Link with GitHub</button></div>
+      </template>
+      <template v-if="tab === 'ci'">
+        <div v-if="p.ci_enabled" class="alert alert-success"><span class="alert-icon">✔</span><span>CI/CD is on: every push to <b>{{ p.git_branch || 'main' }}</b> is deployed by itself. Details on the CI/CD tab.</span></div>
+        <div v-else-if="p.git_repo" class="alert alert-info" style="align-items:center"><span class="alert-icon">🚀</span><span class="grow">Deploy every push to <b>{{ p.git_branch || 'main' }}</b> automatically — Switchboard pulls the new code and rebuilds.</span><button class="admin-only btn btn-sm btn-primary" @click="ciOn" :disabled="turningOn">Turn on CI/CD</button></div>
+        <div v-else class="muted small">Link the project with GitHub first (💻 On your computer), then turn on CI/CD here.</div>
+        <div class="tiny muted">Without CI/CD: push your code, then click <b>Deploy</b> on the project page.</div>
+      </template>
+    </div>
+    <template #footer><button class="btn" @click="closeDialog">Close</button></template>
+  </modal>`,
+};
+
+/** After a new app is made: "🎉 ready — How to use it" (until dismissed). */
+export const ReadyBanner = {
+  props: { project: Object },
+  setup(props) {
+    const key = computed(() => `sb-ready-${props.project.id}`);
+    const hidden = ref(false);
+    try {
+      hidden.value = !!localStorage.getItem(key.value);
+    } catch {
+      /* private window: show it */
+    }
+    const fresh = computed(() => props.project.template && Date.now() - new Date(props.project.created_at).getTime() < 3 * 86400000 && props.project.deployments?.length);
+    const hide = () => {
+      hidden.value = true;
+      try {
+        localStorage.setItem(key.value, '1');
+      } catch {
+        /* fine */
+      }
+    };
+    return { hidden, fresh, hide, open: () => openDialog('project-guide', { project: props.project }) };
+  },
+  template: `
+  <div v-if="fresh && !hidden" class="alert alert-success mb-12" style="align-items:center">
+    <span class="alert-icon">🎉</span>
+    <span class="grow"><b>{{ project.name }} is ready.</b> See how to use it — on the server, on your computer{{ project.has_makefile ? ' (make start, make stop…)' : '' }}, and deploying every push.</span>
+    <button class="btn btn-sm btn-primary" @click="open">How to use</button>
+    <button class="btn btn-sm btn-ghost" @click="hide" title="Hide">✕</button>
+  </div>`,
 };

@@ -124,7 +124,7 @@ export const TemplateProjectDialog = {
     const detected = ref(null);
     const detecting = ref(false);
     const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const f = reactive({ template: 'laravel', db: 'mysql', name: '', domain: '', www: true, zone: null, servers: [], code: props.fromRepo ? 'repo' : 'new', repo: '', branch: 'main', privateRepo: true, takeoverDns: false, app_port: '', health_path: '/', ci: 'pull', folder: '/srv/' });
+    const f = reactive({ template: 'laravel', db: 'mysql', services: ['queue', 'scheduler', 'redis'], name: '', domain: '', www: true, zone: null, servers: [], code: props.fromRepo ? 'repo' : 'new', repo: '', branch: 'main', privateRepo: true, takeoverDns: false, app_port: '', health_path: '/', ci: 'pull', folder: '/srv/' });
     const busy = ref(false);
     // Where the app goes on the server(s): /srv/<name> until the user picks or types another folder
     const folderTouched = ref(false);
@@ -155,6 +155,7 @@ export const TemplateProjectDialog = {
     };
     watch(() => f.template, (t) => {
       if (tpl.value && !tpl.value.dbs.includes(f.db)) f.db = tpl.value.dbs[0];
+      f.services = (tpl.value?.services || []).map((s) => s.key); // all parts on by default
       if (t === 'compose' && f.code !== 'repo') f.code = 'repo';
     });
     watch(() => f.name, (n, old) => {
@@ -248,6 +249,10 @@ export const TemplateProjectDialog = {
         <div v-if="detected && detected.js && detected.js.kind === 'server' && f.template === 'node'" class="hint">Prefer no Docker? Pick <b>Node app with PM2, no Docker</b> — the app runs straight on the server.</div>
         <div v-if="tpl && tpl.dbs.length > 1" class="field"><label>Database</label>
           <div class="seg" style="align-self:flex-start"><button v-for="d in tpl.dbs" :key="d" type="button" :class="{ on: f.db === d }" @click="f.db = d">{{ info.dbs[d] }}</button></div></div>
+        <div v-if="tpl && tpl.services && tpl.services.length" class="field"><label>In the Docker stack</label>
+          <div class="small muted" style="margin-bottom:4px">Always: the app (PHP + nginx){{ f.db !== 'none' ? ' and the database' : '' }}. Choose the rest — you can change it later in .env (COMPOSE_PROFILES).</div>
+          <label v-for="s in tpl.services" :key="s.key" class="row gap-8" style="align-items:flex-start;padding:2px 0"><input type="checkbox" :value="s.key" v-model="f.services" style="margin-top:3px"><span><b>{{ s.label }}</b> <span class="muted small">— {{ s.hint }}</span></span></label>
+          <div class="tiny muted mt-8">Comes with a Makefile: <code>make start</code>, <code>make stop</code>, <code>make logs</code>, <code>make artisan c="…"</code> — on the server and on your computer.</div></div>
         <div v-if="f.template === 'compose'" class="form-row">
           <div class="field"><label>Port the app listens on</label><input v-model.number="f.app_port" class="code" placeholder="8080"><span class="hint">The left side of <code>ports: ["8080:8080"]</code> in its compose file.</span></div>
           <div class="field"><label>Health check page</label><input v-model="f.health_path" class="code" placeholder="/"><span class="hint">A page that answers 200 when the app works.</span></div>

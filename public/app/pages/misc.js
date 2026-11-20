@@ -91,12 +91,36 @@ export const SettingsPage = {
       http.get('/settings/s3/status').then((x) => (s3Stat.value = x)).catch(() => {});
       store.settings = s.value;
       if (isAdmin.value) {
+        checkConnections();
         const u = await http.get('/users').catch(() => ({ users: [], roles: [] }));
         users.value = u.users;
         roles.value = u.roles;
       }
     }
     onMounted(load);
+    // Is Switchboard connected to Cloudflare / GitHub right now? (checks the saved tokens, changes nothing)
+    const conn = reactive({ cf: null, gh: null, cfEdit: false, ghEdit: false });
+    function checkConnections() {
+      conn.cf = s.value.has_cf_token ? { loading: true } : null;
+      conn.gh = s.value.has_github_token ? { loading: true } : null;
+      if (s.value.has_cf_token) http.post('/settings/cloudflare/test', {}).then((r) => (conn.cf = r)).catch((e) => (conn.cf = { ok: false, error: e.message }));
+      if (s.value.has_github_token) http.post('/settings/github/test', {}).then((r) => (conn.gh = r)).catch((e) => (conn.gh = { ok: false, error: e.message }));
+    }
+    async function connect(which) {
+      const key = which === 'cf' ? 'cf_token' : 'github_token';
+      if (!f[key]) return toast('Paste the token first', 'warn');
+      await save();
+      conn[`${which}Edit`] = false;
+    }
+    async function disconnect(which) {
+      const what = which === 'cf'
+        ? { title: 'Disconnect Cloudflare?', message: 'The saved token is removed from Switchboard. Your DNS records at Cloudflare stay exactly as they are, but switching servers, DNS changes and SSL setup stop until you connect again. To cut access for good, also delete the token in Cloudflare (My Profile → API Tokens).' }
+        : { title: 'Disconnect GitHub?', message: 'The saved token is removed from Switchboard. Your repositories, deploy keys and runners stay on GitHub, but CI/CD runs, new repositories and "Link with GitHub" stop until you connect again. To cut access for good, also delete the token on GitHub (Settings → Developer settings).' };
+      if (!(await confirmBox({ ...what, confirmText: 'Disconnect', danger: true }))) return;
+      await http.put('/settings', { [`clear_${which === 'cf' ? 'cf' : 'github'}_token`]: true }).catch((e) => toast(e.message, 'error'));
+      toast(which === 'cf' ? 'Cloudflare disconnected' : 'GitHub disconnected', 'success');
+      load();
+    }
     async function save() {
       saving.value = true;
       try {
@@ -205,7 +229,7 @@ export const SettingsPage = {
         toast(e.message, 'error');
       }
     }
-    return { s, f, saving, save, clearSecret, cfTest, testCf, ghTest, testGh, s3Test, s3Stat, testS3, uploadAll, nTest, testNotify, tgChats, findChats, JOB_CHOICES, users, roles, isAdmin, setRole, newUser, addUser, delUser, pw, changePw, totp, totpCode, startTotp, enableTotp, totpOffPw, disableTotp, store, fmtDate };
+    return { conn, connect, disconnect, checkConnections, s, f, saving, save, clearSecret, cfTest, testCf, ghTest, testGh, s3Test, s3Stat, testS3, uploadAll, nTest, testNotify, tgChats, findChats, JOB_CHOICES, users, roles, isAdmin, setRole, newUser, addUser, delUser, pw, changePw, totp, totpCode, startTotp, enableTotp, totpOffPw, disableTotp, store, fmtDate };
   },
   template: `
   <div v-if="!s" class="muted">Loading…</div>
@@ -226,20 +250,33 @@ export const SettingsPage = {
         <div class="card card-body form" ref="cf">
           <h3>Cloudflare</h3>
           <p class="hint" style="margin:0">Create a token at <b>Cloudflare dashboard → My Profile → API Tokens → Create Token → "Edit zone DNS"</b> template. Permissions: <b>Zone · DNS · Edit</b> and <b>Zone · Zone · Read</b> (add <b>Zone · Cache Purge · Purge</b> if you want cache purging). Limit it to the zones you use.</p>
-          <div class="field"><label>API token</label>
-            <div class="row gap-8"><input v-model="f.cf_token" type="password" autocomplete="off" class="code" :placeholder="s.has_cf_token ? 'saved (' + s.cf_token_hint + ') — paste a new one to replace' : 'paste token'">
-              <button class="btn" @click="testCf">Test</button><button v-if="s.has_cf_token" class="btn btn-ghost" @click="clearSecret('cf_token')">Remove</button></div></div>
+          <div class="conn-status row between gap-8 wrap" style="padding:10px 12px;border:1px solid var(--border);border-radius:10px">
+            <span v-if="!s.has_cf_token"><span class="badge badge-gray">Not connected</span> <span class="small muted">Paste a token below and click Connect.</span></span>
+            <span v-else-if="!conn.cf || conn.cf.loading"><span class="spinner"></span> <span class="small muted">Checking the connection…</span></span>
+            <span v-else-if="conn.cf.ok"><span class="badge badge-green">● Connected</span> <span class="small">to Cloudflare — {{ conn.cf.zones }} zone(s): <b>{{ conn.cf.names.join(', ') }}</b></span> <span class="tiny muted mono">({{ s.cf_token_hint }})</span></span>
+            <span v-else><span class="badge badge-red">Not working</span> <span class="small text-red">The saved token was refused: {{ conn.cf.error }}</span></span>
+            <span v-if="s.has_cf_token" class="row gap-6"><button class="btn btn-sm" @click="checkConnections">Check again</button><button class="btn btn-sm" @click="conn.cfEdit = !conn.cfEdit">Change token</button><button class="btn btn-sm btn-danger" @click="disconnect('cf')">Disconnect</button></span>
+          </div>
+          <div v-if="!s.has_cf_token || conn.cfEdit" class="field"><label>API token</label>
+            <div class="row gap-8"><input v-model="f.cf_token" type="password" autocomplete="off" class="code" :placeholder="s.has_cf_token ? 'paste the new token' : 'paste token'">
+              <button class="btn" @click="testCf" :disabled="!f.cf_token">Test</button><button class="btn btn-primary" @click="connect('cf')" :disabled="!f.cf_token || saving">Connect</button></div></div>
           <div v-if="cfTest && !cfTest.loading" class="result" :class="cfTest.ok ? 'ok' : 'err'">{{ cfTest.ok ? '✔ Token works — ' + cfTest.zones + ' zone(s): ' + cfTest.names.join(', ') : '✖ ' + cfTest.error }}</div>
         </div>
 
         <div class="card card-body form" ref="github">
           <h3>GitHub (CI/CD)</h3>
           <p class="hint" style="margin:0">Used to create repositories, add deploy keys, register the self-hosted runners, commit the workflow file and read the results. Create a token at <b>GitHub → Settings → Developer settings → Personal access tokens</b>: a <b>classic</b> token with the <code>repo</code> and <code>workflow</code> scopes (add <code>admin:org</code> → <code>write:org</code> only to create repos in an organization), or a <b>fine-grained</b> token with <b>Administration, Contents, Workflows, Actions</b> (read and write) and <b>Pull requests</b> (read) on your repositories.</p>
-          <div class="field"><label>Token</label>
-            <div class="row gap-8"><input v-model="f.github_token" type="password" autocomplete="off" class="code" :placeholder="s.has_github_token ? 'saved (' + s.github_token_hint + ') — paste a new one to replace' : 'ghp_… or github_pat_…'">
-              <button class="btn" @click="testGh">Test</button><button v-if="s.has_github_token" class="btn btn-ghost" @click="clearSecret('github_token')">Remove</button></div></div>
+          <div class="conn-status row between gap-8 wrap" style="padding:10px 12px;border:1px solid var(--border);border-radius:10px">
+            <span v-if="!s.has_github_token"><span class="badge badge-gray">Not connected</span> <span class="small muted">Paste a token below and click Connect.</span></span>
+            <span v-else-if="!conn.gh || conn.gh.loading"><span class="spinner"></span> <span class="small muted">Checking the connection…</span></span>
+            <span v-else-if="conn.gh.ok"><span class="badge badge-green">● Connected</span> <span class="small">to GitHub as <b>{{ conn.gh.login }}</b>{{ conn.gh.name ? ' (' + conn.gh.name + ')' : '' }}</span> <span class="tiny muted mono">({{ s.github_token_hint }})</span></span>
+            <span v-else><span class="badge badge-red">Not working</span> <span class="small text-red">The saved token was refused: {{ conn.gh.error }}</span></span>
+            <span v-if="s.has_github_token" class="row gap-6"><button class="btn btn-sm" @click="checkConnections">Check again</button><button class="btn btn-sm" @click="conn.ghEdit = !conn.ghEdit">Change token</button><button class="btn btn-sm btn-danger" @click="disconnect('gh')">Disconnect</button></span>
+          </div>
+          <div v-if="!s.has_github_token || conn.ghEdit" class="field"><label>Token</label>
+            <div class="row gap-8"><input v-model="f.github_token" type="password" autocomplete="off" class="code" :placeholder="s.has_github_token ? 'paste the new token' : 'ghp_… or github_pat_…'">
+              <button class="btn" @click="testGh" :disabled="!f.github_token">Test</button><button class="btn btn-primary" @click="connect('gh')" :disabled="!f.github_token || saving">Connect</button></div></div>
           <div v-if="ghTest && !ghTest.loading" class="result" :class="ghTest.ok ? 'ok' : 'err'">{{ ghTest.ok ? '✔ Token works — signed in as ' + ghTest.login : '✖ ' + ghTest.error }}</div>
-          <div><button class="btn btn-primary" @click="save" :disabled="saving">Save</button></div>
         </div>
 
         <div class="card card-body form" ref="s3">

@@ -7,7 +7,7 @@ import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
 import { StatusHero } from '../statushero.js';
 import { ProxyTab } from '../proxy.js';
-import { GitLinkBanner } from '../gitlink.js';
+import { GitLinkBanner, ReadyBanner } from '../gitlink.js';
 import { ToolCheckBanner } from '../servertools.js';
 import { FRONTEND_SCRIPT, PM2_SCRIPT } from '../deploypresets.js';
 
@@ -172,7 +172,7 @@ const ProjectSettings = {
 /* ------------------------------------------------------------------ page */
 export default {
   props: { id: Number },
-  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab, GitLinkBanner, ToolCheckBanner },
+  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab, GitLinkBanner, ReadyBanner, ToolCheckBanner },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
@@ -349,7 +349,7 @@ export default {
         <button v-if="lb" class="admin-only btn btn-primary" @click="scaleOut">+ Add server</button>
         <button v-else class="admin-only btn btn-primary" :disabled="p.deployments.length < 2" @click="openSwitch()">⇄ Switch server</button>
         <button v-if="!p.db_server_id" class="admin-only btn" :disabled="p.deployments.length < 2" @click="openSync(active)">Copy data</button>
-        <button v-if="p.git_repo && p.git_urls" class="btn" @click="openDialog('clone-guide', { project: p })" title="How to clone, run, pull and push this project on your computer">💻 Use on my PC</button>
+        <button v-if="p.template || p.git_repo" class="btn" @click="openDialog('project-guide', { project: p })" title="How to use it on the server and on your computer, and how to deploy every push">📘 How to use</button>
         <menu-btn label="More ▾">
           <button class="menu-item" @click="checkNow" :disabled="busy.check">Run health check now</button>
           <button class="menu-item" @click="backupLive" :disabled="!p.db_server_id && (!active || active.db_type === 'none')">Back up the live database</button>
@@ -372,6 +372,7 @@ export default {
     </div>
 
     <tool-check-banner :project="p" :key="'tc' + p.id" @changed="load" />
+    <ready-banner :project="p" :key="'rb' + p.id" />
     <git-link-banner :project="p" />
     <status-hero :p="p" :active="active" :lb="lb" :lb-count="lbCount" :checking="!!busy.check" @check="checkNow" @switch="openSwitch()" @maintenance="toggleMaint(active)" />
 
