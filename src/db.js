@@ -421,6 +421,11 @@ const MIGRATIONS = [
   ALTER TABLE projects ADD COLUMN proxy TEXT;
   ALTER TABLE deployments ADD COLUMN proxy_state TEXT;
   `,
+  // v19: main project (group) — e.g. "cinemagickh" holds its parts: API (Docker), admin dashboard, front-end, media server.
+  //      Each part is still a full project (own domain, servers, health, failover); the group only shows them together.
+  `
+  ALTER TABLE projects ADD COLUMN group_name TEXT;
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

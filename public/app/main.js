@@ -24,7 +24,7 @@ const PAGES = {
 async function loadOverview() {
   try {
     store.overview = await http.get('/overview');
-    store.nav.projects = store.overview.projects.map((p) => ({ id: p.id, name: p.name }));
+    store.nav.projects = store.overview.projects.map((p) => ({ id: p.id, name: p.name, group_name: p.group_name }));
   } catch (e) {
     if (store.user) console.warn(e);
   }
@@ -64,6 +64,16 @@ const App = {
     const page = computed(() => PAGES[route.name]);
     const dialog = computed(() => (store.dialog ? DIALOGS[store.dialog.type] : null));
     const projects = computed(() => store.overview?.projects || []);
+    // Sidebar: ungrouped projects, then each main project with its parts under it.
+    const navItems = computed(() => {
+      const out = projects.value.filter((p) => !p.group_name).map((p) => ({ p }));
+      const groups = [...new Set(projects.value.map((p) => p.group_name).filter(Boolean))].sort();
+      for (const g of groups) {
+        out.push({ group: g });
+        for (const p of projects.value.filter((x) => x.group_name === g)) out.push({ p, inGroup: true });
+      }
+      return out;
+    });
     const running = computed(() => store.overview?.running || 0);
     const billingDue = computed(() => (store.overview?.servers || []).filter((s) => s.billing && s.billing.days_left !== null && s.billing.days_left <= 3 && !(s.billing.auto_renew && s.billing.days_left >= 0)).length);
     const projDot = (p) => {
@@ -89,7 +99,7 @@ const App = {
       },
       { immediate: true },
     );
-    return { store, route, page, dialog, projects, running, billingDue, projDot, toggleTheme, logout, dismissToast };
+    return { store, route, page, dialog, projects, navItems, running, billingDue, projDot, toggleTheme, logout, dismissToast };
   },
   template: `
   <auth-page v-if="store.ready && !store.user" />
@@ -103,8 +113,11 @@ const App = {
       <a class="nav-link" :class="{ active: route.name === 'activity' }" href="#/activity"><icon name="activity" />Activity</a>
       <a class="nav-link" :class="{ active: route.name === 'settings' }" href="#/settings"><icon name="settings" />Settings</a>
       <div class="nav-section" v-if="projects.length">Projects</div>
-      <a v-for="p in projects" :key="p.id" class="nav-link nav-sub" :class="{ active: route.name === 'project' && route.params.id === p.id }" :href="'#/projects/' + p.id">
-        <span class="dot" :class="'dot-' + projDot(p)"></span><span class="ellipsis">{{ p.name }}</span></a>
+      <template v-for="it in navItems" :key="it.group ? 'g:' + it.group : it.p.id">
+        <div v-if="it.group" class="nav-link nav-sub muted small" style="cursor:default"><span class="ellipsis">{{ it.group }}</span></div>
+        <a v-else class="nav-link nav-sub" :style="it.inGroup ? 'padding-left:36px' : ''" :class="{ active: route.name === 'project' && route.params.id === it.p.id }" :href="'#/projects/' + it.p.id">
+          <span class="dot" :class="'dot-' + projDot(it.p)"></span><span class="ellipsis">{{ it.p.name }}</span></a>
+      </template>
       <div class="sidebar-foot">
         <span class="avatar">{{ store.user.username.slice(0, 1).toUpperCase() }}</span><span class="user-name ellipsis grow"><b>{{ store.user.username }}</b><small>{{ store.user.role }}</small></span>
         <button class="icon-btn" title="Light / dark theme" @click="toggleTheme"><icon name="theme" /></button>

@@ -42,6 +42,7 @@ const ProjectSettings = {
       name: p.name,
       domain: p.domain || '',
       notes: p.notes || '',
+      group_name: p.group_name || '',
       dns_records: [...p.dns_records],
       health_scheme: p.health_scheme,
       health_path: p.health_path,
@@ -61,6 +62,7 @@ const ProjectSettings = {
       backup_keep: p.backup_keep,
       purge_cache: !!p.purge_cache,
     });
+    const groupNames = computed(() => [...new Set((store.overview?.projects || []).map((x) => x.group_name).filter(Boolean))].sort());
     const editDns = ref(!p.dns_records.length);
     const saving = ref(false);
     const healthUrl = computed(() => `${f.health_scheme}://<server IP>${f.health_port ? `:${f.health_port}` : ''}${f.health_path || '/'}   Host: ${f.domain || '<server IP>'}`);
@@ -79,7 +81,7 @@ const ProjectSettings = {
       }
     }
     const del = () => openDialog('delete-project', { project: p });
-    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT, FRONTEND_SCRIPT, PM2_SCRIPT };
+    return { groupNames, p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT, FRONTEND_SCRIPT, PM2_SCRIPT };
   },
   template: `
   <div class="stack">
@@ -89,6 +91,7 @@ const ProjectSettings = {
         <div class="field"><label>Name</label><input v-model="f.name"></div>
         <div class="field"><label>Main domain</label><input v-model="f.domain" class="code" placeholder="shop.example.com"></div>
       </div>
+      <div class="field"><label>Main project <span class="muted">(optional)</span></label><input v-model="f.group_name" list="sb-groups" placeholder="e.g. cinemagickh"><datalist id="sb-groups"><option v-for="g in groupNames" :key="g" :value="g" /></datalist><span class="hint">Parts of one product (API, admin dashboard, front-end, media server…) share a main project and are shown together</span></div>
       <div class="field"><label>Notes</label><textarea v-model="f.notes" rows="2" placeholder="Anything worth remembering about this project"></textarea></div>
     </div>
 
@@ -333,6 +336,8 @@ export default {
           <span v-if="p.db_server_id" class="badge badge-blue">Shared database</span>
           <span v-if="p.auto_failover" class="badge badge-accent">Auto-failover ON</span>
           <span v-if="p.parent_id" class="badge badge-amber">{{ p.env }} copy of <a :href="'#/projects/' + p.parent_id" style="color:inherit;text-decoration:underline">{{ p.parent_name || 'main project' }}</a></span>
+          <span v-if="p.group_name" class="badge badge-blue" title="Main project">Part of {{ p.group_name }}</span>
+          <span v-if="p.group_parts && p.group_parts.length" class="small">Other parts: <template v-for="(g, i) in p.group_parts" :key="g.id"><a :href="'#/projects/' + g.id">{{ g.name }}</a>{{ i < p.group_parts.length - 1 ? ', ' : '' }}</template></span>
           <span v-if="p.template" class="badge badge-gray" :title="'Made from the ' + p.template + ' template'">{{ p.template }}</span>
           <span v-if="p.git_repo" class="mono small">{{ p.git_repo }}@{{ p.git_branch }}</span>
         </div>

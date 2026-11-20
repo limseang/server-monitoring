@@ -97,7 +97,17 @@ export default {
     const serversUp = computed(() => (data.value?.servers || []).filter((s) => s.status === 'up').length);
     const healthy = computed(() => (data.value?.projects || []).filter((p) => p.deployments.find((d) => d.is_active)?.health === 'up').length);
     const icon = { error: '✖', warn: '⚠', info: 'ℹ' };
-    return { money, dateText, totalsText, dueLabel, dueClass, data, errors, problems, serversUp, healthy, icon, addServer: () => openDialog('server'), addProject: () => openDialog('project'), newApp: () => openDialog('template-project'), fromGithub: () => openDialog('template-project', { fromRepo: true }) };
+    // Projects with the same main project (group_name) are shown together; ungrouped ones come first.
+    const groups = computed(() => {
+      const map = new Map([[null, []]]);
+      for (const p of data.value?.projects || []) {
+        const k = p.group_name || null;
+        if (!map.has(k)) map.set(k, []);
+        map.get(k).push(p);
+      }
+      return [...map].filter(([, ps]) => ps.length).map(([name, projects]) => ({ name, projects }));
+    });
+    return { groups, money, dateText, totalsText, dueLabel, dueClass, data, errors, problems, serversUp, healthy, icon, addServer: () => openDialog('server'), addProject: () => openDialog('project'), newApp: () => openDialog('template-project'), fromGithub: () => openDialog('template-project', { fromRepo: true }) };
   },
   template: `
   <div>
@@ -127,7 +137,10 @@ export default {
           <p class="muted">1) Add each server (SSH access). 2) Create a project for your app and link its Cloudflare DNS records. 3) Tell the project which servers it runs on. Then you can switch traffic and copy databases with one click.</p>
           <div class="row gap-8"><button class="btn" @click="addServer">1. Add a server</button><button class="btn btn-primary" @click="addProject">2. Create a project</button></div>
         </div>
-        <div class="grid grid-projects"><project-card v-for="p in data.projects" :key="p.id" :project="p" /></div>
+        <template v-for="g in groups" :key="g.name || '_'">
+          <h3 v-if="g.name" class="small muted" style="margin:16px 0 8px">{{ g.name }} <span class="tiny">· {{ g.projects.length }} parts</span></h3>
+          <div class="grid grid-projects"><project-card v-for="p in g.projects" :key="p.id" :project="p" /></div>
+        </template>
       </section>
 
       <section class="section">
