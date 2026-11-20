@@ -35,7 +35,7 @@ load() {
   [ -f "$f" ] || die "project '$1' is not set up on this server (Switchboard → project → CI/CD → Update servers)"
   SB_SLUG='' SB_NAME='' SB_DIR='' SB_USER=root SB_REPO_URL='' SB_BRANCH=main SB_GIT_SSH='' SB_TEMPLATE='' SB_DB=none
   SB_ENV=production SB_HOSTS='' SB_URL='' SB_HEALTH_PATH=/ SB_HEALTH_URL='' SB_HEALTH_HOST='' SB_PREVIEW=0 SB_PREVIEW_ZONE=''
-  SB_PREVIEW_BASE=/srv/previews SB_APP_PORT=''
+  SB_PREVIEW_BASE=/srv/previews SB_APP_PORT='' SB_SERVICES=queue,scheduler,redis
   # shellcheck disable=SC1090
   . "$f"
   [ -n "$SB_GIT_SSH" ] && export GIT_SSH_COMMAND="$SB_GIT_SSH"
@@ -289,7 +289,10 @@ write_env() {
       case "$SB_TEMPLATE" in
         laravel)
           printf 'APP_NAME="%s"\nAPP_ENV=%s\nAPP_KEY=base64:%s\nAPP_DEBUG=%s\nAPP_URL=%s\n' "$SB_NAME" "$env" "$(openssl rand -base64 32)" "$debug" "$url"
-          printf 'LOG_CHANNEL=stderr\nLOG_LEVEL=info\nCACHE_STORE=redis\nSESSION_DRIVER=redis\nQUEUE_CONNECTION=redis\nREDIS_HOST=redis\n'
+          # Which optional parts run (docker compose profiles); without Redis the database keeps cache, sessions and jobs
+          printf 'COMPOSE_PROFILES=%s\nLOG_CHANNEL=stderr\nLOG_LEVEL=info\n' "$SB_SERVICES"
+          if [[ ",$SB_SERVICES," == *,redis,* ]]; then printf 'CACHE_STORE=redis\nSESSION_DRIVER=redis\nQUEUE_CONNECTION=redis\nREDIS_HOST=redis\n'
+          else printf 'CACHE_STORE=database\nSESSION_DRIVER=database\nQUEUE_CONNECTION=database\n'; fi
           ;;
         node) printf 'NODE_ENV=production\nHOST=0.0.0.0\nPORT=3000\nNITRO_PORT=3000\nAPP_URL=%s\n' "$url" ;;
       esac

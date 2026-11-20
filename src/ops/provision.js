@@ -12,7 +12,7 @@ import { connectTo, runRemote, asRoot, shq, dockerExec } from './remote.js';
 import { ensureDocker } from './clone.js';
 import { refreshDnsState } from './dns.js';
 import { syncDatabase } from './database.js';
-import { TEMPLATES, installHelper, pushProjectConf, helper, ensureRepoAccess, scaffoldFiles, projectHosts, appUser } from './stack.js';
+import { TEMPLATES, installHelper, pushProjectConf, helper, ensureRepoAccess, scaffoldFiles, makeFiles, projectHosts, appUser } from './stack.js';
 import { proxySiteName } from './proxycheck.js';
 import { FRONTEND_SCRIPT, PM2_SCRIPT } from '../../public/app/deploypresets.js';
 
@@ -33,7 +33,7 @@ export function deployScriptFor(template, { repo, branch }) {
 }
 
 /** Columns for a new project made from a template. */
-export function templateProjectRow({ name, template, db, domain, repo, branch, env = 'production', parentId = null, extraHosts = [], appPort = null, healthPath = null }) {
+export function templateProjectRow({ name, template, db, domain, repo, branch, env = 'production', parentId = null, extraHosts = [], appPort = null, healthPath = null, services = null }) {
   const t = TEMPLATES[template];
   if (template === 'compose') {
     return {
@@ -66,7 +66,8 @@ export function templateProjectRow({ name, template, db, domain, repo, branch, e
     name,
     domain: domain || null,
     template,
-    template_opts: JSON.stringify({ db, extra_hosts: extraHosts }),
+    // services: the optional parts the user chose (Laravel: queue, scheduler, redis); null = all
+    template_opts: JSON.stringify({ db, extra_hosts: extraHosts, ...(Array.isArray(services) ? { services } : {}) }),
     git_repo: repo || null,
     git_branch: branch || 'main',
     env,
@@ -250,6 +251,14 @@ defineJob('provision', async (ctx, p) => {
           ctx.log(`Start a new ${t.label} app in ${dep.app_dir}`);
           if (project.template === 'laravel') await helper(ctx, conn, server, ['scaffold-laravel', project.slug]);
           else await writeScaffold(ctx, conn, server, dep.app_dir, scaffoldFiles(project.template, project.name));
+          // Docker apps: a Makefile (make start / stop / logs / artisan…) that works on the server and on a PC
+          const opts = parseJSON(project.template_opts, {}) || {};
+          const mf = makeFiles(project.template, project.slug, db, Array.isArray(opts.services) ? opts.services : null);
+          if (Object.keys(mf).length) {
+            await writeScaffold(ctx, conn, server, dep.app_dir, mf);
+            update('projects', project.id, { template_opts: JSON.stringify({ ...opts, makefile: true }) });
+            ctx.log('Makefile added: run "make" in the app folder to see the commands (make start, make stop, make logs…)');
+          }
           if (repo) {
             await helper(ctx, conn, server, ['init-repo', project.slug]);
             pushed = true;

@@ -14,7 +14,7 @@ import { asRoot, runRemote, shq } from './remote.js';
  *   /etc/switchboard/projects/<slug>.deploy.sh      the project's deploy script
  */
 
-export const HELPER_VERSION = '6';
+export const HELPER_VERSION = '7';
 export const HELPER = '/usr/local/bin/switchboard-helper';
 export const EDGE_IMAGE = 'nginx:1.27-alpine';
 const REMOTE_DIR = path.join(config.root, 'src/remote');
@@ -22,7 +22,13 @@ const REMOTE_DIR = path.join(config.root, 'src/remote');
 export const TEMPLATES = {
   laravel: {
     label: 'Laravel (PHP 8.4)',
-    hint: 'PHP-FPM + nginx image, queue worker, scheduler, Redis and a database. Migrations run on every deploy.',
+    hint: 'One Docker stack: PHP-FPM + nginx, a database, and (your choice) queue worker, scheduler and Redis. Migrations run on every deploy. Comes with a Makefile: make start, make stop, make logs, make artisan…',
+    // Parts you can leave out ("profiles" in the compose file; COMPOSE_PROFILES in .env says which run)
+    services: [
+      { key: 'queue', label: 'Queue worker', hint: 'Runs jobs in the background (php artisan queue:work)' },
+      { key: 'scheduler', label: 'Scheduler', hint: 'Runs your scheduled tasks every minute (php artisan schedule:work)' },
+      { key: 'redis', label: 'Redis', hint: 'Fast cache, sessions and queue. Without it the database is used for them.' },
+    ],
     dbs: ['mysql', 'postgres'],
     port: 8080,
     health: '/up',
@@ -137,20 +143,24 @@ x-app: &app
     ports: ["127.0.0.1:\${APP_PORT}:8080"]
     volumes: [storage:/var/www/html/storage/app]
     depends_on:
-${dependsDb}      redis: { condition: service_started }
+${dependsDb}      redis: { condition: service_started, required: false }
+  # The parts below run only when their name is in COMPOSE_PROFILES (.env), e.g. COMPOSE_PROFILES=queue,scheduler,redis
   queue:
     <<: *app
+    profiles: [queue]
     command: ["php", "/var/www/html/artisan", "queue:work", "--tries=3", "--sleep=3"]
     stop_signal: SIGTERM
     volumes: [storage:/var/www/html/storage/app]
     depends_on: [app]
   scheduler:
     <<: *app
+    profiles: [scheduler]
     command: ["php", "/var/www/html/artisan", "schedule:work"]
     stop_signal: SIGTERM
     depends_on: [app]
   redis:
     image: redis:7-alpine
+    profiles: [redis]
     restart: unless-stopped
 `;
   } else {
@@ -218,8 +228,100 @@ export function scaffoldFiles(template, name) {
   };
 }
 
+/* ------------------------------------------------------------------ Makefile (Docker apps) */
+/**
+ * A Makefile so the whole Docker stack is run with short commands — the same on the server and on a PC:
+ * make start / stop / restart / logs / shell / artisan … ("make" alone lists them).
+ * Plus .switchboard/local-env.sh: makes a .env for running the stack on a PC (make setup).
+ */
+export function makeFiles(template, slug, db = 'none', services = null) {
+  if (!['laravel', 'node', 'static'].includes(template)) return {};
+  const laravel = template === 'laravel';
+  const on = (k) => !services || services.includes(k);
+  const tab = (lines) => lines.map((l) => `\t${l}`).join('\n');
+  const target = (name, help, lines) => `${name}: ## ${help}\n${tab(lines)}\n`;
+  let dbShell = '';
+  if (db === 'mysql') dbShell = `$(DC) exec db sh -c 'mysql -uroot -p"$$MYSQL_ROOT_PASSWORD" "$$MYSQL_DATABASE"'`;
+  if (db === 'postgres') dbShell = `$(DC) exec db sh -c 'psql -U "$$POSTGRES_USER" "$$POSTGRES_DB"'`;
+  const parts = laravel
+    ? ['app (PHP + nginx)', db !== 'none' ? 'database' : '', on('queue') ? 'queue worker' : '', on('scheduler') ? 'scheduler' : '', on('redis') ? 'Redis' : ''].filter(Boolean).join(', ')
+    : 'the app';
+  const phony = ['help', 'setup', 'start', 'stop', 'restart', 'build', 'ps', 'logs', 'shell', 'down', ...(laravel ? ['artisan', 'migrate', 'tinker', 'queue-restart'] : []), ...(dbShell ? ['db'] : [])];
+  const mk = [
+    `# Made by Switchboard — the commands for this app's Docker stack (${parts}).`,
+    '# Works the same on the server and on your computer. Type "make" to see them all.',
+    ...(laravel ? ['# Which parts run is set in .env: COMPOSE_PROFILES (e.g. queue,scheduler,redis).'] : []),
+    'DC = docker compose',
+    '.DEFAULT_GOAL := help',
+    `.PHONY: ${phony.join(' ')}`,
+    '',
+    target('help', 'Show these commands', [`@grep -E '^[a-z-]+:.*## ' Makefile | awk 'BEGIN{FS=":.*## "}{printf "  make %-14s %s\\n", $$1, $$2}'`]),
+    target('setup', 'First time on a new computer: make .env, build and start', ['@sh .switchboard/local-env.sh', '$(DC) up -d --build', `@echo "Open http://localhost:$$(grep -E '^APP_PORT=' .env | cut -d= -f2)"`]),
+    target('start', 'Start everything', ['$(DC) up -d']),
+    target('stop', 'Stop everything (data is kept)', ['$(DC) stop']),
+    target('restart', 'Restart everything', ['$(DC) restart']),
+    target('build', 'Rebuild after code or Dockerfile changes, then start', ['$(DC) up -d --build']),
+    target('ps', 'What is running', ['$(DC) ps']),
+    target('logs', 'Follow the logs (Ctrl+C to leave)', ['$(DC) logs -f --tail=100']),
+    target('shell', 'A shell inside the app container', ['$(DC) exec app sh']),
+  ];
+  if (laravel) {
+    mk.push(
+      target('artisan', 'Any artisan command: make artisan c="route:list"', ['$(DC) exec app php artisan $(c)']),
+      target('migrate', 'Run the database migrations', ['$(DC) exec app php artisan migrate --force']),
+      target('tinker', 'Laravel tinker', ['$(DC) exec app php artisan tinker']),
+      target('queue-restart', 'Restart the queue workers after a code change', ['$(DC) exec app php artisan queue:restart']),
+    );
+  }
+  if (dbShell) mk.push(target('db', 'Open the database console', [dbShell]));
+  mk.push(target('down', 'Remove the containers (data volumes are kept)', ['$(DC) down']));
+
+  // .env for a PC: start from .env.example when there is one, then set what the Docker stack needs.
+  const vals = [
+    ['COMPOSE_PROJECT_NAME', slug],
+    ['COMPOSE_FILE', 'compose.switchboard.yml'],
+    ['APP_PORT', laravel ? '8000' : '3000'],
+  ];
+  if (laravel) {
+    const redis = on('redis');
+    vals.push(
+      ['COMPOSE_PROFILES', (services || ['queue', 'scheduler', 'redis']).join(',')],
+      ['APP_ENV', 'local'],
+      ['APP_DEBUG', 'true'],
+      ['APP_URL', 'http://localhost:8000'],
+      ['LOG_CHANNEL', 'stderr'],
+      ['CACHE_STORE', redis ? 'redis' : 'database'],
+      ['SESSION_DRIVER', redis ? 'redis' : 'database'],
+      ['QUEUE_CONNECTION', redis ? 'redis' : 'database'],
+    );
+    if (redis) vals.push(['REDIS_HOST', 'redis']);
+  }
+  if (db === 'mysql') vals.push(['DB_CONNECTION', 'mysql'], ['DB_HOST', 'db'], ['DB_PORT', '3306'], ['DB_DATABASE', 'app'], ['DB_USERNAME', 'app'], ['DB_PASSWORD', 'secret'], ['DB_ROOT_PASSWORD', 'secret']);
+  if (db === 'postgres') vals.push(['DB_CONNECTION', 'pgsql'], ['DB_HOST', 'db'], ['DB_PORT', '5432'], ['DB_DATABASE', 'app'], ['DB_USERNAME', 'app'], ['DB_PASSWORD', 'secret']);
+  const env = [
+    '#!/bin/sh',
+    '# Made by Switchboard: writes .env for running this app on your computer with Docker ("make setup").',
+    '# The server has its own .env with real passwords — this one is only for your computer.',
+    'set -e',
+    'if [ -f .env ]; then echo ".env already exists — left as it is"; exit 0; fi',
+    'if [ -f .env.example ]; then cp .env.example .env; else : > .env; fi',
+    'setv() {',
+    '  if grep -qE "^#? *$1=" .env; then',
+    `    awk -v k="$1" -v v="$2" '$0 ~ "^#? *"k"=" { if (!done) print k"="v; done = 1; next } { print }' .env > .env.tmp && mv .env.tmp .env`,
+    '  else',
+    '    echo "$1=$2" >> .env',
+    '  fi',
+    '}',
+    ...vals.map(([k, v]) => `setv ${k} '${v}'`),
+    ...(laravel ? ['setv APP_KEY "base64:$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)"'] : []),
+    'echo "Wrote .env for your computer"',
+    '',
+  ].join('\n');
+  return { Makefile: mk.join('\n'), '.switchboard/local-env.sh': env };
+}
+
 /* ------------------------------------------------------------------ install on a server */
-const b64 = (s) => Buffer.from(s).toString('base64');
+const b64 =(s) => Buffer.from(s).toString('base64');
 const writeCmd = (file, content, mode = '644') => `printf %s ${shq(b64(content))} | base64 -d > ${shq(`${file}.tmp`)} && chmod ${mode} ${shq(`${file}.tmp`)} && mv ${shq(`${file}.tmp`)} ${shq(file)}`;
 
 /** Install/refresh the helper and every template on a server (as root). */
@@ -277,6 +379,8 @@ export function projectConf(project, dep, server) {
     SB_GIT_SSH: project.git_repo ? gitSshCommand(project.git_repo) : '',
     SB_TEMPLATE: project.template || '',
     SB_DB: opts.db || 'none',
+    // Laravel: which optional parts run (queue, scheduler, redis) — all of them for projects made before the choice
+    SB_SERVICES: (Array.isArray(opts.services) ? opts.services : (TEMPLATES[project.template]?.services || []).map((s) => s.key)).join(','),
     SB_ENV: project.env || 'production',
     // apps without Docker get their web proxy from Switchboard after the build (as the project's Web proxy)
     SB_HOSTS: project.template && !TEMPLATES[project.template]?.host && !(project.template === 'compose' && !opts.app_port) ? projectHosts(project).join(' ') : '',
