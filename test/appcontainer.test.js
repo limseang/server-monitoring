@@ -24,6 +24,18 @@ test('pickAppContainer: the web app of this folder, not its helpers or other app
   assert.equal(pickAppContainer(row('backend', '/srv/shop', 'backend', '1'), '/srv/shop').name, 'backend');
 });
 
+test('pickAppContainer: app folder set to Switchboard\'s own database folder', () => {
+  const db = row('switchboard-db', '/opt/switchboard-db', 'db', '0');
+  const app = row('hry-api-app', '/var/www/hry', 'app', '1');
+  // the one app on the server with php is used; the shared database never is
+  assert.equal(pickAppContainer([db, app].join('\n'), '/opt/switchboard-db').name, 'hry-api-app');
+  assert.equal(pickAppContainer([db, app].join('\n'), '').name, 'hry-api-app');
+  // two different apps with php: don't guess
+  assert.equal(pickAppContainer([db, app, row('shop-app', '/srv/shop', 'app', '1')].join('\n'), '/opt/switchboard-db').name, null);
+  // queue + app of one app is still one app
+  assert.equal(pickAppContainer([db, app, row('hry-api-queue', '/var/www/hry', 'queue', '1')].join('\n'), '/opt/switchboard-db/').name, 'hry-api-app');
+});
+
 test('findContainerScript quotes the program and uses the server docker command', () => {
   const s = findContainerScript({ docker_cmd: 'sudo docker' }, 'php');
   assert.match(s, /^sudo docker ps --format/);

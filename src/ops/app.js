@@ -2,7 +2,7 @@ import { update } from '../db.js';
 import { bus } from '../bus.js';
 import { getServer } from '../models.js';
 import { dockerExec, runRemote, shq } from './remote.js';
-import { findContainerScript, pickAppContainer } from './appcontainer.js';
+import { findContainerScript, pickAppContainer, isSwitchboardDir } from './appcontainer.js';
 
 /**
  * No app container set, and the command's program (php, node…) is not on the server itself: look for it in the
@@ -18,6 +18,7 @@ async function findAppContainer(ctx, conn, server, dep, cmdText) {
   if (!name) return null;
   update('deployments', dep.id, { app_container: name });
   ctx?.log(`${dep.server_name}: "${prog}" is not on the server itself — found it in the app container ${name}${all.length > 1 ? ` (also: ${all.slice(1).join(', ')})` : ''}. Saved on the server card for next time.`);
+  if (isSwitchboardDir(dep.app_dir)) ctx?.warn(`${dep.server_name}: the App folder on the server card is ${dep.app_dir}, Switchboard's own database folder, not your app — fix it in ⋯ → Edit containers / database.`);
   return name;
 }
 
@@ -46,6 +47,11 @@ export async function setMaintenance(ctx, conn, project, dep, on, { signal } = {
     // Typical setup mistake: "php artisan …" run on the server itself, where PHP isn't installed (it's in a container).
     if (!container && e.result?.code === 127) {
       const prog = cmdText.split(/\s+/)[0];
+      if (isSwitchboardDir(dep.app_dir))
+        throw new Error(
+          `"${prog}" is not installed on ${dep.server_name} itself, and the App folder on its card is ${dep.app_dir} — that is Switchboard's own database folder, not your app. ` +
+            `Set the App folder and App container (for example laravel-api-app) in the project → ${dep.server_name} card → ⋯ → Edit containers / database, then try again.`,
+        );
       throw new Error(
         `"${prog}" is not installed on ${dep.server_name} itself, and no running container of ${dep.app_dir} has it. ` +
           `Is the app running? Or set the App container (for example laravel-api-app) in the project → ${dep.server_name} card → ⋯ → Edit containers / database, then try again.`,

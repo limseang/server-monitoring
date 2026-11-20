@@ -23,19 +23,26 @@ true`;
 const HELPERS = /(^|[-_])(queue|worker|workers|scheduler|schedule|cron|horizon|reverb|websockets?|db|mysql|mariadb|postgres|redis|nginx|proxy|minio|mailpit|meilisearch)([-_]\d+)?$/i;
 const norm = (p) => String(p || '').replace(/\/+$/, '');
 
+/** Switchboard's own folders on a server (shared database, DB access…) — never an app's folder. */
+export const isSwitchboardDir = (p) => /^\/opt\/switchboard-/.test(norm(p));
+
 /**
  * Parse findContainerScript's output and pick the app container for appDir (exported for tests).
  * → { name, all } — name is null when none fits; all lists the containers of that app that have the program.
  */
 export function pickAppContainer(out, appDir) {
-  const dir = norm(appDir);
+  // App folder unknown, or wrongly set to Switchboard's own (e.g. /opt/switchboard-db): any app folder will do,
+  // as long as only one has the program, so we never guess between two apps.
+  const dir = isSwitchboardDir(appDir) ? '' : norm(appDir);
   const rows = String(out || '')
     .split('\n')
     .map((l) => l.split('\t'))
     .filter((c) => c.length >= 4 && c[0])
-    .map(([name, wd, service, has]) => ({ name, wd: norm(wd), service, has: has.trim() === '1' }));
-  const mine = rows.filter((r) => dir && r.wd && (r.wd === dir || r.wd.startsWith(`${dir}/`) || dir.startsWith(`${r.wd}/`)));
-  const able = mine.filter((r) => r.has);
+    .map(([name, wd, service, has]) => ({ name, wd: norm(wd), service, has: has.trim() === '1' }))
+    .filter((r) => r.wd && !isSwitchboardDir(r.wd));
+  const mine = dir ? rows.filter((r) => r.wd === dir || r.wd.startsWith(`${dir}/`) || dir.startsWith(`${r.wd}/`)) : rows;
+  let able = mine.filter((r) => r.has);
+  if (!dir && new Set(able.map((r) => r.wd)).size > 1) able = [];
   const score = (r) => (HELPERS.test(r.service || r.name) ? 2 : 0) + (/(^|[-_])(app|api|web|php|laravel|backend)([-_]\d+)?$/i.test(r.service || r.name) ? -1 : 0);
   const sorted = [...able].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name));
   return { name: sorted[0]?.name || null, all: sorted.map((r) => r.name) };
