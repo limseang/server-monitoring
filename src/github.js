@@ -197,6 +197,31 @@ export async function listBranches(repo) {
 
 const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
 
+// Which JavaScript app a package.json is: a server (runs all the time, e.g. with PM2) or a front-end (built once,
+// then plain files that nginx serves). Server frameworks win: Nuxt and Next also list vue / react.
+const JS_SERVERS = [['nuxt', 'Nuxt'], ['next', 'Next.js'], ['@sveltejs/kit', 'SvelteKit'], ['@remix-run/node', 'Remix'], ['@nestjs/core', 'NestJS'], ['express', 'Express'], ['fastify', 'Fastify'], ['koa', 'Koa'], ['hono', 'Hono']];
+const JS_FRONTENDS = [['@angular/core', 'Angular'], ['vue', 'Vue'], ['react', 'React'], ['svelte', 'Svelte'], ['solid-js', 'Solid'], ['astro', 'Astro'], ['vite', 'Vite']];
+
+/** package.json text → { kind: 'server' | 'frontend' | null, framework } (exported for tests). */
+export function classifyPackage(text) {
+  let pkg;
+  try {
+    pkg = JSON.parse(text);
+  } catch {
+    return { kind: null, framework: null };
+  }
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+  const hit = (list) => list.find(([d]) => d in deps)?.[1] || null;
+  const server = hit(JS_SERVERS);
+  // Nuxt with `nuxt generate` / Next with `next export` as the build: static files after all
+  if (server && /\b(nuxt generate|next export)\b/.test(pkg.scripts?.build || '')) return { kind: 'frontend', framework: server };
+  if (server) return { kind: 'server', framework: server };
+  const front = hit(JS_FRONTENDS);
+  if (front && pkg.scripts?.build) return { kind: 'frontend', framework: front };
+  if (pkg.scripts?.start) return { kind: 'server', framework: 'Node.js' };
+  return { kind: front ? 'frontend' : null, framework: front };
+}
+
 /**
  * Look at a repo's top-level files and guess how to run it:
  * its own Docker Compose file → "compose", artisan → Laravel, package.json → Node, else static.
@@ -212,6 +237,9 @@ export async function detectRepo(repo, branch) {
     const f = await getFile(repo, compose, ref).catch(() => null);
     ports = [...new Set([...(f?.content || '').matchAll(/["'\s-](?:[\d.]+:)?(\d{2,5}):\d{2,5}(?:\/tcp)?["'\s]/g)].map((m) => Number(m[1])))].filter((p) => p > 0 && p < 65536);
   }
-  const suggest = compose ? 'compose' : names.includes('artisan') ? 'laravel' : names.includes('package.json') ? 'node' : 'static';
-  return { repo: info.full_name, private: !!info.private, default_branch: info.default_branch, branch: ref, files: names.slice(0, 60), compose, ports, suggest, empty: !names.length };
+  let js = { kind: null, framework: null };
+  if (!compose && names.includes('package.json')) js = classifyPackage((await getFile(repo, 'package.json', ref).catch(() => null))?.content || '');
+  // A front-end without its own Dockerfile: build it on the server, no Docker needed
+  const suggest = compose ? 'compose' : names.includes('artisan') ? 'laravel' : js.kind === 'frontend' && !names.includes('Dockerfile') ? 'frontend' : names.includes('package.json') ? 'node' : 'static';
+  return { repo: info.full_name, private: !!info.private, default_branch: info.default_branch, branch: ref, files: names.slice(0, 60), compose, ports, suggest, js, empty: !names.length };
 }

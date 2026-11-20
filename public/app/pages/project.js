@@ -6,6 +6,8 @@ import { CicdTab } from '../cicd.js';
 import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
 import { StatusHero } from '../statushero.js';
+import { ProxyTab } from '../proxy.js';
+import { FRONTEND_SCRIPT, PM2_SCRIPT } from '../deploypresets.js';
 
 const BACKUP_PRESETS = [
   ['Daily 3:00', '0 3 * * *'],
@@ -77,7 +79,7 @@ const ProjectSettings = {
       }
     }
     const del = () => openDialog('delete-project', { project: p });
-    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT };
+    return { p, f, editDns, saving, save, del, healthUrl, checkEvery, BACKUP_PRESETS, SYNC_PRESETS, DEPLOY_EXAMPLE, DOCKER_SCRIPT, FRONTEND_SCRIPT, PM2_SCRIPT };
   },
   template: `
   <div class="stack">
@@ -146,7 +148,11 @@ const ProjectSettings = {
       <div class="hint" style="margin-top:-6px">Run inside the app container (or in the app folder if no container is set). Laravel: <code>php artisan down --retry=60</code> / <code>php artisan up</code>.</div>
       <div class="field"><label>Deploy script</label><textarea v-model="f.deploy_script" class="code" rows="5" :placeholder="DEPLOY_EXAMPLE"></textarea>
         <span class="hint">Runs in the app folder with bash, stops at the first error. "Deploy to all" runs standby servers first, the live one last.
-          <button type="button" class="btn btn-xs" @click="f.deploy_script = DOCKER_SCRIPT">Use: pull from Git + rebuild with Docker</button></span></div>
+          <span class="row gap-6 wrap mt-8">
+            <button type="button" class="btn btn-xs" @click="f.deploy_script = DOCKER_SCRIPT" title="docker compose up -d --build">🐳 Use: Docker Compose</button>
+            <button type="button" class="btn btn-xs" @click="f.deploy_script = FRONTEND_SCRIPT" title="Vue, React, Vite, Angular: git pull, install, npm run build. nginx serves the built folder (Web proxy → Website files).">📁 Use: Front-end build (Vue / React)</button>
+            <button type="button" class="btn btn-xs" @click="f.deploy_script = PM2_SCRIPT" title="Nuxt, Next, Express… with PM2: git pull, install, build, pm2 reload">⚙ Use: Node app with PM2</button>
+          </span></span></div>
       <label class="check"><input type="checkbox" v-model="f.purge_cache"><span class="check-text"><b>Purge Cloudflare cache after switching</b><span class="hint">Your token needs the "Cache Purge" permission.</span></span></label>
     </div>
 
@@ -161,7 +167,7 @@ const ProjectSettings = {
 /* ------------------------------------------------------------------ page */
 export default {
   props: { id: Number },
-  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero },
+  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
@@ -342,6 +348,7 @@ export default {
           <button class="menu-item" @click="deployAll" :disabled="!p.deploy_script">Deploy to servers…</button>
           <button class="menu-item" @click="rollBack" :disabled="!p.deploy_script || !p.git_repo">↩ Roll back to an older commit…</button>
           <div class="menu-sep"></div>
+          <button class="menu-item" @click="openTab('proxy')">Web proxy (nginx)</button>
           <button class="menu-item" @click="openTab('cicd')">CI/CD, staging & previews</button>
           <button v-if="p.template" class="admin-only menu-item" @click="reprovision">Run the template setup again</button>
           <button class="admin-only menu-item" @click="openTab('settings')">Project settings</button>
@@ -415,6 +422,7 @@ export default {
 
     <div class="tabs">
       <button class="tab" :class="{ on: tab === 'dns' }" @click="openTab('dns')">DNS & SSL</button>
+      <button class="tab" :class="{ on: tab === 'proxy' }" @click="openTab('proxy')">Web proxy<span v-if="p.proxy" class="muted"> · on</span></button>
       <button class="tab" :class="{ on: tab === 'cicd' }" @click="openTab('cicd')">CI/CD<span v-if="p.ci_enabled" class="muted"> · on</span></button>
       <button class="admin-only tab" :class="{ on: tab === 'traffic' }" @click="openTab('traffic')">Traffic{{ lb ? ' · LB' : '' }}</button>
       <button class="tab" :class="{ on: tab === 'dbaccess' }" @click="openTab('dbaccess')">Database access<span v-if="p.db_access && p.db_access.enabled" class="muted"> · on</span></button>
@@ -482,6 +490,7 @@ export default {
 
     <traffic-tab v-if="tab === 'traffic'" :project="p" @reload="load" />
  <db-access-tab v-if="tab === 'dbaccess'" :project="p" :key="'dba' + p.id" />
+    <proxy-tab v-if="tab === 'proxy'" :project="p" :key="'px' + p.id" />
     <cicd-tab v-if="tab === 'cicd'" :project="p" :key="'ci' + p.id" @reload="load" />
     <jobs-table v-if="tab === 'jobs'" :jobs="jobs || []" />
     <events-list v-if="tab === 'activity'" :events="events || []" />

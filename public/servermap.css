@@ -165,3 +165,70 @@
 @media (prefers-reduced-motion: reduce) {
   .smap *, .smap-svg { animation: none !important; transition: none !important; }
 }
+
+/* ---------- IsoFlow: deploy / rollback / CI run in 3D ---------- */
+.smap-flow { margin: 0; border: 1px solid var(--border); border-radius: var(--radius); }
+.smap-flow .smap-svg { max-height: 420px; }
+/* the code node: accent for a deploy, amber for a rollback */
+.smap-src polygon.t { fill: color-mix(in srgb, var(--accent) 55%, #10131c); stroke: var(--accent); }
+.smap-src polygon.f { fill: color-mix(in srgb, var(--accent) 38%, #10131c); stroke: var(--accent); }
+.smap-src polygon.s { fill: color-mix(in srgb, var(--accent) 26%, #10131c); stroke: var(--accent); }
+.smap-src { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 45%, transparent)); }
+.smap-back .smap-src polygon.t { fill: #8a5a10; stroke: var(--sm-busy); }
+.smap-back .smap-src polygon.f { fill: #6b450c; stroke: var(--sm-busy); }
+.smap-back .smap-src polygon.s { fill: #533509; stroke: var(--sm-busy); }
+.smap-back .smap-src { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--sm-busy) 50%, transparent)); }
+.smap-src.src-running { animation: smap-breathe 1.6s ease-in-out infinite; }
+.smap-src.src-failure polygon { stroke: var(--red); }
+.smap-rw { transform-box: fill-box; transform-origin: center; }
+.smap-rw.spin { animation: smap-rewind 1.2s linear infinite; }
+.smap-rw path { fill: none; stroke: #fff5e0; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+
+.smap-packet { fill: var(--accent); }
+.smap-back .smap-packet { fill: var(--sm-busy); }
+.smap-packet.parked { fill: var(--sm-busy); animation: smap-blink 1s ease-in-out infinite; }
+.smap-link.ln-running { stroke: color-mix(in srgb, var(--accent) 55%, var(--sm-link)); stroke-dasharray: none; }
+.smap-back .smap-link.ln-running { stroke: color-mix(in srgb, var(--sm-busy) 55%, var(--sm-link)); }
+.smap-link.ln-success { stroke: color-mix(in srgb, var(--green) 60%, var(--sm-link)); stroke-dasharray: none; }
+.smap-link.ln-failure { stroke: color-mix(in srgb, var(--red) 70%, transparent); }
+.smap-link.ln-held { stroke: color-mix(in srgb, var(--sm-busy) 60%, var(--sm-link)); }
+
+.smap-fsrv { cursor: default; }
+.smap-fsrv.st-running .smap-body { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 50%, transparent)); }
+.smap-back .smap-fsrv.st-running .smap-body { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--sm-busy) 50%, transparent)); }
+.smap-fsrv.st-running .smap-led { animation-duration: 0.22s; }
+.smap-fsrv.st-success .smap-body polygon { stroke: var(--green); }
+.smap-fsrv.st-success .smap-body { filter: drop-shadow(0 0 9px color-mix(in srgb, var(--green) 45%, transparent)); }
+.smap-fsrv.st-failure .smap-body .t { fill: var(--sm-down-top); }
+.smap-fsrv.st-failure .smap-body .f { fill: var(--sm-down-front); }
+.smap-fsrv.st-failure .smap-body .s { fill: var(--sm-down-side); }
+.smap-fsrv.st-failure .smap-body polygon { stroke: #ff8f8f; }
+.smap-fsrv.st-failure .smap-bays rect, .smap-fsrv.st-failure .smap-seam, .smap-fsrv.st-failure .smap-vents line { stroke: var(--sm-down-line); }
+.smap-fsrv.st-failure .smap-led { fill: #ff5a5a; }
+.smap-fsrv.st-held .smap-body polygon { stroke: var(--sm-busy); }
+.smap-fsrv.st-held .smap-body { animation: smap-pulse 1.6s ease-in-out infinite; }
+.smap-fsrv.st-queued .smap-body, .smap-fsrv.st-idle .smap-body, .smap-fsrv.st-skipped .smap-body, .smap-fsrv.st-cancelled .smap-body { opacity: 0.5; }
+.smap-fsrv.st-queued .smap-led, .smap-fsrv.st-idle .smap-led, .smap-fsrv.st-skipped .smap-led, .smap-fsrv.st-cancelled .smap-led { animation: none; opacity: 0.35; }
+.smap-seg.prog.on { fill: var(--accent); }
+.smap-back .smap-seg.prog.on { fill: var(--sm-busy); }
+.st-success .smap-seg.prog.on { fill: #3dd598; }
+.st-failure .smap-seg.prog.on { fill: #ff5a5a; }
+
+.smap-bubble circle { fill: var(--panel); stroke: var(--sm-line); stroke-width: 1.2; }
+.smap-bubble text { font: 700 12px var(--sans); fill: currentColor; }
+.st-success .smap-bubble circle { fill: var(--green); stroke: var(--green); }
+.st-success .smap-bubble text { fill: #fff; }
+.st-failure .smap-bubble circle { fill: var(--red); stroke: var(--red); }
+.st-failure .smap-bubble text { fill: #fff; }
+.st-held .smap-bubble { animation: smap-bob 1.4s ease-in-out infinite; }
+.smap-bubble { animation: smap-pop 0.4s cubic-bezier(.3, 1.6, .5, 1); transform-box: fill-box; transform-origin: center; }
+.smap-burst { fill: none; stroke: var(--green); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: smap-burst 0.9s ease-out forwards; }
+.smap-live rect { fill: var(--green); }
+.smap-live text { font: 800 8px var(--sans); fill: #06281b; letter-spacing: 0.06em; }
+
+@keyframes smap-breathe { 50% { opacity: 0.82; } }
+@keyframes smap-rewind { to { transform: rotate(-360deg); } }
+@keyframes smap-pulse { 50% { filter: drop-shadow(0 0 12px color-mix(in srgb, var(--sm-busy) 60%, transparent)); } }
+@keyframes smap-bob { 50% { transform: translateY(-3px); } }
+@keyframes smap-pop { from { transform: scale(0); } }
+@keyframes smap-burst { from { transform: scale(1); opacity: 0.9; } to { transform: scale(2.6); opacity: 0; } }

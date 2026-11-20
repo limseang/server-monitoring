@@ -252,3 +252,134 @@ export const ServerMap = {
     </div>
   </div>`,
 };
+
+/*
+ * IsoFlow: the same 3D servers for a deploy, a rollback or a CI/CD run.
+ *
+ *   code (the commit; amber + rewind icon for a rollback) → your servers
+ *
+ * Packets flow to the server that is deploying now; its base bar fills with its progress. Done servers glow green
+ * with a ✓, a failed one turns red and smokes, a server that waits for you pulses amber with the code parked on
+ * its link, and servers still waiting are dimmed.
+ *   source:  { title, sub, state: running|success|failure|queued|idle|cancelled }
+ *   servers: [{ id, name, state, label, live, frac (0…1) }]
+ */
+export const IsoFlow = {
+  props: { source: Object, servers: Array, back: Boolean },
+  setup(props) {
+    const still = reducedMotion();
+    const scene = computed(() => {
+      const list = props.servers || [];
+      const n = list.length;
+      const cols = Math.min(4, Math.max(1, n));
+      const cfY = (SW - CF.w) / 2;
+      const cfCenter = iso(CF.x + CF.w / 2, cfY + CF.w / 2, 2);
+      const nodes = list.map((s, i) => {
+        const c = i % cols, r = Math.floor(i / cols);
+        const x = 110 + c * GAP, y = r * ROW;
+        const xMid = x + SW / 2, bus = y - 26 - r * 6;
+        const pts = [cfCenter, iso(CF.x + CF.w / 2, bus, 2), iso(xMid, bus, 2), iso(xMid, y + SW / 2, 2)];
+        const lbl = iso(x + SW + 8, y + SW + 8, 0);
+        const top = iso(x + SW / 2, y + SW / 2, SH + 6);
+        const frac = Math.max(0, Math.min(1, s.frac ?? (s.state === 'success' ? 1 : 0)));
+        return {
+          ...s, i, x, y, depth: x + y,
+          base: box(x - 8, y - 8, SW + 16, SW + 16, 6),
+          body: box(x, y, SW, SW, SH, 6),
+          path: `M${pts.map(pt).join(' L')}`,
+          // where code waits for a held server: on its link, just before it
+          parked: [0, 1, 2].map((k) => iso(xMid - 34 - k * 12, bus, 2)),
+          bar: Array.from({ length: 10 }, (_, k) => ({ k, on: frac > k / 10 + 0.001 })),
+          leds: [0, 1].map((k) => ({ k, delay: ((i * 7 + k * 3) % 10) / 10 })),
+          pos: { x: lbl[0], y: lbl[1] + 26 },
+          top,
+          short: (s.name || '?').length > 14 ? `${s.name.slice(0, 13)}…` : s.name,
+          text: String(s.label || '').length > 18 ? `${String(s.label).slice(0, 17)}…` : s.label,
+        };
+      });
+      nodes.sort((p, q) => p.depth - q.depth);
+      const src = box(CF.x, cfY, CF.w, CF.w, CF.h, 4);
+      const srcBase = box(CF.x - 8, cfY - 8, CF.w + 16, CF.w + 16, 4);
+      const srcLbl = iso(CF.x + CF.w + 8, cfY + CF.w + 8, 0);
+      const xs = [], ys = [];
+      const add = (p) => (xs.push(p[0]), ys.push(p[1]));
+      nodes.forEach((nd) => { add(iso(nd.x - 8, nd.y - 8)); add(iso(nd.x + SW + 8, nd.y + SW + 8)); add(iso(nd.x + SW + 8, nd.y - 8)); add(iso(nd.x - 8, nd.y + SW + 8)); add([nd.top[0], nd.top[1] - 40]); add([nd.pos.x - 50, nd.pos.y + 16]); add([nd.pos.x + 50, nd.pos.y]); });
+      add(iso(CF.x - 8, cfY + CF.w + 8)); add(iso(CF.x + CF.w + 8, cfY - 8, CF.h + 30)); add(iso(CF.x - 8, cfY - 8)); add([srcLbl[0] - 50, srcLbl[1] + 40]);
+      const pad = 22;
+      const minX = Math.min(...xs) - pad, minY = Math.min(...ys) - pad;
+      const vb = `${minX.toFixed(0)} ${minY.toFixed(0)} ${(Math.max(...xs) - minX + pad).toFixed(0)} ${(Math.max(...ys) - minY + pad).toFixed(0)}`;
+      return { nodes, src, srcBase, srcLbl: { x: srcLbl[0], y: srcLbl[1] + 26 }, vb };
+    });
+    const BUBBLE = { success: '✓', failure: '✕', held: '⏳', running: '', queued: '…' };
+    return { scene, still, BUBBLE, SW };
+  },
+  template: `
+  <div class="smap smap-flow" :class="{ 'smap-still': still, 'smap-back': back }">
+    <svg class="smap-svg" :viewBox="scene.vb" role="img" :aria-label="(back ? 'Rollback' : 'Deploy') + ' to ' + servers.length + ' servers'" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <filter id="smap-glow2" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="2.4" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+      </defs>
+      <g v-for="nd in scene.nodes" :key="'l' + nd.id">
+        <path :d="nd.path" class="smap-link" :class="'ln-' + nd.state" />
+        <template v-if="nd.state === 'running' && !still">
+          <rect v-for="k in 3" :key="k" x="-3.5" y="-3.5" width="7" height="7" rx="1.5" class="smap-packet" filter="url(#smap-glow2)">
+            <animateMotion :path="nd.path" dur="1.7s" :begin="((k - 1) * 0.57) + 's'" repeatCount="indefinite" />
+          </rect>
+        </template>
+        <template v-if="nd.state === 'held'">
+          <rect v-for="(p, k) in nd.parked" :key="'p' + k" :x="p[0] - 3.5" :y="p[1] - 3.5" width="7" height="7" rx="1.5" class="smap-packet parked" :style="{ animationDelay: (k * 0.25) + 's' }" />
+        </template>
+      </g>
+
+      <!-- the code: a commit (or an older one, for a rollback) -->
+      <g class="smap-src" :class="'src-' + source.state">
+        <polygon :points="scene.srcBase.top" class="smap-base-top" /><polygon :points="scene.srcBase.front" class="smap-base-f" /><polygon :points="scene.srcBase.side" class="smap-base-s" />
+        <polygon :points="scene.src.front" class="f" /><polygon :points="scene.src.side" class="s" /><polygon :points="scene.src.top" class="t" />
+        <g :transform="scene.src.tTop" class="smap-cf-icon">
+          <template v-if="!back">
+            <path d="M28 18 L28 66 M56 18 L56 30 Q56 42 42 46 Q28 50 28 58" />
+            <circle cx="28" cy="18" r="4" /><circle cx="28" cy="66" r="4" /><circle cx="56" cy="18" r="4" />
+          </template>
+          <g v-else class="smap-rw" :class="{ spin: source.state === 'running' && !still }">
+            <path d="M42 22 A20 20 0 1 1 24 32" /><path d="M20 22 L24 33 L35 30" />
+          </g>
+        </g>
+        <text :x="scene.srcLbl.x" :y="scene.srcLbl.y" class="smap-name" text-anchor="middle">{{ source.title }}</text>
+        <text :x="scene.srcLbl.x" :y="scene.srcLbl.y + 13" class="smap-sub" text-anchor="middle">{{ source.sub }}</text>
+      </g>
+
+      <!-- your servers, back to front -->
+      <g v-for="nd in scene.nodes" :key="nd.id" class="smap-srv smap-fsrv" :class="'st-' + nd.state">
+        <title>{{ nd.name }} — {{ nd.label }}</title>
+        <polygon :points="nd.base.top" class="smap-base-top" /><polygon :points="nd.base.front" class="smap-base-f" /><polygon :points="nd.base.side" class="smap-base-s" />
+        <g :transform="nd.base.tFront">
+          <rect v-for="b in nd.bar" :key="b.k" :x="10 + b.k * 5" y="1.2" width="3.4" height="3.6" class="smap-seg" :class="{ on: b.on, prog: true }" />
+        </g>
+        <g class="smap-body">
+          <polygon :points="nd.body.front" class="f" /><polygon :points="nd.body.side" class="s" /><polygon :points="nd.body.top" class="t" />
+          <g :transform="nd.body.tFront" class="smap-bays">
+            <line x1="0" y1="25" :x2="SW" y2="25" class="smap-seam" />
+            <template v-for="u in 2" :key="u">
+              <rect v-for="k in 4" :key="k" :x="4 + (k - 1) * 8" :y="(u - 1) * 25 + 6" width="5.6" height="13" rx="1" />
+              <circle v-for="l in nd.leds" :key="l.k" :cx="44 + l.k * 6" :cy="(u - 1) * 25 + 15" r="1.9" class="smap-led" :class="'led-' + l.k" :style="{ animationDelay: (l.delay + u * 0.37) + 's' }" />
+            </template>
+          </g>
+          <g :transform="nd.body.tSide" class="smap-vents">
+            <line v-for="k in 4" :key="'a' + k" x1="30" :y1="3 + k * 4.2" x2="58" :y2="3 + k * 4.2" />
+            <line v-for="k in 4" :key="'b' + k" x1="30" :y1="28 + k * 4.2" x2="58" :y2="28 + k * 4.2" />
+          </g>
+        </g>
+        <g v-if="nd.state === 'failure' && !still" class="smap-smoke">
+          <circle v-for="k in 3" :key="k" :cx="nd.top[0] + (k - 2) * 5" :cy="nd.top[1] - 4" :r="6 + k" :style="{ animationDelay: (k - 1) * 0.8 + 's' }" />
+        </g>
+        <g v-if="BUBBLE[nd.state]" :transform="'translate(' + nd.top[0] + ',' + (nd.top[1] - 24) + ')'">
+          <g class="smap-bubble"><circle r="11" /><text y="4.5" text-anchor="middle">{{ BUBBLE[nd.state] }}</text></g>
+        </g>
+        <circle v-if="nd.state === 'success' && !still" class="smap-burst" :cx="nd.top[0]" :cy="nd.top[1] - 24" r="11" />
+        <g v-if="nd.live" :transform="'translate(' + (nd.pos.x) + ',' + (nd.pos.y - 26) + ')'" class="smap-live"><rect x="-15" y="-7" width="30" height="13" rx="6.5" /><text y="3" text-anchor="middle">LIVE</text></g>
+        <text :x="nd.pos.x" :y="nd.pos.y" class="smap-name" text-anchor="middle">{{ nd.short }}</text>
+        <text :x="nd.pos.x" :y="nd.pos.y + 13" class="smap-sub" text-anchor="middle">{{ nd.text }}</text>
+      </g>
+    </svg>
+  </div>`,
+};

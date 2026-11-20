@@ -416,6 +416,11 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   `,
+  // v18: web proxy (nginx) for a project: its domains, and per server where it sends them and the last check
+  `
+  ALTER TABLE projects ADD COLUMN proxy TEXT;
+  ALTER TABLE deployments ADD COLUMN proxy_state TEXT;
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

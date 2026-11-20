@@ -13,9 +13,14 @@ import { ensureDocker } from './clone.js';
 import { refreshDnsState } from './dns.js';
 import { syncDatabase } from './database.js';
 import { TEMPLATES, installHelper, pushProjectConf, helper, ensureRepoAccess, scaffoldFiles, projectHosts, appUser } from './stack.js';
+import { proxySiteName } from './proxycheck.js';
+import { FRONTEND_SCRIPT, PM2_SCRIPT } from '../../public/app/deploypresets.js';
 
 /* ------------------------------------------------------------------ defaults for a template project */
 export function deployScriptFor(template, { repo, branch }) {
+  // Apps without Docker: the same ready-made scripts as Settings → Deploy script
+  if (template === 'frontend') return FRONTEND_SCRIPT;
+  if (template === 'pm2') return PM2_SCRIPT;
   const lines = [];
   if (repo) {
     lines.push('# Exact commit from CI ($SB_COMMIT), or the newest commit of the branch for a manual deploy');
@@ -71,6 +76,7 @@ export function templateProjectRow({ name, template, db, domain, repo, branch, e
     health_path: t.health,
     health_expect: '200-399',
     deploy_script: deployScriptFor(template, { repo, branch: branch || 'main' }),
+    // checked through the web proxy, with the domain (or the server's IP when there is none) as host name
     maintenance_on_cmd: template === 'laravel' ? 'php artisan down --retry=60' : 'true',
     maintenance_off_cmd: template === 'laravel' ? 'php artisan up' : 'true',
     ci_test_cmd: t.tests,
@@ -127,6 +133,41 @@ async function setupDns(ctx, project, zone, ip, { takeover }) {
   return out;
 }
 
+/**
+ * Apps without Docker still need a web server on ports 80/443. The helper uses the server's own nginx when it
+ * runs one; otherwise a small nginx container — so Docker is installed only when there is no nginx.
+ */
+async function dockerForProxy(ctx, conn, server) {
+  const r = await exec(conn, asRoot(server, `command -v nginx >/dev/null 2>&1 && echo nginx; cat /etc/switchboard/edge/mode 2>/dev/null || true`));
+  if (/^(nginx|host)$/m.test(r.stdout)) return conn;
+  const scan = await quickScan(conn, server);
+  if (scan.docker === 'none') ctx.log(`${server.name} has no nginx: Docker is installed to run a small nginx container as the web proxy (the app itself runs without Docker)`);
+  return ensureDocker(ctx, conn, server, scan);
+}
+
+/**
+ * Put the web proxy in front of an app without Docker, as the project's Web proxy (so the Web proxy tab shows and
+ * changes it): the built folder (front-end) or the PM2 app's port. Host names: the project's domain(s), or the
+ * server's IP when there is no domain (open it at http://IP/).
+ */
+async function hostProxy(ctx, conn, server, project, dep, { port, folder }) {
+  const domains = projectHosts(project);
+  const hosts = domains.length ? domains : [server.ip];
+  const args = folder ? ['edge-static', proxySiteName(project.id), folder, '1', ...hosts] : ['edge-site', proxySiteName(project.id), String(port), ...hosts];
+  if (!folder && !port) throw new Error('The app did not say where it runs (no port and no built folder)');
+  ctx.step(`Web proxy: ${hosts.join(', ')} → ${folder ? `folder ${folder}` : `port ${port}`}`);
+  await helper(ctx, conn, server, args);
+  const t = await exec(conn, asRoot(server, `curl -s -o /dev/null -m 10 -w '%{http_code}' -H ${shq(`Host: ${hosts[0]}`)} http://127.0.0.1/ || true`));
+  const code = Number(t.stdout.trim()) || null;
+  ctx.log(`http://${hosts[0]} on ${server.name} answers HTTP ${code ?? '—'}`);
+  update('deployments', dep.id, {
+    proxy_state: JSON.stringify({ ok: true, kind: folder ? 'folder' : 'port', port: folder ? null : port, folder, spa: !!folder, hosts, code, at: now() }),
+  });
+  if (domains.length) update('projects', project.id, { proxy: JSON.stringify({ hosts: domains, at: now() }) });
+  if (!domains.length) ctx.log(`No domain: open it at http://${server.ip}/`);
+  return code;
+}
+
 /* ------------------------------------------------------------------ jobs */
 /**
  * Set up a template project on one or more servers:
@@ -159,11 +200,21 @@ defineJob('provision', async (ctx, p) => {
 
     const deps = [];
     let pushed = !(repo && p.createRepo); // a new repo gets its first commit from the first server
+    // Apps without Docker: live picture in the job window (code → build → nginx → test), like the Web proxy's
+    const prog = t.host ? { kind: 'proxy', setup: true, project: project.name, hosts: projectHosts(project), started_at: new Date().toISOString(), servers: servers.map((s) => ({ id: s.id, name: s.name, live: false, port: null, folder: null, state: 'queued', phase: '', code: null, note: null, error: null })) } : null;
+    const setP = (id, patch) => {
+      if (!prog) return;
+      Object.assign(prog.servers.find((x) => x.id === id), patch);
+      ctx.progress(prog);
+    };
+    if (prog) ctx.progress(prog);
     for (const [i, server] of servers.entries()) {
       ctx.step(`Set up ${project.name} on ${server.name}`);
+      setP(server.id, { state: 'running', phase: 'build' });
       let conn = await connectTo(ctx, server);
       try {
-        conn = await ensureDocker(ctx, conn, server, await quickScan(conn, server));
+        if (t.host) conn = await dockerForProxy(ctx, conn, server);
+        else conn = await ensureDocker(ctx, conn, server, await quickScan(conn, server));
         await installHelper(ctx, conn, server);
         // The folder picked in "New app"; when adding servers later, the folder the project already uses
         const sameFolder = get("SELECT app_dir FROM deployments WHERE project_id = ? AND app_dir LIKE '/%' ORDER BY priority LIMIT 1", project.id)?.app_dir;
@@ -179,7 +230,7 @@ defineJob('provision', async (ctx, p) => {
             server_id: server.id,
             priority: 10 * (i + 1),
             app_dir: appDir,
-            app_container: `${project.slug}-app-1`,
+            app_container: t.host ? null : `${project.slug}-app-1`,
             db_type: db === 'none' ? 'none' : db,
             db_container: db === 'none' ? null : `${project.slug}-db-1`,
             db_name: db === 'none' ? null : 'app',
@@ -208,7 +259,16 @@ defineJob('provision', async (ctx, p) => {
         if (port) update('deployments', dep.id, { app_port: port });
         const cont = r.stdout.match(/SB_CONTAINER=([A-Za-z0-9][A-Za-z0-9_.-]*)/)?.[1];
         if (cont && project.template === 'compose') update('deployments', dep.id, { app_container: cont });
+        if (t.host) {
+          const folder = r.stdout.match(/^SB_SITE_DIR=(\/\S*)$/m)?.[1] || null;
+          setP(server.id, { phase: 'write', port: folder ? null : port, folder });
+          const code = await hostProxy(ctx, conn, server, project, getDeployment(dep.id), { port, folder });
+          setP(server.id, { state: 'success', phase: 'done', code });
+        }
         deps.push(getDeployment(dep.id));
+      } catch (e) {
+        setP(server.id, { state: 'failure', error: e.message });
+        throw e;
       } finally {
         conn.end();
       }
