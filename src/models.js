@@ -39,6 +39,7 @@ export function deploymentPublic(d, project) {
     ...rest,
     has_db_password: !!db_password,
     health_detail: parseJSON(health_detail),
+    proxy_state: parseJSON(rest.proxy_state),
     is_active: project ? project.active_deployment_id === d.id : undefined,
   };
 }
@@ -56,5 +57,6 @@ export function projectPublic(p) {
     lb_state: parseJSON(p.lb_state, {}),
     shared_db: shared,
     db_access: parseJSON(p.db_access, null),
+    proxy: parseJSON(p.proxy, null),
   };
 }

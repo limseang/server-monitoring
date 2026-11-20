@@ -54,6 +54,7 @@ import * as gh from './github.js';
 import { TEMPLATES, DB_NAMES } from './ops/stack.js';
 import { templateProjectRow } from './ops/provision.js';
 import * as nginxSites from './ops/nginxsites.js';
+import { parseHosts } from './ops/proxy.js';
 import { POWER, serverRoles, listUsers, changePassword, USER_RE, scanPorts, listFolders, makeFolder, cleanFolder } from './ops/serverctl.js';
 import { trafficSummary, trafficNow, logSources, readLog, collectTraffic } from './ops/traffic.js';
 import { usageSummary } from './ops/usage.js';
@@ -2671,6 +2672,44 @@ api.post('/servers/:id/domains', (req, res) => {
   });
   audit(req, 'info', `Connect ${host} to ${s.name} port ${port}`, { serverId: s.id, jobId: job.id });
   res.json({ job, host });
+});
+
+/* ---------- web proxy (nginx) for a project: its domains → the app's port, on each of its servers ---------- */
+api.post('/projects/:id/proxy', (req, res) => {
+  const p = mustProject(req.params.id);
+  let hosts;
+  try {
+    hosts = parseHosts(req.body.hosts);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  const deps = deploymentsOf(p.id);
+  const servers = (Array.isArray(req.body.servers) ? req.body.servers : []).map((s) => {
+    const d = deps.find((x) => x.id === Number(s?.deployment));
+    if (!d) throw bad('Unknown server for this project');
+    const port = int(s.port, 0, 1, 65535);
+    if (!port) throw bad(`Choose the port of the app on ${d.server_name}`);
+    if ([22, 80, 443].includes(port)) throw bad(`Port ${port} is not the app (it is SSH or the web proxy itself) — choose the app's own port on ${d.server_name}`);
+    return { deployment: d.id, port };
+  });
+  if (!servers.length) throw bad('Choose at least one server');
+  const job = enqueue({
+    type: 'proxy-setup',
+    title: `Web proxy ${hosts[0]}${hosts.length > 1 ? ` +${hosts.length - 1}` : ''} for ${p.name} on ${servers.length} server${servers.length > 1 ? 's' : ''}`,
+    projectId: p.id,
+    params: { project: p.id, hosts, servers },
+    user: who(req),
+  });
+  audit(req, 'info', `Web proxy for ${p.name}: ${hosts.join(', ')}`, { projectId: p.id, jobId: job.id });
+  res.json({ job });
+});
+
+api.delete('/projects/:id/proxy', (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!deploymentsOf(p.id).some((d) => d.proxy_state)) throw bad('No web proxy is set up for this project');
+  const job = enqueue({ type: 'proxy-remove', title: `Remove the web proxy of ${p.name}`, projectId: p.id, params: { project: p.id }, user: who(req) });
+  audit(req, 'warn', `Remove the web proxy of ${p.name}`, { projectId: p.id, jobId: job.id });
+  res.json({ job });
 });
 
 api.delete('/domains/:id', (req, res) => {

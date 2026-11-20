@@ -6,6 +6,7 @@ import { CicdTab } from '../cicd.js';
 import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
 import { StatusHero } from '../statushero.js';
+import { ProxyTab } from '../proxy.js';
 
 const BACKUP_PRESETS = [
   ['Daily 3:00', '0 3 * * *'],
@@ -161,7 +162,7 @@ const ProjectSettings = {
 /* ------------------------------------------------------------------ page */
 export default {
   props: { id: Number },
-  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero },
+  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
@@ -342,6 +343,7 @@ export default {
           <button class="menu-item" @click="deployAll" :disabled="!p.deploy_script">Deploy to servers…</button>
           <button class="menu-item" @click="rollBack" :disabled="!p.deploy_script || !p.git_repo">↩ Roll back to an older commit…</button>
           <div class="menu-sep"></div>
+          <button class="menu-item" @click="openTab('proxy')">Web proxy (nginx)</button>
           <button class="menu-item" @click="openTab('cicd')">CI/CD, staging & previews</button>
           <button v-if="p.template" class="admin-only menu-item" @click="reprovision">Run the template setup again</button>
           <button class="admin-only menu-item" @click="openTab('settings')">Project settings</button>
@@ -415,6 +417,7 @@ export default {
 
     <div class="tabs">
       <button class="tab" :class="{ on: tab === 'dns' }" @click="openTab('dns')">DNS & SSL</button>
+      <button class="tab" :class="{ on: tab === 'proxy' }" @click="openTab('proxy')">Web proxy<span v-if="p.proxy" class="muted"> · on</span></button>
       <button class="tab" :class="{ on: tab === 'cicd' }" @click="openTab('cicd')">CI/CD<span v-if="p.ci_enabled" class="muted"> · on</span></button>
       <button class="admin-only tab" :class="{ on: tab === 'traffic' }" @click="openTab('traffic')">Traffic{{ lb ? ' · LB' : '' }}</button>
       <button class="tab" :class="{ on: tab === 'dbaccess' }" @click="openTab('dbaccess')">Database access<span v-if="p.db_access && p.db_access.enabled" class="muted"> · on</span></button>
@@ -482,6 +485,7 @@ export default {
 
     <traffic-tab v-if="tab === 'traffic'" :project="p" @reload="load" />
  <db-access-tab v-if="tab === 'dbaccess'" :project="p" :key="'dba' + p.id" />
+    <proxy-tab v-if="tab === 'proxy'" :project="p" :key="'px' + p.id" />
     <cicd-tab v-if="tab === 'cicd'" :project="p" :key="'ci' + p.id" @reload="load" />
     <jobs-table v-if="tab === 'jobs'" :jobs="jobs || []" />
     <events-list v-if="tab === 'activity'" :events="events || []" />
