@@ -14,6 +14,7 @@ import { CleanupDialog } from './cleanupdialog.js';
 import { SshGuardDialog } from './sshguard.js';
 import { CopyProjectDialog } from './copydialog.js';
 import { LinkGithubDialog, CloneGuideDialog, ProjectGuideDialog } from './gitlink.js';
+import { ServerToolsNeeded } from './servertools.js';
 
 /* ======================================================================= SERVER */
 export const ServerDialog = {
@@ -179,13 +180,52 @@ export const ProjectDialog = {
 };
 
 /* ======================================================================= PROJECT ON A SERVER */
+/* ======================================================================= CONNECT A PROJECT (from a server page) */
+export const ConnectProjectDialog = {
+  props: { server: Object },
+  components: { Modal, ServerToolsNeeded },
+  setup(props) {
+    const onServer = new Set((props.server.deployments || []).map((d) => d.project_id));
+    const projects = computed(() => (store.overview?.projects || []).filter((p) => !onServer.has(p.id)));
+    const pick = ref(projects.value[0]?.id || '');
+    const project = ref(null);
+    watch(pick, async (id) => {
+      project.value = null;
+      if (id) project.value = await http.get(`/projects/${id}`).catch((e) => (toast(e.message, 'error'), null));
+    }, { immediate: true });
+    const next = () => openDialog('deployment', { project: project.value, serverId: props.server.id });
+    const other = (type, extra) => openDialog(type, { serverId: props.server.id, ...extra });
+    return { projects, pick, project, next, other, closeDialog };
+  },
+  template: `
+  <modal :title="'Connect a project to ' + server.name" @close="closeDialog">
+    <div class="form">
+      <div class="row gap-8 wrap">
+        <button class="btn" @click="other('template-project', { fromRepo: true })">🐙 Deploy from my GitHub</button>
+        <button class="btn" @click="other('template-project')">✨ New app from a template</button>
+      </div>
+      <div class="muted small">…or add <b>{{ server.name }}</b> to a project you already have (as another server it runs on):</div>
+      <div v-if="!projects.length" class="hint">Every project already runs on this server.</div>
+      <template v-else>
+        <div class="field"><label>Project</label>
+          <select v-model="pick"><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}{{ p.domain ? ' — ' + p.domain : '' }}</option></select></div>
+        <server-tools-needed v-if="project" :server-ids="[server.id]" :needs="project.tool_check ? project.tool_check.needs : []" :label="project.name" />
+      </template>
+    </div>
+    <template #footer>
+      <button class="btn" @click="closeDialog">Cancel</button>
+      <button class="btn btn-primary" :disabled="!project" @click="next">Next: app folder & containers →</button>
+    </template>
+  </modal>`,
+};
+
 export const DeploymentDialog = {
-  props: { project: Object, dep: Object },
+  props: { project: Object, dep: Object, serverId: Number },
   components: { Modal },
   setup(props) {
     const d = props.dep;
     const f = reactive({
-      server_id: d?.server_id || props.project.available_servers?.[0]?.id || '',
+      server_id: d?.server_id || (props.project.available_servers?.some((s) => s.id === props.serverId) ? props.serverId : '') || props.project.available_servers?.[0]?.id || '',
       priority: d?.priority ?? 10,
       app_dir: d?.app_dir || '',
       app_container: d?.app_container || '',
@@ -895,6 +935,7 @@ export const DIALOGS = {
   'link-github': LinkGithubDialog,
   'clone-guide': CloneGuideDialog,
   'project-guide': ProjectGuideDialog,
+  'connect-project': ConnectProjectDialog,
   switch: SwitchDialog,
   sync: SyncDialog,
   clone: CloneDialog,
