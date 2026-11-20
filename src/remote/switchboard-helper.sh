@@ -225,6 +225,8 @@ server {
     try_files \$uri =404;
   }
   location = /index.html { add_header Cache-Control "no-cache"; }
+  # Never hand out .git, .env and other hidden files (a plain HTML repo is served from its checkout)
+  location ~ /\.(?!well-known/) { return 404; }
   location / {
     try_files \$uri \$uri/ $fallback;
   }
@@ -361,6 +363,97 @@ wait_healthy() {
 app_port() { local p; p=$(grep -E '^APP_PORT=' "$1/.env" 2>/dev/null | tail -n1 | cut -d= -f2); echo "${p:-}"; }
 
 # ---------------------------------------------------------------- commands
+# ---------------------------------------------------------------- apps without Docker (front-ends, PM2)
+# Run a shell line in a folder as the app's user, with that user's Node.js (nvm) when it has one.
+node_run() {
+  local dir=$1
+  shift
+  as_user "$dir" bash -c 'set -e; export COREPACK_ENABLE_DOWNLOAD_PROMPT=0; if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh" >/dev/null; nvm use -s >/dev/null 2>&1 || true; fi; '"$*"
+}
+
+# Node.js for the app's user: theirs (nvm or system) when there, else Node 22 LTS from nodejs.org into /usr/local.
+ensure_node() {
+  if node_run "$SB_DIR" 'command -v npm >/dev/null' 2>/dev/null; then
+    say "Node.js $(node_run "$SB_DIR" 'node -v') for $SB_USER"
+    return 0
+  fi
+  local arch base=https://nodejs.org/dist/latest-v22.x tmp file
+  case "$(uname -m)" in x86_64) arch=x64 ;; aarch64 | arm64) arch=arm64 ;; *) die "no Node.js build for $(uname -m) — install Node.js on the server first" ;; esac
+  say 'Install Node.js 22 (LTS) from nodejs.org into /usr/local'
+  tmp=$(mktemp -d)
+  curl -fsSL "$base/SHASUMS256.txt" -o "$tmp/SUMS" || die 'could not reach nodejs.org to download Node.js'
+  file=$(awk -v a="linux-$arch.tar.gz" '{ n = $2; if (substr(n, length(n) - length(a) + 1) == a) { print n; exit } }' "$tmp/SUMS")
+  [ -n "$file" ] || die 'could not find the Node.js download'
+  curl -fsSL "$base/$file" -o "$tmp/$file" || die 'Node.js download failed'
+  (cd "$tmp" && grep " $file\$" SUMS | sha256sum -c - >/dev/null 2>&1) || die 'the Node.js download did not match its checksum'
+  tar -xzf "$tmp/$file" -C /usr/local --strip-components=1 --no-same-owner --exclude CHANGELOG.md --exclude LICENSE --exclude README.md
+  rm -rf "$tmp"
+  say "Node.js $(/usr/local/bin/node -v) installed"
+}
+
+# Install the packages the lock file lists (npm, pnpm or yarn) and run the build script when there is one.
+node_build() {
+  say 'Install packages and build'
+  node_run "$SB_DIR" 'if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack yarn install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci --no-audit --no-fund; elif [ -f package.json ]; then npm install --no-audit --no-fund; fi
+if [ -f package.json ]; then npm run build --if-present; fi'
+}
+
+# The folder with the built site: dist, build, out… (or the checkout itself for plain HTML files).
+site_dir() {
+  local d
+  for d in dist build out .output/public dist/spa www public ''; do
+    if [ -f "$SB_DIR${d:+/$d}/index.html" ]; then echo "$SB_DIR${d:+/$d}"; return 0; fi
+  done
+  return 1
+}
+
+# PM2 for the app's user: in their nvm when Node comes from nvm, else next to the system Node.js.
+ensure_pm2() {
+  node_run "$SB_DIR" 'command -v pm2 >/dev/null' 2>/dev/null && return 0
+  say 'Install PM2'
+  if node_run "$SB_DIR" 'case "$(command -v npm)" in "$HOME"/*) exit 0 ;; *) exit 1 ;; esac' 2>/dev/null; then
+    node_run "$SB_DIR" 'npm install -g --no-audit --no-fund pm2 >/dev/null'
+  else
+    npm install -g --no-audit --no-fund pm2 >/dev/null
+  fi
+}
+
+# Start (or reload) the app with PM2 on its local port, from a small ecosystem file Switchboard keeps in
+# .switchboard/ (git ignores it), so a reload keeps PORT. Starts again after a reboot when systemd is there.
+pm2_start() {
+  local port=$1 script args='' f="$SB_DIR/.switchboard/pm2.config.cjs"
+  if node_run "$SB_DIR" 'node -e "process.exit(require(\"./package.json\").scripts?.start ? 0 : 1)"' 2>/dev/null; then
+    script=npm; args=start
+  elif [ -f "$SB_DIR/.output/server/index.mjs" ]; then script=.output/server/index.mjs
+  elif [ -f "$SB_DIR/server.js" ]; then script=server.js
+  elif [ -f "$SB_DIR/index.js" ]; then script=index.js
+  else die 'no "start" script in package.json, and no .output/server/index.mjs, server.js or index.js — how does the app start?'
+  fi
+  mkdir -p "$SB_DIR/.switchboard"
+  cat >"$f" <<PM2
+// Made by Switchboard — how PM2 runs $SB_NAME. Switchboard rewrites it on setup.
+module.exports = { apps: [{
+  name: '$SB_SLUG', cwd: '$SB_DIR', script: '$script', args: '$args',
+  env: { NODE_ENV: 'production', PORT: '$port', NITRO_PORT: '$port', HOST: '127.0.0.1', NITRO_HOST: '127.0.0.1' },
+}] };
+PM2
+  chown -R "$SB_USER": "$SB_DIR/.switchboard"
+  grep -qsx '.switchboard/' "$SB_DIR/.git/info/exclude" || { mkdir -p "$SB_DIR/.git/info" && echo '.switchboard/' >>"$SB_DIR/.git/info/exclude"; } 2>/dev/null || true
+  say "Start $SB_SLUG with PM2 on port $port ($script${args:+ $args})"
+  node_run "$SB_DIR" "pm2 startOrReload .switchboard/pm2.config.cjs --update-env >/dev/null && pm2 save >/dev/null"
+  if [ -d /run/systemd/system ]; then
+    local pm2bin home
+    pm2bin=$(node_run "$SB_DIR" 'command -v pm2')
+    home=$(user_home)
+    env PATH="$(dirname "$pm2bin"):$PATH" "$pm2bin" startup systemd -u "$SB_USER" --hp "$home" >/dev/null 2>&1 && say 'PM2 starts the app again after a reboot' || say 'Could not set PM2 to start after a reboot (pm2 startup) — do it by hand once'
+  else
+    say 'No systemd here: run "pm2 startup" once by hand so the app comes back after a reboot'
+  fi
+  local i
+  for i in $(seq 1 60); do ss -ltn "sport = :$port" | tail -n +2 | grep -q . && return 0; sleep 1; done
+  die "the app did not start listening on port $port — see: pm2 logs $SB_SLUG"
+}
+
 cmd_setup() {
   load "$1"
   local port
@@ -375,6 +468,24 @@ cmd_setup() {
   fi
   [ -d "$SB_DIR" ] || die "$SB_DIR does not exist"
   [ -n "$SB_TEMPLATE" ] || { say "No template: nothing to start"; return 0; }
+  # Without Docker: build on the server; Switchboard then puts the web proxy in front (edge-static / edge-site).
+  if [ "$SB_TEMPLATE" = frontend ]; then
+    ensure_node
+    node_build
+    port=$(site_dir) || die 'no index.html after the build — set the build folder in the project (Web proxy tab)'
+    say "Built site: $port"
+    echo "SB_SITE_DIR=$port"
+    return 0
+  fi
+  if [ "$SB_TEMPLATE" = pm2 ]; then
+    ensure_node
+    node_build
+    ensure_pm2
+    port=$(port_for "$SB_SLUG")
+    pm2_start "$port"
+    echo "SB_PORT=$port"
+    return 0
+  fi
   if [ "$SB_TEMPLATE" = compose ]; then
     # The repo's own docker-compose.yml: Switchboard only starts it (and puts a domain in front).
     if [ ! -f "$SB_DIR/.env" ] && [ -f "$SB_DIR/.env.example" ]; then

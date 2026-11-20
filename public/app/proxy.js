@@ -15,7 +15,7 @@ import { reducedMotion } from './live.js';
  *   ProxyLive    the job window's live view (job progress kind "proxy")
  */
 
-const PHASE_TEXT = { check: 'Looking for your app or files…', write: 'Writing the nginx config…', test: 'Testing it…', done: 'Working', '': 'Waiting' };
+const PHASE_TEXT = { build: 'Getting the code and building…', check: 'Looking for your app or files…', write: 'Writing the nginx config…', test: 'Testing it…', done: 'Working', '': 'Waiting' };
 
 export const ProxyFlow = {
   props: { rows: Array, hosts: Array, remove: Boolean },
@@ -98,7 +98,7 @@ export const ProxyFlow = {
           <circle cx="10" cy="10" r="2" class="pf-led" /><circle cx="10" cy="20" r="2" class="pf-led l2" />
           <text x="38" y="19.5" text-anchor="middle" class="pf-port">{{ r.port ? ':' + r.port : ':?' }}</text>
         </template>
-        <circle v-if="r.st === 'running' && r.phase === 'check' && !still" cx="32" cy="15" r="16" class="pf-radar" />
+        <circle v-if="r.st === 'running' && (r.phase === 'check' || r.phase === 'build') && !still" cx="32" cy="15" r="16" class="pf-radar" />
       </g>
 
       <text x="240" :y="r.y + 38" text-anchor="middle" class="pf-lbl">{{ r.label }}<tspan class="pf-sub"> — {{ r.error ? 'failed' : r.st === 'running' ? PHASE_TEXT[r.phase || ''] : r.st === 'success' ? (remove ? 'removed' : r.code ? 'answers ' + r.code : 'working') : r.st === 'preview' ? 'will be set up' : r.st === 'queued' ? 'waiting' : 'not set up' }}</tspan></text>
@@ -276,10 +276,10 @@ export const ProxyLive = {
     const failed = computed(() => props.progress.servers.find((s) => s.state === 'failure'));
     const running = computed(() => props.progress.servers.find((s) => s.state === 'running'));
     const headline = computed(() => {
-      const verb = props.progress.remove ? 'Removing the web proxy' : 'Setting up the web proxy';
+      const verb = props.progress.setup ? `Setting up ${props.progress.project}` : props.progress.remove ? 'Removing the web proxy' : 'Setting up the web proxy';
       if (running.value) return `${verb} on ${running.value.name} — ${PHASE_TEXT[running.value.phase || ''].replace('…', '')}`;
       if (failed.value) return `${failed.value.name}: ${failed.value.error}`;
-      if (done.value === props.progress.servers.length) return props.progress.remove ? 'Web proxy removed' : `Done — ${props.progress.hosts[0]} goes to your app`;
+      if (done.value === props.progress.servers.length) return props.progress.remove ? 'Web proxy removed' : `Done — ${props.progress.hosts[0] || 'your site'} goes to your app`;
       return `${verb}…`;
     });
     const cls = computed(() => (failed.value ? 'bad' : running.value || !['success', 'failure'].includes(props.status) ? 'run' : 'ok'));

@@ -205,7 +205,7 @@ export const TemplateProjectDialog = {
   <modal :title="fromRepo ? 'Deploy a repo from my GitHub' : 'New app'" size="lg" @close="closeDialog">
     <div v-if="!info" class="muted">Loading…</div>
     <div v-else class="form">
-      <p class="muted" style="margin:0">Switchboard puts the app on your server(s): Docker, the containers, (optionally) a domain with HTTPS through Cloudflare — and deploys every new push.</p>
+      <p class="muted" style="margin:0">Switchboard puts the app on your server(s) — in Docker, or straight on the server for front-ends and PM2 apps — with (optionally) a domain with HTTPS through Cloudflare, and deploys every new push.</p>
 
       <div class="fieldset">
         <div class="fieldset-title">1. Code</div>
@@ -229,7 +229,7 @@ export const TemplateProjectDialog = {
           <div v-else-if="detected" class="detect-box"><icon name="check" />
             <span><b>{{ detected.repo }}</b> · {{ detected.private ? 'private' : 'public' }} ·
               <template v-if="detected.compose">has <code>{{ detected.compose }}</code>{{ detected.ports.length ? ' (ports ' + detected.ports.join(', ') + ')' : '' }}</template>
-              <template v-else-if="detected.suggest === 'laravel'">Laravel app</template><template v-else-if="detected.suggest === 'node'">Node.js app</template><template v-else>static files</template>
+              <template v-else-if="detected.suggest === 'laravel'">Laravel app</template><template v-else-if="detected.js && detected.js.framework">{{ detected.js.framework }} {{ detected.js.kind === 'frontend' ? 'front-end' : 'app' }}</template><template v-else-if="detected.suggest === 'node'">Node.js app</template><template v-else>static files</template>
               → <b>{{ (info.templates.find(t => t.id === detected.suggest) || {}).label }}</b></span></div>
         </template>
         <div class="form-row" v-if="f.code === 'new'">
@@ -243,6 +243,7 @@ export const TemplateProjectDialog = {
         <div class="fieldset-title">2. What kind of app?</div>
         <div class="seg"><button v-for="t in info.templates" :key="t.id" type="button" :class="{ on: f.template === t.id }" @click="chooseTemplate(t.id)">{{ t.label }}</button></div>
         <div class="hint">{{ tpl && tpl.hint }}</div>
+        <div v-if="detected && detected.js && detected.js.kind === 'server' && f.template === 'node'" class="hint">Prefer no Docker? Pick <b>Node app with PM2, no Docker</b> — the app runs straight on the server.</div>
         <div v-if="tpl && tpl.dbs.length > 1" class="field"><label>Database</label>
           <div class="seg" style="align-self:flex-start"><button v-for="d in tpl.dbs" :key="d" type="button" :class="{ on: f.db === d }" @click="f.db = d">{{ info.dbs[d] }}</button></div></div>
         <div v-if="f.template === 'compose'" class="form-row">
@@ -270,7 +271,7 @@ export const TemplateProjectDialog = {
         <div class="fieldset-title">4. Servers</div>
         <div v-if="!servers.length" class="hint">Add a server first (Servers → Add server).</div>
         <div class="chips"><button v-for="s in servers" :key="s.id" type="button" class="chip" :class="{ on: f.servers.includes(s.id) }" @click="toggle(s.id)">{{ s.name }} <span class="muted mono">{{ s.ip }}</span></button></div>
-        <div class="hint">The first one becomes the live server. Docker is installed if missing.</div>
+        <div class="hint">The first one becomes the live server. {{ tpl && tpl.host ? 'Node.js (and PM2) are installed if missing; Docker only when the server has no nginx (for the small web proxy).' : 'Docker is installed if missing.' }}</div>
         <div class="field"><label>Folder on the server</label>
           <div class="folder-go">
             <input v-model.trim="f.folder" class="code" placeholder="/srv/my-app" @input="folderTouched = true">

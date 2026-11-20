@@ -1951,7 +1951,7 @@ function uniqueSlug(name) {
 
 api.get('/templates', (req, res) => {
   res.json({
-    templates: Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, dbs: t.dbs })),
+    templates: Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, dbs: t.dbs, host: !!t.host })),
     dbs: DB_NAMES,
     github: gh.hasToken(),
   });

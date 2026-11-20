@@ -29,7 +29,7 @@ export const TEMPLATES = {
     tests: 'cp .env.example .env\ncomposer install --no-interaction --prefer-dist --no-progress\nphp artisan key:generate\nphp artisan test',
   },
   node: {
-    label: 'Node.js / Nuxt',
+    label: 'Node.js / Nuxt (Docker)',
     hint: 'npm ci + npm run build, then Nuxt (.output/server) or "npm start" on port 3000.',
     dbs: ['none', 'mysql', 'postgres'],
     port: 3000,
@@ -45,8 +45,26 @@ export const TEMPLATES = {
     tests: '',
     own: true, // uses the repo's own Dockerfile / compose file — Switchboard adds none
   },
+  frontend: {
+    label: 'Front-end, no Docker (Vue / React / Vite)',
+    hint: 'Built on the server (npm ci + npm run build), then nginx serves the built folder (dist…) — refreshing a page works. Node.js is installed if missing. No Docker for the app.',
+    dbs: ['none'],
+    port: null,
+    health: '/',
+    tests: 'npm ci\nnpm run build',
+    host: true, // runs on the server itself, not in Docker
+  },
+  pm2: {
+    label: 'Node app with PM2, no Docker (Nuxt / Next / Express)',
+    hint: 'Built on the server, then run with PM2 ("npm start", or Nuxt\'s .output) on a local port, with nginx in front. Node.js and PM2 are installed if missing.',
+    dbs: ['none'],
+    port: null,
+    health: '/',
+    tests: 'npm ci\nnpm test --if-present',
+    host: true,
+  },
   static: {
-    label: 'Static site / Vue SPA',
+    label: 'Static site / Vue SPA (Docker)',
     hint: 'npm run build and serve dist/ with nginx (or plain HTML files as they are).',
     dbs: ['none'],
     port: 80,
@@ -148,6 +166,8 @@ ${dependsDb ? `    depends_on:\n${dependsDb}` : ''}`;
 
 /* ------------------------------------------------------------------ fresh app files (no repo yet) */
 export function scaffoldFiles(template, name) {
+  if (template === 'frontend') template = 'static';
+  if (template === 'pm2') template = 'node';
   const gitignore = '.env\nnode_modules/\ndist/\n.output/\n.nuxt/\n';
   if (template === 'static') {
     return {
@@ -193,7 +213,7 @@ export async function installHelper(ctx, conn, server) {
     .replaceAll('__EDGE_IMAGE__', EDGE_IMAGE);
   const cmds = ['set -e', 'mkdir -p /etc/switchboard/projects /etc/switchboard/ports', 'chmod 700 /etc/switchboard/projects', writeCmd(HELPER, helper, '755')];
   for (const [name, t] of Object.entries(TEMPLATES)) {
-    if (t.own) continue;
+    if (t.own || t.host) continue;
     const dir = `/etc/switchboard/templates/${name}`;
     cmds.push(`mkdir -p ${dir}`);
     for (const f of ['Dockerfile', 'Dockerfile.dockerignore']) cmds.push(writeCmd(`${dir}/${f}`, fs.readFileSync(path.join(REMOTE_DIR, 'templates', name, f), 'utf8')));
@@ -241,7 +261,8 @@ export function projectConf(project, dep, server) {
     SB_TEMPLATE: project.template || '',
     SB_DB: opts.db || 'none',
     SB_ENV: project.env || 'production',
-    SB_HOSTS: project.template && !(project.template === 'compose' && !opts.app_port) ? projectHosts(project).join(' ') : '',
+    // apps without Docker get their web proxy from Switchboard after the build (as the project's Web proxy)
+    SB_HOSTS: project.template && !TEMPLATES[project.template]?.host && !(project.template === 'compose' && !opts.app_port) ? projectHosts(project).join(' ') : '',
     SB_URL: project.domain ? `https://${project.domain}` : '',
     SB_HEALTH_PATH: project.health_path || '/',
     SB_HEALTH_URL: h.url,
