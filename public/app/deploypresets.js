@@ -17,6 +17,7 @@ if [ -n "\${SB_COMMIT:-}" ]; then git fetch -q origin && git reset -q --keep "$S
 if [ "$OWNER" != "$(id -un)" ] && [ "$(id -u)" = 0 ]; then
   find "$DIR" -path "$DIR/node_modules" -prune -o ! -user "$OWNER" -exec chown -h "$OWNER:$GROUP" {} +
 fi
+[ -f package.json ] || { echo "No package.json in $DIR: this folder does not hold the app's code (maybe only the built site). Set the app folder to the folder with the code, or connect an empty folder to Git (Servers and Git) so the code is cloned into it."; exit 1; }
 # Install exactly what the lock file says (npm, pnpm or yarn), then build
 INSTALL='export COREPACK_ENABLE_DOWNLOAD_PROMPT=0; if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack yarn install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi'`;
 

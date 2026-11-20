@@ -440,6 +440,15 @@ else
   git remote add origin "$URL"
   [ -z "$SSHC" ] || git config core.sshCommand "$SSHC"
   fetch
+  # Attaching keeps every file as it is, so it only works when the folder already holds a copy of the code.
+  # A folder with only the built site (index.html, assets… no package.json) would never get the code: refuse, and undo the git init.
+  TOTAL="$(git ls-tree -r --name-only "refs/remotes/origin/$BRANCH" | wc -l | tr -d ' ')"
+  HAVE="$(git ls-tree -r --name-only "refs/remotes/origin/$BRANCH" | while IFS= read -r f; do [ -e "$f" ] && echo x; done | wc -l | tr -d ' ')"
+  if [ $((HAVE * 2)) -lt "$TOTAL" ]; then
+    rm -rf "$DIR/.git"
+    echo "$DIR is not a copy of the code: only $HAVE of the $TOTAL files of $BRANCH are in it (a folder with just the built site?). Nothing was changed. Use an empty folder for the code instead (e.g. $DIR-src): Switchboard clones the repository into it, and the website can then serve its build folder (dist)." >&2
+    exit 1
+  fi
   git reset -q "refs/remotes/origin/$BRANCH"
   git config "branch.$BRANCH.remote" origin; git config "branch.$BRANCH.merge" "refs/heads/$BRANCH"
   out done attached
