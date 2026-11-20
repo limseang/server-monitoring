@@ -687,7 +687,9 @@ function describeContainer(c) {
   };
 }
 
-function suggestDeployment(containers, hint) {
+function suggestDeployment(all, hint) {
+  // Switchboard's own containers (shared database server…) never belong to a project's server card.
+  const containers = all.filter((c) => !/^switchboard-/.test(c.name) && !/^\/opt\/switchboard-/.test(c.working_dir || ''));
   const h = String(hint || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const score = (c) => {
     const hay = `${c.compose_project || ''}${c.name}`.toLowerCase().replace(/[^a-z0-9]/g, '');
