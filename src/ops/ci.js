@@ -173,6 +173,9 @@ export function exampleWorkflow(root) {
   const deps = deploymentsOf(p.id).sort((a, b) => (a.id === p.active_deployment_id) - (b.id === p.active_deployment_id));
   const branch = p.git_branch || 'main';
   const tests = root.ci_test_on !== 'none' && String(root.ci_test_cmd || '').trim();
+  // What kind of app: from its deploy script (the Settings presets), Docker Compose when unknown.
+  const script = String(p.deploy_script || '');
+  const kind = /docker compose|docker-compose/.test(script) || !script.trim() ? 'docker' : /pm2/i.test(script) ? 'pm2' : /npm|pnpm|yarn/.test(script) ? 'node' : 'docker';
   const rows = deps.map((d) => {
     const s = getServer(d.server_id);
     return `          - { server: ${q(slugify(s.name))}, dir: ${q(d.app_dir || '/srv/app')} }${d.id === p.active_deployment_id ? '   # live — deployed last' : ''}`;
@@ -180,7 +183,9 @@ export function exampleWorkflow(root) {
   const L = [
     `# Deploy ${root.name}: made from Switchboard's example — yours to change. Switchboard never rewrites this file.`,
     '# Each server runs a GitHub self-hosted runner (Switchboard → CI/CD → Servers and Git) with its own name as a label.',
-    '# The runner must be allowed to run Docker: Switchboard → CI/CD → "What the runner may do" → "Full — for my own workflow".',
+    kind === 'docker'
+      ? '# The runner must be allowed to run Docker: Switchboard → CI/CD → "What the runner may do" → "Full — for my own workflow".'
+      : '# The runner must be allowed to write the app folder: Switchboard → CI/CD → "What the runner may do" → "Full — for my own workflow".',
     'name: Deploy',
     'on:',
     '  push:',
@@ -217,17 +222,38 @@ export function exampleWorkflow(root) {
     `          git fetch -q origin ${branch}`,
     '          git reset -q --keep "$GITHUB_SHA"   # also works when you re-run an older run (rollback)',
     '          git log -1 --format="Now at %h: %s"',
-    '      - name: Rebuild and restart the containers',
-    '        run: docker compose up -d --build --remove-orphans',
   );
-  if (root.template === 'laravel' || /laravel|php/i.test(p.deploy_script || ''))
+  if (kind === 'docker') L.push('      - name: Rebuild and restart the containers', '        run: docker compose up -d --build --remove-orphans');
+  else {
+    // No Docker (Vue / React / Nuxt…): install exactly what the lock file says and build, with the runner user's Node.js (nvm).
+    L.push(
+      '      - name: Install and build',
+      '        run: |',
+      '          if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use -s >/dev/null 2>&1 || true; fi',
+      '          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0',
+      '          if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile',
+      '          elif [ -f yarn.lock ]; then corepack yarn install --frozen-lockfile',
+      '          elif [ -f package-lock.json ]; then npm ci --no-audit --no-fund',
+      '          else npm install --no-audit --no-fund; fi',
+      kind === 'pm2' ? '          npm run build --if-present' : '          npm run build   # nginx serves the build folder (dist) — Switchboard → Web proxy → Website files',
+    );
+    if (kind === 'pm2')
+      L.push(
+        '      - name: Restart the app (PM2)',
+        '        run: |',
+        '          if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use -s >/dev/null 2>&1 || true; fi',
+        '          F=$(ls ecosystem.config.* .switchboard/pm2.config.cjs 2>/dev/null | head -1)',
+        '          if [ -n "$F" ]; then npx --no-install pm2 startOrReload "$F" --update-env; else echo "No PM2 ecosystem file here: reload your app by name, e.g. pm2 reload my-app"; exit 1; fi',
+        '          npx --no-install pm2 save',
+      );
+  }
+  if (kind === 'docker' && (root.template === 'laravel' || /laravel|php/i.test(p.deploy_script || '')))
     L.push('      - name: Laravel', '        run: |', '          docker compose exec -T app php artisan migrate --force', '          docker compose exec -T app php artisan optimize');
   L.push(
     '      # - name: Health check',
     `      #   run: curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://localhost${p.health_port ? `:${p.health_port}` : ''}${p.health_path || '/'} > /dev/null`,
-    '      - name: Clean up old images',
-    '        run: docker image prune -f',
   );
+  if (kind === 'docker') L.push('      - name: Clean up old images', '        run: docker image prune -f');
   return `${L.join('\n')}\n`;
 }
 
