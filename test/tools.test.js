@@ -16,7 +16,7 @@ test('a project needs what its deploy script uses', () => {
   assert.deepEqual(projectNeeds({ deploy_script: PM2_SCRIPT }).sort(), ['git', 'node', 'pm2']);
   assert.deepEqual(projectNeeds({ deploy_script: 'git pull\ndocker compose up -d --build' }).sort(), ['docker', 'git']);
   assert.deepEqual(projectNeeds({ deploy_script: '' }), []);
-  assert.deepEqual(projectNeeds({ deploy_script: '', template: 'frontend', git_repo: 'a/b' }).sort(), ['git', 'node']);
+  assert.deepEqual(projectNeeds({ deploy_script: '', template: 'frontend', git_repo: 'a/b' }).sort(), ['git', 'nginx|docker', 'node']);
 });
 
 test('install order: what a tool needs comes first, installed ones are not added again', () => {
@@ -43,6 +43,18 @@ test('missingFor: a checked server without Node.js is reported, an unchecked one
   assert.deepEqual(m['Backup 2'].missing, ['node']);
   assert.deepEqual(m.New.missing, []);
   assert.equal(m.New.checked_at, null);
+});
+
+test('template needs: Docker apps need Docker; apps without Docker need Node.js and a web server (nginx OR Docker)', async () => {
+  const { templateNeeds, lacking, needName } = await import('../src/ops/tools.js');
+  assert.deepEqual(templateNeeds('laravel'), ['docker', 'git']);
+  assert.deepEqual(templateNeeds('frontend'), ['node', 'nginx|docker', 'git']);
+  assert.deepEqual(lacking(templateNeeds('frontend'), { node: 'v22', docker: '27', git: '2' }), []);
+  assert.deepEqual(lacking(templateNeeds('frontend'), { git: '2' }), ['node', 'nginx|docker']);
+  assert.equal(needName('nginx|docker'), 'Nginx (or Docker)');
+  assert.deepEqual(installPlan(['nginx|docker']), ['nginx']);
+  // A project made from the Laravel template deploys through the helper (no "docker" in its script) — still needs Docker.
+  assert.deepEqual(projectNeeds({ template: 'laravel', deploy_script: 'switchboard-helper deploy x' }).sort(), ['docker', 'git']);
 });
 
 test('starter apps are real projects with folders (Vue/Vite front-end, Node app) and a README', async () => {

@@ -108,6 +108,8 @@ pkg_install certbot`,
 ];
 const BY_KEY = Object.fromEntries(TOOLS.map((t) => [t.key, t]));
 export const toolName = (k) => BY_KEY[k]?.name || k;
+/** "nginx|docker" → "Nginx (or Docker)" */
+export const needName = (n) => n.split('|').map(toolName).join(' (or ') + (n.includes('|') ? ')' : '');
 
 /** Public view of the catalog (no scripts). */
 export const toolCatalog = () => TOOLS.map(({ key, name, icon, desc, needs = [] }) => ({ key, name, icon, desc, needs }));
@@ -134,15 +136,32 @@ export async function checkTools(conn, server) {
 }
 
 /**
+ * What an app made from a template needs on its server. "a|b" = either one is enough
+ * (an app without Docker needs a web server: the server's own nginx, or Docker for a small nginx container).
+ */
+export const TEMPLATE_NEEDS = {
+  laravel: ['docker', 'git'],
+  node: ['docker', 'git'],
+  compose: ['docker', 'git'],
+  static: ['docker', 'git'],
+  frontend: ['node', 'nginx|docker', 'git'],
+  pm2: ['node', 'pm2', 'nginx|docker', 'git'],
+};
+export const templateNeeds = (id) => TEMPLATE_NEEDS[id] || [];
+
+/** The needs a server's tool list lacks ("a|b" is met by either). */
+export const lacking = (needs, list = {}) => needs.filter((n) => !n.split('|').some((k) => list[k]));
+
+/**
  * Which tools a project needs on its servers, from its deploy script (and template):
  * Docker Compose → docker · npm / pnpm / yarn → node · pm2 → node + pm2 · git → git.
  */
 export function projectNeeds(project) {
   const s = String(project?.deploy_script || '');
   const t = String(project?.template || '');
-  const needs = new Set();
+  const needs = new Set(templateNeeds(t));
   if (/\bdocker\b|docker-compose/.test(s)) needs.add('docker');
-  if (/\b(npm|npx|pnpm|yarn|node)\b/.test(s) || /^(frontend|vue|react|nuxt|next|node|static)/i.test(t)) needs.add('node');
+  if (/\b(npm|npx|pnpm|yarn)\b/.test(s)) needs.add('node');
   if (/\bpm2\b/i.test(s)) needs.add('pm2');
   if (/\bgit (pull|fetch|reset|clone)\b/.test(s) || project?.git_repo) needs.add('git');
   return [...needs];
@@ -153,7 +172,7 @@ export function missingFor(project) {
   const needs = projectNeeds(project);
   return deploymentsOf(project.id).map((d) => {
     const st = toolsOf(getServer(d.server_id));
-    const missing = st ? needs.filter((k) => !st.list?.[k]) : [];
+    const missing = st ? lacking(needs, st.list) : [];
     return { deployment_id: d.id, server_id: d.server_id, server_name: d.server_name, checked_at: st?.at || null, missing };
   });
 }
@@ -161,7 +180,8 @@ export function missingFor(project) {
 /** Install order: what a tool needs comes first; unknown keys are refused. */
 export function installPlan(keys, have = {}) {
   const out = [];
-  const add = (k) => {
+  const add = (k0) => {
+    const k = String(k0).split('|')[0];
     const t = BY_KEY[k];
     if (!t) throw new Error(`Unknown tool "${k}"`);
     for (const n of t.needs || []) if (!have[n]) add(n);
@@ -180,9 +200,9 @@ export async function requireTools(ctx, conn, server, project) {
   if (!needs.length) return;
   const st = await checkTools(conn, server).catch(() => null);
   if (!st) return; // could not check: let the script itself decide
-  const missing = needs.filter((k) => !st.list[k]);
+  const missing = lacking(needs, st.list);
   if (!missing.length) return;
-  const names = missing.map(toolName).join(' and ');
+  const names = missing.map(needName).join(' and ');
   const err = new Error(`${names} ${missing.length > 1 ? 'are' : 'is'} not installed on ${server.name}, and this project's deploy script needs ${missing.length > 1 ? 'them' : 'it'}. Install: project page → "Install" button, or Servers → ${server.name} → Tools.`);
   err.missingTools = { server_id: server.id, tools: missing };
   throw err;
