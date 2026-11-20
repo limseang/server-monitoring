@@ -426,6 +426,10 @@ const MIGRATIONS = [
   `
   ALTER TABLE projects ADD COLUMN group_name TEXT;
   `,
+  // v20: which tools a server has (Node.js, PM2, Docker…), last checked — for the Tools tab and the "missing tool" warnings
+  `
+  ALTER TABLE servers ADD COLUMN tools TEXT;
+  `,
 ];
 
 const current = db.prepare('PRAGMA user_version').get().user_version;

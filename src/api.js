@@ -48,6 +48,7 @@ import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, 
 import { dbAccessOf, dbAccessProblem, dbAccessIssues, dbDeps, zoneOf, DEFAULT_PORTS, PROXY_IMAGE } from './ops/dbaccess.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron, nextCleanup } from './monitor.js';
 import { previewGuard, guardOptions, unbanIp } from './ops/sshguard.js';
+import { toolCatalog, toolsOf, checkTools, installPlan, projectNeeds, missingFor, toolName } from './ops/tools.js';
 import { previewCleanup, cleanupOptions, cleanupLabel, getSchedule, setSchedule } from './ops/cleanup.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
@@ -1038,6 +1039,39 @@ api.post('/servers/:id/ssh-guard/preview', async (req, res) => {
   }
 });
 
+/* ---------- server tools (Node.js, PM2, Docker…): what is installed, and one-click install ---------- */
+api.get('/servers/:id/tools', async (req, res) => {
+  const s = mustServer(req.params.id);
+  let state = toolsOf(s);
+  let error = null;
+  if (req.query.refresh === '1' || !state) {
+    try {
+      state = await withSSH(s, (conn) => checkTools(conn, s), { timeout: 15000 });
+    } catch (e) {
+      error = e.message;
+    }
+  }
+  const running = all("SELECT id, params FROM jobs WHERE type = 'tools-install' AND status IN ('queued', 'running')").find((r) => parseJSON(r.params, {}).server === s.id);
+  res.json({ catalog: toolCatalog(), state, error, running_job: running?.id || null });
+});
+
+api.post('/servers/:id/tools/install', (req, res) => {
+  const s = mustServer(req.params.id);
+  const keys = Array.isArray(req.body?.tools) ? req.body.tools.map((k) => str(k, 20)).filter(Boolean) : [];
+  if (!keys.length) throw bad('Choose at least one tool');
+  let plan;
+  try {
+    plan = installPlan(keys, toolsOf(s)?.list || {});
+  } catch (e) {
+    throw bad(e.message);
+  }
+  if (all("SELECT params FROM jobs WHERE type = 'tools-install' AND status IN ('queued', 'running')").some((r) => parseJSON(r.params, {}).server === s.id)) throw bad('Tools are already being installed on this server — wait for that job');
+  const names = plan.map(toolName).join(', ');
+  const job = enqueue({ type: 'tools-install', title: `Install ${names} on ${s.name}`, serverId: s.id, params: { server: s.id, tools: plan }, user: who(req) });
+  audit(req, 'info', `${s.name}: install ${names}`, { serverId: s.id, jobId: job.id });
+  res.json({ job });
+});
+
 api.post('/servers/:id/ssh-guard', (req, res) => {
   const s = mustServer(req.params.id);
   let o;
@@ -1266,6 +1300,7 @@ api.get('/projects/:id', (req, res) => {
     parent_name: p.parent_id ? getProject(p.parent_id)?.name : null,
     group_parts: p.group_name ? all('SELECT id, name FROM projects WHERE group_name = ? AND id != ? ORDER BY name', p.group_name, p.id) : [],
     traffic: trafficNow(data.deployments.map((d) => d.server_id)),
+    tool_check: { needs: projectNeeds(p), servers: missingFor(p) },
     available_servers: all('SELECT id, name, ip FROM servers ORDER BY name').filter((s) => !used.has(s.id)),
   });
 });
@@ -1284,6 +1319,23 @@ api.put('/projects/:id', (req, res) => {
   if (row.dns_records !== undefined && row.dns_records !== p.dns_records) refreshDnsState(p.id).catch(() => {});
   bus.emit('state', { projectId: p.id });
   res.json(projectPublic(getProject(p.id)));
+});
+
+// Check every server of the project for the tools its deploy script needs (Node.js, Docker…), now.
+api.post('/projects/:id/tool-check', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const errors = [];
+  await Promise.all(
+    deploymentsOf(p.id).map(async (d) => {
+      const s = getServer(d.server_id);
+      try {
+        await withSSH(s, (conn) => checkTools(conn, s), { timeout: 15000 });
+      } catch (e) {
+        errors.push(`${s.name}: ${e.message}`);
+      }
+    }),
+  );
+  res.json({ needs: projectNeeds(p), servers: missingFor(getProject(p.id)), errors });
 });
 
 /* ---------- outside database access (another service uses this project's database) ---------- */

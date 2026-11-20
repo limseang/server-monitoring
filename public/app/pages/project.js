@@ -7,6 +7,7 @@ import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
 import { StatusHero } from '../statushero.js';
 import { ProxyTab } from '../proxy.js';
+import { ToolCheckBanner } from '../servertools.js';
 import { FRONTEND_SCRIPT, PM2_SCRIPT } from '../deploypresets.js';
 
 const BACKUP_PRESETS = [
@@ -170,7 +171,7 @@ const ProjectSettings = {
 /* ------------------------------------------------------------------ page */
 export default {
   props: { id: Number },
-  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab },
+  components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab, ToolCheckBanner },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
@@ -367,6 +368,7 @@ export default {
         <button v-if="dns.points_to && !lb" class="btn btn-sm" @click="adopt(p.deployments.find(d => d.id === dns.points_to))">Keep DNS, mark {{ (p.deployments.find(d => d.id === dns.points_to) || {}).server_name }} as live</button></span>
     </div>
 
+    <tool-check-banner :project="p" :key="'tc' + p.id" @changed="load" />
     <status-hero :p="p" :active="active" :lb="lb" :lb-count="lbCount" :checking="!!busy.check" @check="checkNow" @switch="openSwitch()" @maintenance="toggleMaint(active)" />
 
     <div class="dep-grid">
