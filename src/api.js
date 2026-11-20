@@ -1235,6 +1235,7 @@ function projectInput(b) {
   if (has('purge_cache')) out.purge_cache = bool(b.purge_cache) ? 1 : 0;
   if (has('drain_seconds')) out.drain_seconds = int(b.drain_seconds, 30, 0, 600);
   if (has('notes')) out.notes = str(b.notes, 5000) || null;
+  if (has('group_name')) out.group_name = str(b.group_name, 80) || null;
   if (has('dns_records')) out.dns_records = JSON.stringify(recordsInput(b.dns_records));
   return dropUndefined(out);
 }
@@ -1263,6 +1264,7 @@ api.get('/projects/:id', (req, res) => {
     next_runs: nextRuns(p.id),
     backups_count: get('SELECT COUNT(*) AS n FROM backups WHERE project_id = ?', p.id).n,
     parent_name: p.parent_id ? getProject(p.parent_id)?.name : null,
+    group_parts: p.group_name ? all('SELECT id, name FROM projects WHERE group_name = ? AND id != ? ORDER BY name', p.group_name, p.id) : [],
     traffic: trafficNow(data.deployments.map((d) => d.server_id)),
     available_servers: all('SELECT id, name, ip FROM servers ORDER BY name').filter((s) => !used.has(s.id)),
   });

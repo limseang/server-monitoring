@@ -540,7 +540,23 @@ if ! command -v git >/dev/null 2>&1; then
   elif command -v apk >/dev/null 2>&1; then apk add -q git; fi
 fi
 D=${shq(dep.app_dir)}
-[ -e "$D" ] || { mkdir -p "$D"; chown ${shq(user)}: "$D"; echo ">>> Created $D (owner ${user})"; }`,
+[ -e "$D" ] || { mkdir -p "$D"; chown ${shq(user)}: "$D"; echo ">>> Created $D (owner ${user})"; }${
+        before.state === 'not_git' && user !== 'root'
+          ? `
+# A folder made with sudo (e.g. a Vue/Nuxt site outside Docker) belongs to root: the SSH user can't add .git
+# or pull into it. Hand a root-owned folder to the SSH user (file contents stay the same); never take one from another user.
+if ! su ${shq(user)} -s /bin/sh -c ${shq(`test -w ${shq(dep.app_dir)}`)}; then
+  O="$(stat -c %U "$D")"
+  if [ "$O" = root ]; then
+    chown -R ${shq(user)}: "$D"
+    echo ">>> $D belonged to root and ${user} could not write it: owner changed to ${user} (no file content changed)"
+  else
+    echo "$D belongs to user $O and ${user} cannot write it. Give ${user} write access (e.g. sudo chown -R ${user}: $D), then try again." >&2
+    exit 1
+  fi
+fi`
+          : ''
+      }`,
     ),
     { timeout: 10 * 60000 },
   );

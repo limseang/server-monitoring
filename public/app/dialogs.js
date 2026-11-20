@@ -128,7 +128,9 @@ export const ServerDialog = {
 export const ProjectDialog = {
   components: { Modal, RecordsPicker },
   setup() {
-    const f = reactive({ name: '', domain: '', health_scheme: 'https', health_path: '/up', dns_records: [] });
+    const f = reactive({ name: '', domain: '', group_name: '', health_scheme: 'https', health_path: '/up', dns_records: [] });
+    const groupNames = computed(() => [...new Set((store.overview?.projects || []).map((x) => x.group_name).filter(Boolean))].sort());
+
     const saving = ref(false);
     const pickDns = ref(false);
     async function save() {
@@ -145,7 +147,7 @@ export const ProjectDialog = {
         saving.value = false;
       }
     }
-    return { f, saving, save, pickDns, closeDialog, openDialog };
+    return { f, saving, save, pickDns, closeDialog, openDialog, groupNames };
   },
   template: `
   <modal title="New project" size="lg" @close="closeDialog">
@@ -155,6 +157,7 @@ export const ProjectDialog = {
         <div class="field"><label>Project name</label><input v-model="f.name" placeholder="Home Electric Shop"></div>
         <div class="field"><label>Main domain</label><input v-model="f.domain" placeholder="shop.example.com" class="code"><span class="hint">Used as Host header for health checks</span></div>
       </div>
+      <div class="field"><label>Main project <span class="muted">(optional)</span></label><input v-model="f.group_name" list="sb-groups" placeholder="e.g. cinemagickh"><datalist id="sb-groups"><option v-for="g in groupNames" :key="g" :value="g" /></datalist><span class="hint">Parts of one product (API, admin dashboard, front-end, media server…) share a main project and are shown together</span></div>
       <div class="form-row">
         <div class="field"><label>Health check</label>
           <div class="row gap-8"><select v-model="f.health_scheme" style="width:100px"><option value="https">https</option><option value="http">http</option></select><input v-model="f.health_path" class="code" placeholder="/up"></div>
