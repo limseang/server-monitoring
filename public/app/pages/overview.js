@@ -1,6 +1,7 @@
 import { computed } from '/vendor/vue.js';
 import { store, openDialog, bytes, uptimeStr, freshness, HEALTH, ago, tick } from '../lib.js';
 import { UptimeBar, MeterBar, JobsTable, HealthPill } from '../components.js';
+import { ServerMap } from '../servermap.js';
 import { DueBadge, money, dateText, totalsText, dueLabel, dueClass } from '../billing.js';
 
 export const ProjectCard = {
@@ -88,7 +89,7 @@ export const ServerCard = {
 };
 
 export default {
-  components: { ProjectCard, ServerCard, JobsTable },
+  components: { ProjectCard, ServerCard, JobsTable, ServerMap },
   setup() {
     const data = computed(() => store.overview);
     const errors = computed(() => (data.value?.alerts || []).filter((a) => a.level === 'error').length);
@@ -112,6 +113,8 @@ export default {
         <div class="tile" :class="{ 'tile-bad': errors }"><div class="tile-label">Problems</div><div class="tile-value">{{ problems }}</div><div class="tile-sub">{{ errors }} critical</div></div>
         <div class="tile"><div class="tile-label">Jobs running</div><div class="tile-value">{{ data.running }}</div></div>
       </div>
+
+      <server-map v-if="data.servers.length" :servers="data.servers" :projects="data.projects" />
 
       <div v-if="data.alerts.length" class="alerts">
         <a v-for="(a, i) in data.alerts" :key="i" :href="a.link" class="alert" :class="'alert-' + a.level"><span class="alert-icon">{{ icon[a.level] }}</span><span>{{ a.message }}</span></a>
