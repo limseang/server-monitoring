@@ -8,7 +8,7 @@ import { UsageTab } from '../usageview.js';
 import { useLive, LivePill, useTween } from '../live.js';
 import { ServerCard } from './overview.js';
 import { BillingCard } from '../billing.js';
-import { ToolsTab } from '../servertools.js';
+import { ToolsTab, needNames } from '../servertools.js';
 
 export const ServersPage = {
   components: { ServerCard },
@@ -195,6 +195,9 @@ export const ServerPage = {
     const reinstall = () => openDialog('server-reinstall', { server: s.value });
     const cleanup = () => openDialog('server-cleanup', { server: s.value });
     const protectSsh = () => openDialog('ssh-guard', { server: s.value });
+    const connectProject = () => openDialog('connect-project', { server: s.value });
+    const newApp = (fromRepo) => openDialog('template-project', { fromRepo, serverId: s.value.id });
+    const installFor = (d) => runJob(http.post(`/servers/${s.value.id}/tools/install`, { tools: d.missing_tools }));
     // Link from a "disk full" alert: #/servers/<id>?cleanup=1 opens the cleanup dialog once.
     watch(s, (v) => {
       if (v && store.user?.role === 'admin' && /[?&]cleanup=1/.test(location.hash)) {
@@ -215,7 +218,7 @@ export const ServerPage = {
     const password = () => openDialog('password', { server: s.value });
     const connectDomain = () => openDialog('domain', { server: s.value });
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
-    return { twCpu, twMem, twDisk, pctText, meters, liveM, tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
+    return { connectProject, newApp, installFor, needNames, twCpu, twMem, twDisk, pctText, meters, liveM, tab, cleanup, protectSsh, power, password, connectDomain, running, nodeText, apps, appsLoading, loadApps, hasApps, appLogs, appAction, pm2Badge, s, notFound, jobs, m, containers, filter, refreshing, refresh, edit, command, clone, copyProject, osUpgrade, logs, action, resetKey, remove, reset, reinstall, stateBadge, bytes, uptimeStr, fmtDate };
   },
   template: `
   <div v-if="notFound" class="empty-card"><div class="empty-title">Server not found</div><a href="#/servers">Back to servers</a></div>
@@ -289,14 +292,19 @@ export const ServerPage = {
     <div v-else class="empty-card">No stats yet — <button class="link-btn" @click="refresh">collect now</button>.</div>
     <div class="muted small mt-8 row gap-8 wrap" v-if="m"><live-pill :state="meters.state.value" :every="2" /><span v-if="!liveM">Stats from <ago :at="m.collected_at" /></span><span v-else>CPU, memory and disk update every 2 s while this page is open</span><span>· host key <span class="mono">{{ s.host_key || 'not pinned yet' }}</span></span></div>
 
-    <section class="section" v-if="s.deployments.length">
-      <div class="section-head"><h2>Projects on this server</h2></div>
-      <div class="card table-wrap"><table class="table"><tbody>
+    <section class="section">
+      <div class="section-head"><h2>Projects on this server</h2>
+        <button class="admin-only btn btn-sm btn-primary" @click="connectProject">+ Connect a project</button></div>
+      <div v-if="!s.deployments.length" class="empty-card"><p class="muted">No project runs here yet. Connect one you already have, deploy one from GitHub, or start a new app on this server.</p>
+        <div class="admin-only row gap-8 wrap"><button class="btn" @click="connectProject">Add an existing project</button><button class="btn" @click="newApp(true)">🐙 Deploy from my GitHub</button><button class="btn btn-primary" @click="newApp(false)">✨ New app</button></div></div>
+      <div v-else class="card table-wrap"><table class="table"><tbody>
         <tr v-for="d in s.deployments" :key="d.id">
-          <td><a :href="'#/projects/' + d.project_id" class="strong">{{ d.project_name }}</a><div class="tiny muted">{{ d.project_domain }}</div></td>
+          <td><a :href="'#/projects/' + d.project_id" class="strong">{{ d.project_name }}</a><div class="tiny muted">{{ d.project_domain }}<template v-if="d.app_dir"> · <span class="mono">{{ d.app_dir }}</span></template></div></td>
           <td><span v-if="d.is_active" class="badge badge-green">LIVE</span><span v-else class="badge badge-gray">Standby</span></td>
           <td><health-pill :dep="d" /></td>
           <td class="mono small muted">{{ d.app_container || '' }} {{ d.db_container ? '· ' + d.db_container : '' }}</td>
+          <td class="actions"><template v-if="d.missing_tools && d.missing_tools.length"><span class="badge badge-amber" :title="'This project needs it on this server'">needs {{ needNames(d.missing_tools) }}</span>
+            <button class="admin-only btn btn-xs btn-primary" @click="installFor(d)">Install</button></template></td>
         </tr>
       </tbody></table></div>
     </section>
