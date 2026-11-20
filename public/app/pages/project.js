@@ -332,7 +332,7 @@ export default {
         <div class="sub row gap-12 wrap">
           <a v-if="p.domain" :href="'https://' + p.domain" target="_blank" rel="noopener">{{ p.domain }} ↗</a>
           <span v-if="lb">Load balanced over <b style="color:var(--text)">{{ lbCount }} server{{ lbCount === 1 ? '' : 's' }}</b> · {{ p.lb_provider === 'cloudflare' ? 'Cloudflare' : 'own nginx' }}</span>
-          <span v-else-if="active">Live on <b style="color:var(--text)">{{ active.server_name }}</b> <span class="mono">{{ active.server_ip }}</span></span>
+          <span v-else-if="active">Live on <a :href="'#/servers/' + active.server_id" style="color:var(--text);font-weight:600">{{ active.server_name }}</a> <span class="mono">{{ active.server_ip }}</span></span>
           <span v-else class="text-amber">No live server set</span>
           <span v-if="p.db_server_id" class="badge badge-blue">Shared database</span>
           <span v-if="p.auto_failover" class="badge badge-accent">Auto-failover ON</span>
@@ -375,7 +375,7 @@ export default {
       <div v-for="d in p.deployments" :key="d.id" class="card dep-card" :class="{ 'dep-live': d.is_active }">
         <div class="dep-head">
           <div style="min-width:0">
-            <div class="row gap-8 wrap"><b class="dep-name">{{ d.server_name }}</b>
+            <div class="row gap-8 wrap"><a class="dep-name strong" :href="'#/servers/' + d.server_id" title="Open this server's page" style="color:inherit">{{ d.server_name }}</a>
               <span v-if="lb" class="badge" :class="LB_BADGE[d.lb_state][0]">{{ LB_BADGE[d.lb_state][1] }}</span>
               <template v-else><span v-if="d.is_active" class="badge badge-green badge-live">LIVE</span><span v-else class="badge badge-gray">Standby</span><help-tip :term="d.is_active ? 'live' : 'standby'" /></template>
               <span v-if="d.maintenance" class="badge badge-blue">Maintenance</span></div>

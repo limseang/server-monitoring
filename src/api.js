@@ -48,7 +48,7 @@ import { getBilling, billingPublic, allBilling, monthlyTotals, billingByServer, 
 import { dbAccessOf, dbAccessProblem, dbAccessIssues, dbDeps, zoneOf, DEFAULT_PORTS, PROXY_IMAGE } from './ops/dbaccess.js';
 import { reloadSchedules, collectMetrics, checkProjectNow, nextRuns, validateCron, nextCleanup } from './monitor.js';
 import { previewGuard, guardOptions, unbanIp } from './ops/sshguard.js';
-import { toolCatalog, toolsOf, checkTools, installPlan, projectNeeds, missingFor, toolName } from './ops/tools.js';
+import { toolCatalog, toolsOf, checkTools, installPlan, projectNeeds, missingFor, toolName, templateNeeds, lacking } from './ops/tools.js';
 import { previewCleanup, cleanupOptions, cleanupLabel, getSchedule, setSchedule } from './ops/cleanup.js';
 import { slugify, lastLines, stripAnsi, isPrivateAddress } from './util.js';
 import * as gh from './github.js';
@@ -487,9 +487,12 @@ api.post('/servers/test', async (req, res) => {
 
 api.get('/servers/:id', (req, res) => {
   const s = mustServer(req.params.id);
+  const tools = toolsOf(s);
   const deployments = deploymentsOnServer(s.id).map((d) => {
     const p = getProject(d.project_id);
-    return { ...deploymentPublic(d, p), project_name: p.name, project_domain: p.domain };
+    // Tools this project needs that this server lacks (only once the server was checked).
+    const missing_tools = tools ? lacking(projectNeeds(p), tools.list) : [];
+    return { ...deploymentPublic(d, p), project_name: p.name, project_domain: p.domain, project_template: p.template, missing_tools };
   });
   res.json({ ...serverPublic(s), deployments, roles: serverRoles(s.id), private_ip_warning: !config.allowPrivateDns && isPrivateAddress(s.ip) });
 });
@@ -1052,7 +1055,7 @@ api.get('/servers/:id/tools', async (req, res) => {
     }
   }
   const running = all("SELECT id, params FROM jobs WHERE type = 'tools-install' AND status IN ('queued', 'running')").find((r) => parseJSON(r.params, {}).server === s.id);
-  res.json({ catalog: toolCatalog(), state, error, running_job: running?.id || null });
+  res.json({ server: { id: s.id, name: s.name, ip: s.ip }, catalog: toolCatalog(), state, error, running_job: running?.id || null });
 });
 
 api.post('/servers/:id/tools/install', (req, res) => {
@@ -2007,7 +2010,7 @@ function uniqueSlug(name) {
 
 api.get('/templates', (req, res) => {
   res.json({
-    templates: Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, dbs: t.dbs, host: !!t.host })),
+    templates: Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, dbs: t.dbs, host: !!t.host, needs: templateNeeds(id) })),
     dbs: DB_NAMES,
     github: gh.hasToken(),
   });

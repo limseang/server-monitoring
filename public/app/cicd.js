@@ -2,6 +2,7 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted } from '/vendor/
 import { store, http, toast, closeDialog, go, showJob, runJob, confirmBox, openDialog, fmtDate, isPrivateIp } from './lib.js';
 import { whenText } from './deployplan.js';
 import { FlowEditor } from './flow.js';
+import { ServerToolsNeeded } from './servertools.js';
 
 /* ------------------------------------------------------------------ Cloudflare zone picker */
 export const ZoneSelect = {
@@ -114,8 +115,8 @@ export const FolderPicker = {
 
 /* ------------------------------------------------------------------ new project from a template */
 export const TemplateProjectDialog = {
-  props: { fromRepo: Boolean },
-  components: { ZoneSelect, FolderPicker },
+  props: { fromRepo: Boolean, serverId: Number },
+  components: { ZoneSelect, FolderPicker, ServerToolsNeeded },
   setup(props) {
     const info = ref(null);
     const servers = ref([]);
@@ -143,7 +144,8 @@ export const TemplateProjectDialog = {
     onMounted(async () => {
       [info.value, servers.value] = await Promise.all([http.get('/templates'), http.get('/servers')]);
       if (!info.value.github) f.code = 'none';
-      if (servers.value.length === 1) f.servers = [servers.value[0].id];
+      if (props.serverId && servers.value.some((x) => x.id === props.serverId)) f.servers = [props.serverId];
+      else if (servers.value.length === 1) f.servers = [servers.value[0].id];
       if (info.value.github) repos.value = await http.get('/github/repos').catch(() => []);
     });
     const tpl = computed(() => info.value?.templates.find((t) => t.id === f.template));
@@ -271,6 +273,7 @@ export const TemplateProjectDialog = {
         <div class="fieldset-title">4. Servers</div>
         <div v-if="!servers.length" class="hint">Add a server first (Servers → Add server).</div>
         <div class="chips"><button v-for="s in servers" :key="s.id" type="button" class="chip" :class="{ on: f.servers.includes(s.id) }" @click="toggle(s.id)">{{ s.name }} <span class="muted mono">{{ s.ip }}</span></button></div>
+        <server-tools-needed :server-ids="f.servers" :needs="tpl ? tpl.needs : []" :label="tpl ? tpl.label : ''" class="mt-8" />
         <div class="hint">The first one becomes the live server. {{ tpl && tpl.host ? 'Node.js (and PM2) are installed if missing; Docker only when the server has no nginx (for the small web proxy).' : 'Docker is installed if missing.' }}</div>
         <div class="field"><label>Folder on the server</label>
           <div class="folder-go">

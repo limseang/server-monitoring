@@ -68,6 +68,67 @@ export const ToolsTab = {
   </section>`,
 };
 
+const NAMES = { node: 'Node.js', pm2: 'PM2', docker: 'Docker', git: 'Git', pnpm: 'pnpm & Yarn', nginx: 'Nginx', certbot: 'Certbot' };
+/** ["node", "nginx|docker"] → "Node.js and Nginx (or Docker)" */
+export const needNames = (keys) => keys.map((n) => n.split('|').map((k) => NAMES[k] || k).join(' (or ') + (n.includes('|') ? ')' : '')).join(' and ');
+const lacking = (needs, list = {}) => needs.filter((n) => !n.split('|').some((k) => list[k]));
+
+/**
+ * New app / Deploy from GitHub: for the chosen servers, which tools this kind of app needs and which are missing,
+ * with an Install button — before anything is created.
+ */
+export const ServerToolsNeeded = {
+  props: { serverIds: Array, needs: Array, label: String },
+  setup(props) {
+    const states = ref({}); // server id → { name, list, error }
+    const loading = ref(false);
+    async function load(ids, refresh = false) {
+      loading.value = true;
+      try {
+        await Promise.all(
+          ids.map(async (id) => {
+            if (!refresh && states.value[id]) return;
+            const r = await http.get(`/servers/${id}/tools${refresh ? '?refresh=1' : ''}`).catch((e) => ({ error: e.message }));
+            states.value = { ...states.value, [id]: { name: r.server?.name || `#${id}`, list: r.state?.list || null, error: r.error || null, running: r.running_job } };
+          }),
+        );
+      } finally {
+        loading.value = false;
+      }
+    }
+    watch(() => [...(props.serverIds || [])], (ids) => load(ids), { immediate: true });
+    const rows = computed(() =>
+      (props.serverIds || []).map((id) => {
+        const st = states.value[id];
+        return { id, name: st?.name || '…', checked: !!st?.list, error: st?.error, missing: st?.list ? lacking(props.needs || [], st.list) : [], running: st?.running };
+      }),
+    );
+    async function install(r) {
+      const res = await runJob(http.post(`/servers/${r.id}/tools/install`, { tools: r.missing }));
+      if (res) states.value = { ...states.value, [r.id]: { ...states.value[r.id], running: res.job.id } };
+    }
+    const recheck = () => load(props.serverIds || [], true);
+    return { rows, install, recheck, loading, needNames };
+  },
+  template: `
+  <div v-if="needs && needs.length && serverIds && serverIds.length" class="card card-body" style="padding:10px 12px">
+    <div class="row between gap-8 mb-8"><span class="small"><b>Needed on the server{{ serverIds.length > 1 ? 's' : '' }}</b> for {{ label || 'this app' }}: {{ needNames(needs) }}</span>
+      <button class="link-btn small" @click="recheck" :disabled="loading"><span v-if="loading" class="spinner"></span> Check again</button></div>
+    <div v-for="r in rows" :key="r.id" class="row between gap-8 wrap" style="padding:3px 0">
+      <span class="small"><b>{{ r.name }}</b>:
+        <span v-if="r.error" class="text-amber">could not check ({{ r.error }})</span>
+        <span v-else-if="!r.checked" class="muted">checking…</span>
+        <span v-else-if="!r.missing.length" class="text-green">✓ has everything</span>
+        <span v-else class="text-amber">no {{ needNames(r.missing) }}</span></span>
+      <span v-if="r.missing.length" class="row gap-6">
+        <a v-if="r.running" class="btn btn-sm" :href="'#/jobs/' + r.running">Installing… see job</a>
+        <button v-else class="admin-only btn btn-sm btn-primary" @click="install(r)">Install {{ needNames(r.missing) }}</button>
+      </span>
+    </div>
+    <div v-if="rows.some((r) => r.missing.length)" class="tiny muted mt-8">Install now and watch it, or just go on: setup installs what is missing by itself (it takes longer then).</div>
+  </div>`,
+};
+
 /** Project page: "Backup 2 has no Node.js — this project needs it" with an Install button. */
 export const ToolCheckBanner = {
   props: { project: Object },
@@ -78,8 +139,7 @@ export const ToolCheckBanner = {
     const tc = computed(() => result.value || props.project.tool_check || { needs: [], servers: [] });
     const missing = computed(() => tc.value.servers.filter((s) => s.missing.length));
     const unchecked = computed(() => tc.value.needs.length && tc.value.servers.some((s) => !s.checked_at));
-    const NAMES = { node: 'Node.js', pm2: 'PM2', docker: 'Docker', git: 'Git', pnpm: 'pnpm & Yarn', nginx: 'Nginx', certbot: 'Certbot' };
-    const names = (keys) => keys.map((k) => NAMES[k] || k).join(' and ');
+    const names = needNames;
     async function check() {
       checking.value = true;
       try {
