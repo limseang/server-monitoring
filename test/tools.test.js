@@ -44,3 +44,17 @@ test('missingFor: a checked server without Node.js is reported, an unchecked one
   assert.deepEqual(m.New.missing, []);
   assert.equal(m.New.checked_at, null);
 });
+
+test('starter apps are real projects with folders (Vue/Vite front-end, Node app) and a README', async () => {
+  const { scaffoldFiles } = await import('../src/ops/stack.js');
+  const fe = scaffoldFiles('frontend', 'Cinema Admin');
+  for (const f of ['package.json', 'vite.config.js', 'index.html', 'src/main.js', 'src/App.vue', 'src/components/HelloCard.vue', 'public/favicon.svg', 'README.md', '.gitignore']) assert.ok(fe[f], f);
+  const pkg = JSON.parse(fe['package.json']);
+  assert.equal(pkg.name, 'cinema-admin');
+  assert.equal(pkg.scripts.build, 'vite build');
+  const node = scaffoldFiles('pm2', 'Cinema Admin');
+  assert.equal(JSON.parse(node['package.json']).scripts.start, 'node src/server.js');
+  assert.ok(node['src/routes.js'].includes("'/up'"));
+  assert.ok(scaffoldFiles('static', 'X')['index.html']);
+  assert.ok(fe['.gitignore'].includes('node_modules/') && fe['.gitignore'].includes('.env'));
+});

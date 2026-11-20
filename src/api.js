@@ -1298,6 +1298,8 @@ api.get('/projects/:id', (req, res) => {
     next_runs: nextRuns(p.id),
     backups_count: get('SELECT COUNT(*) AS n FROM backups WHERE project_id = ?', p.id).n,
     parent_name: p.parent_id ? getProject(p.parent_id)?.name : null,
+    // How to clone it on a PC (the project page's "Use on my PC")
+    git_urls: p.git_repo ? { ssh: gh.gitUrl(p.git_repo), https: `${gh.webUrl(p.git_repo)}.git`, web: gh.webUrl(p.git_repo) } : null,
     group_parts: p.group_name ? all('SELECT id, name FROM projects WHERE group_name = ? AND id != ? ORDER BY name', p.group_name, p.id) : [],
     traffic: trafficNow(data.deployments.map((d) => d.server_id)),
     tool_check: { needs: projectNeeds(p), servers: missingFor(p) },
@@ -2011,6 +2013,29 @@ api.get('/templates', (req, res) => {
     dbs: DB_NAMES,
     github: gh.hasToken(),
   });
+});
+
+api.get('/github/me', async (req, res) => {
+  if (!gh.hasToken()) return res.json({ connected: false });
+  try {
+    res.json({ connected: true, ...(await gh.whoami()) });
+  } catch (e) {
+    res.json({ connected: false, error: e.message });
+  }
+});
+
+// A starter project (no repository yet) → a new GitHub repository with the server's code, see the 'link-github' job.
+api.post('/projects/:id/link-github', (req, res) => {
+  const p = mustProject(req.params.id);
+  if (!gh.hasToken()) throw bad('Add a GitHub token first (Settings → GitHub)');
+  if (p.git_repo) throw bad(`Already linked to ${p.git_repo}`);
+  const repo = str(req.body?.repo, 201);
+  if (!gh.REPO_RE.test(repo)) throw bad('Repository must look like owner/name');
+  if (!deploymentsOf(p.id).length) throw bad('Add a server to the project first');
+  if (all("SELECT id FROM jobs WHERE type = 'link-github' AND project_id = ? AND status IN ('queued', 'running')", p.id).length) throw bad('Already linking — wait for that job');
+  const job = enqueue({ type: 'link-github', title: `Link ${p.name} with GitHub (${repo})`, projectId: p.id, params: { repo, privateRepo: req.body?.private !== false, ci: bool(req.body?.ci) }, user: who(req) });
+  audit(req, 'info', `${p.name}: link with GitHub ${repo}`, { projectId: p.id, jobId: job.id });
+  res.json({ job });
 });
 
 api.get('/github/repos', async (req, res) => {

@@ -35,7 +35,7 @@ test('front-end / PM2 templates: no container, ready deploy scripts, checked thr
     assert.equal(row.maintenance_on_cmd, 'true');
   }
   assert.ok(scaffoldFiles('frontend', 'Shop')['index.html'].includes('Shop'));
-  assert.ok(scaffoldFiles('pm2', 'Shop')['server.js'].includes('process.env.PORT'));
+  assert.ok(scaffoldFiles('pm2', 'Shop')['src/server.js'].includes('process.env.PORT'));
   assert.match(PM2_SCRIPT, /\.switchboard\/pm2\.config\.cjs/);
   assert.doesNotMatch(FRONTEND_SCRIPT, /corepack enable/);
 });

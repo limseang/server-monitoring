@@ -34,7 +34,7 @@ export const TEMPLATES = {
     dbs: ['none', 'mysql', 'postgres'],
     port: 3000,
     health: '/',
-    tests: 'npm ci\nnpm test --if-present',
+    tests: 'if [ -f package-lock.json ]; then npm ci; else npm install; fi\nnpm test --if-present',
   },
   compose: {
     label: 'Docker Compose (the repo\'s own file)',
@@ -51,7 +51,7 @@ export const TEMPLATES = {
     dbs: ['none'],
     port: null,
     health: '/',
-    tests: 'npm ci\nnpm run build',
+    tests: 'if [ -f package-lock.json ]; then npm ci; else npm install; fi\nnpm run build',
     host: true, // runs on the server itself, not in Docker
   },
   pm2: {
@@ -60,7 +60,7 @@ export const TEMPLATES = {
     dbs: ['none'],
     port: null,
     health: '/',
-    tests: 'npm ci\nnpm test --if-present',
+    tests: 'if [ -f package-lock.json ]; then npm ci; else npm install; fi\nnpm test --if-present',
     host: true,
   },
   static: {
@@ -69,7 +69,7 @@ export const TEMPLATES = {
     dbs: ['none'],
     port: 80,
     health: '/',
-    tests: 'if [ -f package.json ]; then npm ci && npm run build; fi',
+    tests: 'if [ -f package.json ]; then (if [ -f package-lock.json ]; then npm ci; else npm install; fi) && npm run build; fi',
   },
 };
 
@@ -166,39 +166,56 @@ ${dependsDb ? `    depends_on:\n${dependsDb}` : ''}`;
 
 /* ------------------------------------------------------------------ fresh app files (no repo yet) */
 export function scaffoldFiles(template, name) {
-  if (template === 'frontend') template = 'static';
-  if (template === 'pm2') template = 'node';
-  const gitignore = '.env\nnode_modules/\ndist/\n.output/\n.nuxt/\n';
-  if (template === 'static') {
+  const pkgName = name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
+  const safe = name.replace(/[<>`$\\]/g, '');
+  const gitignore = '.env\nnode_modules/\ndist/\n.output/\n.nuxt/\n.DS_Store\n';
+  const json = (o) => `${JSON.stringify(o, null, 2)}\n`;
+  const readme = (how) => `# ${safe}\n\nMade with Switchboard. Every push to the main branch can be deployed automatically (project → CI/CD).\n\n## Run it on your computer\n\n${how}\n`;
+  if (template === 'frontend') {
+    // A real Vite + Vue project: the server installs the packages and runs "npm run build"; nginx serves dist/.
     return {
       '.gitignore': gitignore,
-      'index.html': `<!doctype html>
+      'README.md': readme('```bash\nnpm install\nnpm run dev      # http://localhost:5173 — changes show at once\nnpm run build    # what the server runs: makes dist/\n```'),
+      'package.json': json({
+        name: pkgName,
+        private: true,
+        version: '1.0.0',
+        type: 'module',
+        scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
+        dependencies: { vue: '^3.5.13' },
+        devDependencies: { vite: '^6.0.7', '@vitejs/plugin-vue': '^5.2.1' },
+      }),
+      'vite.config.js': `import { defineConfig } from 'vite';\nimport vue from '@vitejs/plugin-vue';\n\nexport default defineConfig({\n  plugins: [vue()],\n});\n`,
+      'index.html': `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="utf-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1" />\n    <link rel="icon" href="/favicon.svg" />\n    <title>${safe}</title>\n  </head>\n  <body>\n    <div id="app"></div>\n    <script type="module" src="/src/main.js"></script>\n  </body>\n</html>\n`,
+      'public/favicon.svg': `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#41b883"/><path d="M8 9h4l4 7 4-7h4l-8 14z" fill="#fff"/></svg>\n`,
+      'src/main.js': `import { createApp } from 'vue';\nimport App from './App.vue';\nimport './assets/main.css';\n\ncreateApp(App).mount('#app');\n`,
+      'src/App.vue': `<script setup>\nimport HelloCard from './components/HelloCard.vue';\n</script>\n\n<template>\n  <main>\n    <HelloCard title="${safe}" />\n  </main>\n</template>\n`,
+      'src/components/HelloCard.vue': `<script setup>\nimport { ref } from 'vue';\n\ndefineProps({ title: String });\nconst count = ref(0);\n</script>\n\n<template>\n  <section class="card">\n    <h1>{{ title }}</h1>\n    <p>Deployed with Switchboard. Edit <code>src/App.vue</code>, push, and it goes live.</p>\n    <button @click="count++">Clicked {{ count }} times</button>\n  </section>\n</template>\n`,
+      'src/assets/main.css': `body {\n  margin: 0;\n  min-height: 100vh;\n  display: grid;\n  place-items: center;\n  font-family: system-ui, sans-serif;\n  background: #0f172a;\n  color: #e2e8f0;\n}\n.card { text-align: center; }\nbutton { font: inherit; padding: 8px 16px; border-radius: 8px; border: 0; background: #41b883; color: #fff; cursor: pointer; }\ncode { background: #1e293b; padding: 2px 6px; border-radius: 4px; }\n`,
+    };
+  }
+  if (template === 'node' || template === 'pm2') {
+    return {
+      '.gitignore': gitignore,
+      'README.md': readme('```bash\nnpm install\nnpm start        # http://localhost:3000 (PORT=4000 npm start for another port)\n```\n\n`/up` answers "ok" — Switchboard uses it as the health check.'),
+      'package.json': json({ name: pkgName, private: true, version: '1.0.0', type: 'module', scripts: { start: 'node src/server.js', dev: 'node --watch src/server.js' } }),
+      'src/server.js': `// Starter app made by Switchboard — replace with your own (Nuxt, Express, Fastify…).\nimport http from 'node:http';\nimport { routes } from './routes.js';\n\nconst port = Number(process.env.PORT) || 3000;\nhttp\n  .createServer((req, res) => {\n    const handler = routes[req.url] || routes['*'];\n    handler(req, res);\n  })\n  .listen(port, '0.0.0.0', () => console.log('listening on ' + port));\n`,
+      'src/routes.js': `// Add your pages here: path → (req, res) => { … }\nexport const routes = {\n  '/up': (req, res) => res.end('ok'),\n  '*': (req, res) => {\n    res.setHeader('Content-Type', 'text/plain; charset=utf-8');\n    res.end('Hello from ${safe.replace(/'/g, '')}!\\n');\n  },\n};\n`,
+    };
+  }
+  // static (Docker): plain HTML, nothing to build
+  return {
+    '.gitignore': gitignore,
+    'README.md': readme('Open `index.html` in your browser, or run `npx serve .` for http://localhost:3000.'),
+    'index.html': `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${name}</title>
-<style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}</style></head>
-<body><main><h1>${name}</h1><p>Deployed with Switchboard. Replace this page with your site.</p></main></body>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safe}</title>
+<link rel="stylesheet" href="css/style.css"></head>
+<body><main><h1>${safe}</h1><p>Deployed with Switchboard. Replace this page with your site.</p></main></body>
 </html>
 `,
-    };
-  }
-  if (template === 'node') {
-    return {
-      '.gitignore': gitignore,
-      'package.json': `${JSON.stringify({ name: name.toLowerCase().replace(/[^a-z0-9-]+/g, '-'), private: true, version: '1.0.0', type: 'module', scripts: { start: 'node server.js' } }, null, 2)}\n`,
-      'server.js': `// Starter app made by Switchboard — replace with your own (Nuxt, Express, Fastify…).
-import http from 'node:http';
-
-const port = Number(process.env.PORT) || 3000;
-http
-  .createServer((req, res) => {
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end(req.url === '/up' ? 'ok' : 'Hello from ${name.replace(/'/g, '')}!\\n');
-  })
-  .listen(port, '0.0.0.0', () => console.log('listening on ' + port));
-`,
-    };
-  }
-  return {};
+    'css/style.css': 'body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}\n',
+  };
 }
 
 /* ------------------------------------------------------------------ install on a server */
