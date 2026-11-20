@@ -2,6 +2,24 @@ import { update } from '../db.js';
 import { bus } from '../bus.js';
 import { getServer } from '../models.js';
 import { dockerExec, runRemote, shq } from './remote.js';
+import { findContainerScript, pickAppContainer } from './appcontainer.js';
+
+/**
+ * No app container set, and the command's program (php, node…) is not on the server itself: look for it in the
+ * Docker Compose containers of the app folder. Found → saved on the server card, so it is set from now on.
+ */
+async function findAppContainer(ctx, conn, server, dep, cmdText) {
+  const prog = cmdText.split(/\s+/)[0];
+  if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(prog)) return null;
+  const host = await runRemote(null, conn, `command -v ${shq(prog)} >/dev/null 2>&1 && echo yes || echo no`, { quiet: true, okCodes: [0, 1] }).catch(() => null);
+  if (host?.stdout?.trim() !== 'no') return null;
+  const r = await runRemote(null, conn, findContainerScript(server, prog), { quiet: true, okCodes: [0, 1], timeout: 60000 }).catch(() => null);
+  const { name, all } = pickAppContainer(r?.stdout, dep.app_dir);
+  if (!name) return null;
+  update('deployments', dep.id, { app_container: name });
+  ctx?.log(`${dep.server_name}: "${prog}" is not on the server itself — found it in the app container ${name}${all.length > 1 ? ` (also: ${all.slice(1).join(', ')})` : ''}. Saved on the server card for next time.`);
+  return name;
+}
 
 /**
  * Turn maintenance mode on/off for a project on one server.
@@ -19,17 +37,18 @@ export async function setMaintenance(ctx, conn, project, dep, on, { signal } = {
     ctx?.warn(`${dep.server_name}: no app container or app directory set — can't run "${cmdText}", skipped`);
     return false;
   }
-  const cmd = dep.app_container ? dockerExec(server, dep.app_container, cmdText) : `cd ${shq(dep.app_dir)} && ${cmdText}`;
+  const container = dep.app_container || (await findAppContainer(ctx, conn, server, dep, cmdText));
+  const cmd = container ? dockerExec(server, container, cmdText) : `cd ${shq(dep.app_dir)} && ${cmdText}`;
   ctx?.log(`${dep.server_name}: ${cmdText}`);
   try {
     await runRemote(ctx, conn, cmd, { timeout: 120000, signal });
   } catch (e) {
     // Typical setup mistake: "php artisan …" run on the server itself, where PHP isn't installed (it's in a container).
-    if (!dep.app_container && e.result?.code === 127) {
+    if (!container && e.result?.code === 127) {
       const prog = cmdText.split(/\s+/)[0];
       throw new Error(
-        `"${prog}" is not installed on ${dep.server_name} itself — it is probably inside your app container. ` +
-          `Set the App container (for example laravel-api-app) in the project → ${dep.server_name} card → ⋯ → Edit containers / database, then try again.`,
+        `"${prog}" is not installed on ${dep.server_name} itself, and no running container of ${dep.app_dir} has it. ` +
+          `Is the app running? Or set the App container (for example laravel-api-app) in the project → ${dep.server_name} card → ⋯ → Edit containers / database, then try again.`,
       );
     }
     throw e;
