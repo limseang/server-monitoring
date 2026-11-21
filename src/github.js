@@ -162,6 +162,12 @@ export async function listActiveRuns(repo) {
   return lists.flat().filter((r) => !seen.has(r.id) && seen.add(r.id)).sort((a, b) => b.id - a.id);
 }
 
+/** The newest runs of any workflow in the repo, in one call (cheap enough to ask every few seconds). */
+export async function listRecentRuns(repo, perPage = 15) {
+  const r = await gh('GET', `/repos/${repoPath(repo)}/actions/runs?per_page=${perPage}`, { okStatus: [404] });
+  return r._status === 404 ? [] : r.workflow_runs || [];
+}
+
 /** Stop a run. force: also skips its "always run" steps (when a normal cancel hangs). */
 export const cancelRun = (repo, id, force = false) => gh('POST', `/repos/${repoPath(repo)}/actions/runs/${Number(id)}/${force ? 'force-cancel' : 'cancel'}`);
 

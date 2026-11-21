@@ -66,6 +66,7 @@ import { watchServer, tailLog } from './live.js';
 import { parseFlow, applyFlow, remapServers } from './ops/flow.js';
 import { POLICIES, parseQuiet, nextQuietTime, heldOf, releaseHeld, cancelHeld, runPlan } from './ops/deployplan.js';
 import { workflowYaml, workflowHash, commitWorkflow, ciProjects, ciServers, rootOf, runnerStatus, pollProject, removePreview, runnerLabel, runnerLabels, runnerUser, liveRun, activeRuns, forgetActive, serversPlan, SERVERS_VAR, deployCommitTo, depsOn, gitStates, checkAllGit, ownWorkflow, workflowPathOf, workflowFileOf, exampleWorkflow, DOCKER_DEPLOY_SCRIPT } from './ops/ci.js';
+import { ciPulse } from './ops/cipulse.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(config.root, 'package.json'), 'utf8')).version;
 
@@ -391,7 +392,7 @@ api.get('/overview', (req, res) => {
   const running = get("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'running')").n;
   const items = allBilling();
   const billing = { totals: monthlyTotals(items), upcoming: items.filter((b) => b.days_left != null).slice(0, 6), count: items.length };
-  res.json({ projects, servers, jobs, running, billing, alerts: computeAlerts(projects, servers, bills) });
+  res.json({ projects, servers, jobs, running, billing, ci: ciPulse(), alerts: computeAlerts(projects, servers, bills) });
 });
 
 /* ---------- servers ---------- */
