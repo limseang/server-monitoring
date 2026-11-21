@@ -53,6 +53,8 @@ async function readGithub() {
           link: `#/projects/${root.id}/cicd`,
           url: r.html_url,
           frac: jobs.length ? jobs.filter((j) => j.status === 'completed').length / jobs.length : 0,
+          jobs_done: jobs.filter((j) => j.status === 'completed').length,
+          jobs_total: jobs.length,
         };
         const step = (j) => j.steps.find((s) => s.status === 'in_progress')?.name || j.name;
         const onServer = new Map();
@@ -125,7 +127,7 @@ export function ciPulse() {
   return {
     items,
     deploying: servers.size,
-    building: items.filter((i) => !i.server_id && i.phase === 'build').length,
+    building: new Set(items.filter((i) => !i.server_id && i.phase === 'build').map((i) => i.project_id)).size, // projects, not runs
     projects: new Set(items.map((i) => i.project_id)).size,
     checked_at: checkedAt,
     error: ghError,

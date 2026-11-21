@@ -174,12 +174,14 @@ const ProjectSettings = {
 
 /* ------------------------------------------------------------------ page */
 export default {
-  props: { id: Number },
+  props: { id: Number, tab: String },
   components: { UptimeBar, HealthPill, MenuBtn, JobsTable, EventsList, Ago, ProjectSettings, TrafficTab, CicdTab, DbAccessTab, StatusHero, ProxyTab, GitLinkBanner, ReadyBanner, ToolCheckBanner },
   setup(props) {
     const p = ref(null);
     const notFound = ref(false);
-    const tab = ref('dns');
+    const TABS = ['dns', 'proxy', 'cicd', 'traffic', 'dbaccess', 'backups', 'jobs', 'activity', 'settings'];
+    const startTab = () => (TABS.includes(props.tab) ? props.tab : 'dns');
+    const tab = ref(startTab());
     const backups = ref(null);
     const jobs = ref(null);
     const events = ref(null);
@@ -204,10 +206,14 @@ export default {
       if (t === 'jobs') loadJobs();
       if (t === 'activity') loadEvents();
     }
-    onMounted(load);
+    onMounted(() => {
+      load();
+      if (tab.value !== 'dns') openTab(tab.value);
+    });
+    watch(() => props.tab, () => openTab(startTab()));
     watch(() => props.id, () => {
       p.value = null;
-      tab.value = 'dns';
+      tab.value = startTab();
       load();
     });
     watch(() => store.live, load);
