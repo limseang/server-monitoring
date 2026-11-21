@@ -37,13 +37,19 @@ export const CiPulse = {
     });
     const checked = computed(() => (tick.value, props.ci?.checked_at ? ago(props.ci.checked_at) : 'soon'));
     const show = computed(() => items.value.length || props.ci?.watching);
-    return { items, checked, show };
+    const headline = computed(() => {
+      const d = props.ci?.deploying || 0;
+      const b = props.ci?.building || 0;
+      const parts = [d ? `${d} server${d === 1 ? '' : 's'} getting new code` : '', b ? `${b} project${b === 1 ? '' : 's'} building on GitHub` : ''].filter(Boolean);
+      return parts.join(' · ') || 'code waits for its turn';
+    });
+    return { items, checked, show, headline };
   },
   template: `
   <div v-if="show" class="cip card" :class="{ busy: items.length, many: (ci.deploying || 0) >= 2 }">
     <div class="cip-head">
       <span class="cip-radar" :class="{ on: items.length }" aria-hidden="true"><i></i></span>
-      <b v-if="items.length">CI/CD running — {{ ci.deploying }} server{{ ci.deploying === 1 ? '' : 's' }} getting new code<template v-if="ci.building"> · {{ ci.building }} building</template></b>
+      <b v-if="items.length">CI/CD running — {{ headline }}</b>
       <b v-else>CI/CD: quiet</b>
       <span class="tiny muted grow">Watching {{ ci.watching }} project{{ ci.watching === 1 ? '' : 's' }} on GitHub for new code · checked {{ checked }}</span>
       <span v-if="ci.error" class="tiny text-red" :title="ci.error">GitHub: {{ ci.error }}</span>
@@ -56,7 +62,7 @@ export const CiPulse = {
           <span class="tiny muted ellipsis">{{ it.from }}<template v-if="it.branch"> · {{ it.branch }}</template><template v-if="it.sha"> @ {{ it.sha.slice(0, 7) }}</template><template v-if="it.title"> · {{ it.title }}</template><template v-if="it.actor"> · by {{ it.actor }}</template></span>
         </span>
         <span class="cip-step tiny mono ellipsis" :title="it.step">{{ it.step }}</span>
-        <span class="cip-time tiny mono">{{ it.elapsed }}</span>
+        <span class="cip-time tiny mono">{{ it.elapsed }}<template v-if="it.jobs_total"><br />jobs {{ it.jobs_done }}/{{ it.jobs_total }}</template></span>
         <span class="cip-bar"><i :style="{ width: Math.max(8, it.pct) + '%' }"></i></span>
       </a>
     </div>

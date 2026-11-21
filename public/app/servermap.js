@@ -14,8 +14,9 @@ import { go } from './lib.js';
  *
  * CI/CD (prop ci = /api/overview → ci): a purple Git box sends code packets to every server that gets a new
  * version right now (GitHub Actions on its runner, or a Switchboard deploy). That server works: gear on top, code
- * flying up, a scan line on its front. GitHub building with no server yet: the Git box spins its gears. Two or more
- * servers at once = "factory mode": the whole floor moves and a banner says how many servers ship code.
+ * flying up, a scan line on its front. GitHub building with no server yet ("workshop"): blocks stack up on the Git
+ * box, one stack per project, with sparks and gears, and a dashed "code is coming" line runs to the servers that
+ * will get it. Two or more servers (or projects) at once = "factory mode": the floor moves and a banner counts them.
  */
 
 const C = Math.cos(Math.PI / 6);
@@ -110,7 +111,13 @@ export const ServerMap = {
         const prev = ciOn.get(it.server_id);
         if (!prev || (prev.phase !== 'deploy' && it.phase === 'deploy')) ciOn.set(it.server_id, it);
       }
-      const building = ciItems.filter((it) => !it.server_id);
+      // Projects that GitHub builds now (no server job yet): one per project
+      const building = [...new Map(ciItems.filter((it) => !it.server_id).map((it) => [it.project_id, it])).values()];
+      // Servers that will get that code once the build is done
+      const incoming = new Set();
+      for (const b of building) {
+        for (const p of projects) if (p.id === b.project_id || p.parent_id === b.project_id) for (const d of p.deployments || []) incoming.add(d.server_id);
+      }
       const showGit = !!(props.ci?.watching || ciItems.length);
       const GIT = { x: CF.x - 20, y: cfY - 250, w: CF.w, h: CF.h };
       const gitCenter = iso(GIT.x + GIT.w / 2, GIT.y + GIT.w / 2, 2);
@@ -133,11 +140,12 @@ export const ServerMap = {
         const flowing = !!t && !down && (t.ms.length > 0 || t.moved) && !t.lost;
         const dur = Math.max(1.2, Math.min(5, (ms ?? 300) / 90));
         const ci = ciOn.get(s.id) || null;
+        const coming = !ci && incoming.has(s.id);
         // Git lane: out of the Git box, along x behind everything, then down into the server's right half
         const gx = x + SW * 0.72;
-        const gitPath = ci ? `M${pt(gitCenter)} L${pt(iso(gx, GIT.y + GIT.w / 2, 2))} L${pt(iso(gx, y + SW / 2, 2))}` : '';
+        const gitPath = ci || coming ? `M${pt(gitCenter)} L${pt(iso(gx, GIT.y + GIT.w / 2, 2))} L${pt(iso(gx, y + SW / 2, 2))}` : '';
         return {
-          s, x, y, i, down, cpu, state, ms, base, body, path, flowing, dur, moved: !!t?.moved, ci, gitPath,
+          s, x, y, i, down, cpu, state, ms, base, body, path, flowing, dur, moved: !!t?.moved, ci, coming, gitPath,
           gear: iso(x + SW / 2, y + SW / 2, SH + 6),
           glyphs: ['</>', '{ }', '01', '#!'].map((g, k) => ({ g, k, dx: (k - 1.5) * 9, delay: (k * 0.45 + i * 0.2) % 1.8 })),
           linked: hosts.has(s.id), lost: !!t?.lost || (down && hosts.has(s.id)), fake: fake.has(s.id),
@@ -163,7 +171,15 @@ export const ServerMap = {
       const git = showGit ? { base: box(GIT.x - 8, GIT.y - 8, GIT.w + 16, GIT.w + 16, 4), body: box(GIT.x, GIT.y, GIT.w, GIT.w, GIT.h, 4), top: iso(GIT.x + GIT.w / 2, GIT.y + GIT.w / 2, GIT.h + 4), lbl: iso(GIT.x + GIT.w + 8, GIT.y + GIT.w + 8, 0) } : null;
       const shipping = nodes.filter((nd) => nd.ci?.phase === 'deploy').length;
       const ciBusy = shipping > 0 || building.length > 0;
-      const factory = shipping >= 2 || shipping + building.length >= 3;
+      const factory = shipping >= 2 || building.length >= 2 || shipping + building.length >= 3;
+      // Workshop on the Git box: a stack of blocks per project being built (3 shown, then "+N")
+      const shown = building.slice(0, 3);
+      const stacks = git ? shown.map((b, k) => ({ key: b.project_id, name: b.project, dx: (k - (shown.length - 1) / 2) * 30, delay: k * 0.5 })) : [];
+      const sparks = git && building.length ? Array.from({ length: 6 }, (_, k) => ({ k, x: git.top[0] + ((k * 37) % 60) - 30, y: git.top[1] - 10 - ((k * 23) % 26), delay: (k * 0.37) % 1.5 })) : [];
+      const banner = [
+        shipping ? `${shipping} server${shipping === 1 ? '' : 's'} getting new code` : '',
+        building.length ? `${building.length} project${building.length === 1 ? '' : 's'} building on GitHub` : '',
+      ].filter(Boolean).join(' · ');
 
       // fit the view box around everything
       const xs = [], ys = [];
@@ -185,7 +201,8 @@ export const ServerMap = {
         { k: 'Taking visitors', v: String(nodes.filter((nd) => nd.flowing).length), cls: '' },
       ];
       if (showGit) stats.push({ k: 'Getting new code', v: String(shipping), cls: shipping ? 'git' : '' });
-      return { nodes, cf, cfBase, cfTopMid, visitors, anyLive, vb, stats, notes, git, building, shipping, ciBusy, factory };
+      if (showGit) stats.push({ k: 'Building on GitHub', v: String(building.length), cls: building.length ? 'git' : '' });
+      return { nodes, cf, cfBase, cfTopMid, visitors, anyLive, vb, stats, notes, git, building, shipping, ciBusy, factory, stacks, sparks, banner };
     });
 
     const short = (name) => (name || '?').slice(0, 14);
@@ -195,8 +212,8 @@ export const ServerMap = {
   <div class="smap card" :class="{ 'smap-still': still, 'smap-ci-busy': scene.ciBusy, 'smap-factory': scene.factory }">
     <div v-if="scene.factory" class="smap-factory-banner" role="status">
       <span class="smap-fb-icon" aria-hidden="true">⚙</span>
-      <b>All hands on deck</b>
-      <span>{{ scene.shipping }} server{{ scene.shipping === 1 ? '' : 's' }} getting new code{{ scene.building.length ? ' · ' + scene.building.length + ' building on GitHub' : '' }}</span>
+      <b>{{ scene.shipping ? 'All hands on deck' : 'Workshop busy' }}</b>
+      <span>{{ scene.banner }}</span>
     </div>
     <div class="smap-stats">
       <div v-for="st in scene.stats" :key="st.k" class="smap-stat"><div class="smap-k">{{ st.k }}</div><div class="smap-v" :class="st.cls">{{ st.v }}</div></div>
@@ -225,6 +242,7 @@ export const ServerMap = {
 
       <!-- Git → servers that get new code -->
       <g v-for="nd in scene.nodes" :key="'g' + nd.s.id">
+        <path v-if="nd.coming" :d="nd.gitPath" class="smap-link smap-glink gl-coming" />
         <template v-if="nd.ci">
           <path :d="nd.gitPath" class="smap-link smap-glink" :class="'gl-' + nd.ci.phase" />
           <template v-if="nd.ci.phase === 'deploy' && !still">
@@ -245,12 +263,28 @@ export const ServerMap = {
           <circle cx="28" cy="18" r="4" /><circle cx="28" cy="66" r="4" /><circle cx="56" cy="18" r="4" />
         </g>
         <g :transform="scene.git.body.tFront" class="smap-bays"><rect v-for="k in 4" :key="k" :x="34 + k * 9" y="6" width="6" height="10" rx="1" class="smap-gbay" :style="{ animationDelay: (k * 0.15) + 's' }" /></g>
-        <g v-if="scene.building.length && !still" :transform="'translate(' + scene.git.top[0] + ',' + (scene.git.top[1] - 22) + ')'" class="smap-gears">
-          <circle r="7" class="smap-gear" /><circle r="2.2" class="smap-gear-hub" />
-          <g transform="translate(13,-6)"><circle r="4.6" class="smap-gear rev" /><circle r="1.5" class="smap-gear-hub" /></g>
-        </g>
+        <template v-if="scene.building.length">
+          <!-- workshop: a stack of blocks builds up per project, gears turn, sparks fly -->
+          <ellipse :cx="scene.git.top[0]" :cy="scene.git.top[1]" rx="44" ry="20" class="smap-forge" />
+          <g v-for="st in scene.stacks" :key="st.key" :transform="'translate(' + (scene.git.top[0] + st.dx) + ',' + (scene.git.top[1] - 2) + ') scale(1.5)'" class="smap-stack">
+            <title>{{ st.name }} — building on GitHub</title>
+            <g v-for="b in 3" :key="b" class="smap-block" :style="{ animationDelay: (st.delay + (b - 1) * 0.45) + 's' }">
+              <g :transform="'translate(0,' + (-(b - 1) * 9) + ')'">
+                <polygon points="0,-9 7.8,-4.5 0,0 -7.8,-4.5" class="bt" /><polygon points="-7.8,-4.5 0,0 0,9 -7.8,4.5" class="bl" /><polygon points="0,0 7.8,-4.5 7.8,4.5 0,9" class="br" />
+              </g>
+            </g>
+          </g>
+          <template v-if="!still">
+            <circle v-for="sp in scene.sparks" :key="'sp' + sp.k" :cx="sp.x" :cy="sp.y" r="1.6" class="smap-spark" :style="{ animationDelay: sp.delay + 's' }" />
+            <g :transform="'translate(' + (scene.git.top[0] - 40) + ',' + (scene.git.top[1] - 30) + ')'" class="smap-gears">
+              <circle r="7" class="smap-gear" /><circle r="2.2" class="smap-gear-hub" />
+              <g transform="translate(13,-6)"><circle r="4.6" class="smap-gear rev" /><circle r="1.5" class="smap-gear-hub" /></g>
+            </g>
+          </template>
+        </template>
         <text :x="scene.git.lbl[0]" :y="scene.git.lbl[1] + 26" class="smap-name" text-anchor="middle">GitHub</text>
-        <text :x="scene.git.lbl[0]" :y="scene.git.lbl[1] + 39" class="smap-sub" text-anchor="middle">{{ scene.shipping ? 'shipping code' : scene.building.length ? 'building…' : 'watching' }}</text>
+        <text :x="scene.git.lbl[0]" :y="scene.git.lbl[1] + 39" class="smap-sub" :class="{ 'smap-sub-git': scene.ciBusy }" text-anchor="middle">{{ scene.building.length ? 'building ' + scene.building.length + ' project' + (scene.building.length === 1 ? '' : 's') : scene.shipping ? 'shipping code' : 'watching' }}</text>
+        <text v-if="scene.building.length" :x="scene.git.lbl[0]" :y="scene.git.lbl[1] + 52" class="smap-sub" text-anchor="middle">{{ scene.building.slice(0, 2).map((b) => b.project).join(', ') + (scene.building.length > 2 ? ' +' + (scene.building.length - 2) : '') }}</text>
       </g>
 
       <!-- Cloudflare -->
@@ -266,7 +300,7 @@ export const ServerMap = {
       </g>
 
       <!-- servers, back to front -->
-      <g v-for="nd in scene.nodes" :key="nd.s.id" class="smap-srv" :class="['st-' + nd.state, nd.ci ? 'ci-' + nd.ci.phase : '']" tabindex="0" role="link" :aria-label="nd.s.name"
+      <g v-for="nd in scene.nodes" :key="nd.s.id" class="smap-srv" :class="['st-' + nd.state, nd.ci ? 'ci-' + nd.ci.phase : nd.coming ? 'ci-coming' : '']" tabindex="0" role="link" :aria-label="nd.s.name"
          @click="open(nd.s.id)" @keydown.enter="open(nd.s.id)">
         <title>{{ nd.s.name }}{{ nd.fake ? ' (pretend crash)' : '' }} — {{ nd.down ? 'down' : nd.state === 'busy' ? 'busy' : 'up' }}{{ nd.down ? '' : ', CPU ' + nd.cpu + '%' }}{{ nd.ms != null ? ', ' + nd.ms + ' ms' : '' }}</title>
         <polygon :points="nd.base.top" class="smap-base-top" /><polygon :points="nd.base.front" class="smap-base-f" /><polygon :points="nd.base.side" class="smap-base-s" />
@@ -306,7 +340,7 @@ export const ServerMap = {
           </template>
         </template>
         <text :x="nd.label.x" :y="nd.label.y" class="smap-name" text-anchor="middle">{{ short(nd.s.name) }}</text>
-        <text v-if="nd.ci && !nd.down" :x="nd.label.x" :y="nd.label.y + 13" class="smap-sub smap-sub-git" text-anchor="middle">{{ nd.ci.phase === 'deploy' ? '⬇ getting new code' : '⏳ code waits' }}</text>
+        <text v-if="(nd.ci || nd.coming) && !nd.down" :x="nd.label.x" :y="nd.label.y + 13" class="smap-sub smap-sub-git" :class="{ dim: nd.coming }" text-anchor="middle">{{ nd.coming ? '⚙ code is coming' : nd.ci.phase === 'deploy' ? '⬇ getting new code' : '⏳ code waits' }}</text>
         <text v-else :x="nd.label.x" :y="nd.label.y + 13" class="smap-sub" text-anchor="middle">{{ nd.down ? (nd.fake ? 'pretend crash' : 'down') : 'CPU ' + nd.cpu + '%' + (nd.ms != null ? ' · ' + nd.ms + ' ms' : '') }}</text>
       </g>
     </svg>

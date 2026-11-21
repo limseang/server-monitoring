@@ -185,6 +185,7 @@ export const route = reactive({ name: 'overview', params: {}, path: '/' });
 const ROUTES = [
   [/^\/$/, 'overview'],
   [/^\/projects\/(\d+)$/, 'project', ['id']],
+  [/^\/projects\/(\d+)\/([a-z]+)$/, 'project', ['id', 'tab']], // a tab of the project, e.g. #/projects/3/cicd
   [/^\/servers$/, 'servers'],
   [/^\/servers\/(\d+)$/, 'server', ['id']],
   [/^\/jobs$/, 'jobs'],
@@ -200,7 +201,7 @@ export function parseRoute() {
     const m = path.match(re);
     if (m) {
       const params = {};
-      keys.forEach((k, i) => (params[k] = Number(m[i + 1])));
+      keys.forEach((k, i) => (params[k] = /^\d+$/.test(m[i + 1]) ? Number(m[i + 1]) : m[i + 1]));
       Object.assign(route, { name, params, path });
       return;
     }

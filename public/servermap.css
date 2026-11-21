@@ -338,3 +338,34 @@
 @media (prefers-reduced-motion: reduce) {
   .cip *, .cip, .badge-git, .smap-factory, .smap-factory-banner { animation: none !important; }
 }
+
+/* ---------- GitHub workshop: projects being built, not on a server yet ---------- */
+.smap-git.build { opacity: 1; filter: drop-shadow(0 0 16px color-mix(in srgb, var(--sm-git) 70%, transparent)); }
+.smap-forge { fill: color-mix(in srgb, var(--sm-git) 30%, transparent); stroke: var(--sm-git); stroke-width: 1; stroke-dasharray: 3 4; animation: smap-forge 1.2s ease-in-out infinite, smap-march 1.4s linear infinite; }
+.smap-block { opacity: 0; animation: smap-drop 2.7s cubic-bezier(.5, 0, .5, 1.4) infinite; }
+.smap-block polygon { stroke: #f3eeff; stroke-width: 0.8; }
+.smap-block .bt { fill: color-mix(in srgb, var(--sm-git) 80%, #fff); }
+.smap-block .bl { fill: var(--sm-git); }
+.smap-block .br { fill: color-mix(in srgb, var(--sm-git) 60%, #000); }
+.smap-stack { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--sm-git) 80%, transparent)); }
+.smap-spark { fill: #fff6c2; opacity: 0; animation: smap-spark 1.5s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+.smap-glink.gl-coming { stroke: color-mix(in srgb, var(--sm-git) 45%, var(--sm-link)); stroke-dasharray: 3 7; animation: smap-march 0.9s linear infinite; opacity: 0.85; }
+.smap-srv.ci-coming .smap-body polygon { stroke: color-mix(in srgb, var(--sm-git) 45%, var(--sm-line)); }
+.smap-srv.ci-coming .smap-led.led-1 { fill: var(--sm-git); }
+.smap-sub-git.dim { opacity: 0.75; font-weight: 400; }
+
+@keyframes smap-drop {
+  0% { opacity: 0; transform: translateY(-34px); }
+  14% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(0) scale(0.9); }
+}
+@keyframes smap-forge { 50% { fill: color-mix(in srgb, var(--sm-git) 10%, transparent); } }
+@keyframes smap-spark {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.4); }
+  10% { opacity: 1; transform: scale(1.4); }
+  100% { opacity: 0; transform: translate(6px, -16px) scale(0.3); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .smap-block { opacity: 1; }
+}
