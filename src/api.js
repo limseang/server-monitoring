@@ -29,6 +29,8 @@ import { sendNotification, telegramChats } from './notify.js';
 import { refreshDnsState, dnsTargetProblem, setRecord } from './ops/dns.js';
 import { sslStatus, sslProblems, applySsl, SSL_MODES } from './ops/cfssl.js';
 import { certHostnames } from './ops/origincert.js';
+import { scanProject, setupOptions, sslHosts, ACME_CAS } from './ops/serverssl.js';
+import { checkOwnCert } from './ops/sslconf.js';
 import { countTables, backupAbsPath } from './ops/database.js';
 import { ensureLocal, backupAvailable, removeBackupFiles } from './ops/backupstore.js';
 import { s3Config, testS3 } from './s3.js';
@@ -1549,6 +1551,34 @@ api.post('/projects/:id/ssl/origin-cert', (req, res) => {
   const strict = bool(req.body?.strict);
   const job = enqueue({ type: 'origin-cert', title: `Cloudflare Origin Certificate (${p.name})${strict ? ' + Full (strict)' : ''}`, projectId: p.id, params: { strict }, user: who(req) });
   audit(req, 'warn', `${p.name}: Cloudflare Origin Certificate for all servers started${strict ? ', then SSL → Full (strict)' : ''}`, { projectId: p.id, jobId: job.id });
+  res.json({ job });
+});
+
+/** What SSL each server of the project has: nginx sites for its hosts, certificate files, issuer, expiry. Admin only. */
+api.get('/projects/:id/ssl/scan', async (req, res) => {
+  const p = mustProject(req.params.id);
+  const deps = deploymentsOf(p.id);
+  res.json({ hosts: sslHosts(p), cert_hostnames: certHostnames(p), cloudflare: !!parseJSON(p.dns_records, []).length && !!getSetting('cf_token'), cas: ACME_CAS, servers: await scanProject(p, deps, getServer) });
+});
+
+/** Set up SSL on some/all servers of the project: Cloudflare Origin, own certificate, or acme (job). Admin only. */
+api.post('/projects/:id/ssl/setup', (req, res) => {
+  const p = mustProject(req.params.id);
+  const all = deploymentsOf(p.id);
+  if (!all.length) throw bad('Add a server to this project first');
+  const ids = (Array.isArray(req.body?.deployments) ? req.body.deployments : []).map(Number).filter((id) => all.some((d) => d.id === id));
+  if (Array.isArray(req.body?.deployments) && !ids.length) throw bad('Pick at least one server');
+  let params;
+  try {
+    params = setupOptions(req.body, p, checkOwnCert);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  params.deployments = ids;
+  const names = (ids.length ? all.filter((d) => ids.includes(d.id)) : all).map((d) => d.server_name).join(', ');
+  const label = params.method === 'cloudflare' ? 'Cloudflare Origin Certificate' : params.method === 'own' ? 'own certificate' : `${ACME_CAS[params.ca]} (${params.challenge === 'dns' ? 'DNS' : 'http'} check)`;
+  const job = enqueue({ type: 'ssl-setup', title: `SSL: ${label} on ${names} (${p.name})${params.strict ? ' + Full (strict)' : ''}`, projectId: p.id, params, user: who(req) });
+  audit(req, 'warn', `${p.name}: SSL set up with ${label} on ${names}${params.strict ? ', then SSL → Full (strict)' : ''}`, { projectId: p.id, jobId: job.id });
   res.json({ job });
 });
 

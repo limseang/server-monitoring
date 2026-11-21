@@ -3,7 +3,7 @@ import { get, insert, run, tx, update, now } from '../db.js';
 import { bus } from '../bus.js';
 import { alert, logEvent } from '../events.js';
 import { defineJob } from '../jobs.js';
-import { getProject, getServer, getDeployment, deploymentsOf } from '../models.js';
+import { getProject, getServer, getDeployment, deploymentsOf, parseJSON } from '../models.js';
 import { probe } from '../health.js';
 import { fmtBytes, sleep } from '../util.js';
 import { connectTo, runRemote, dockerExec, dockerBin, shellScript, shq, asRoot, GIT_NO_WAIT, GIT_TRUST, gitTrack, gitCheckoutCommit, gitHint } from './remote.js';
@@ -23,6 +23,7 @@ import { runOsUpgrade } from './osupgrade.js';
 import { closeForSwitch, openForSwitch, dbAccessOn } from './dbaccess.js';
 import { installOriginCert, certHostnames } from './origincert.js';
 import { sslStatus, sslProblems, applySsl } from './cfssl.js';
+import { setupServer, takeSecret, ACME_CAS } from './serverssl.js';
 import { requireTools } from './tools.js';
 
 function mustProject(id) {
@@ -745,6 +746,48 @@ defineJob('origin-cert', async (ctx, params) => {
     } else {
       const out = await applySsl(project, { mode: 'strict', alwaysHttps: true });
       for (const z of out) {
+        const zn = st.zones.find((x) => x.zone_id === z.zone_id)?.zone_name || z.zone_id;
+        ctx.log(`Cloudflare SSL of ${zn}: ${z.before} → strict, Always Use HTTPS on`);
+        logEvent('info', `${project.name}: Cloudflare SSL of ${zn}: ${z.before} → strict, Always Use HTTPS on`, { projectId: project.id, jobId: ctx.id, user: ctx.user });
+      }
+    }
+  }
+  if (failed.length) throw new Error(`Not installed on ${failed.length} server${failed.length === 1 ? '' : 's'}: ${failed.join('; ')}`);
+});
+
+/* --------------------------------------------------------------------------- SSL set up (scan + install) */
+const SSL_METHOD = { cloudflare: 'Cloudflare Origin Certificate', own: 'your own certificate', acme: 'acme' };
+defineJob('ssl-setup', async (ctx, params) => {
+  const project = mustProject(ctx.job.project_id);
+  const deps = deploymentsOf(project.id).filter((d) => !params.deployments?.length || params.deployments.includes(d.id));
+  if (!deps.length) throw new Error('No server picked');
+  const opts = { method: params.method, ca: params.ca, email: params.email, challenge: params.challenge };
+  if (params.own_ref) opts.own = takeSecret(params.own_ref);
+  if (params.token_ref) opts.token = takeSecret(params.token_ref);
+  if ((params.own_ref && !opts.own) || (params.token_ref && !opts.token)) throw new Error('Switchboard restarted before this ran — the certificate/token was only kept in memory. Start it again.');
+  const what = params.method === 'acme' ? `${ACME_CAS[params.ca] || params.ca} certificate` : SSL_METHOD[params.method];
+  if (params.method === 'acme' && params.challenge === 'dns') ctx.log(`DNS check: the Cloudflare token is saved in /root/.acme.sh on each server so the certificate can renew itself${params.own_token ? '' : ' (this is Switchboard\'s own token — use a token with only "Zone · DNS · Edit" if you prefer)'}`);
+  const done = [];
+  const failed = [];
+  for (const d of deps) {
+    ctx.step(`SSL on ${d.server_name}: ${what}`);
+    try {
+      const r = await setupServer(ctx, project, getServer(d.server_id), opts);
+      done.push({ name: d.server_name, ...r });
+    } catch (e) {
+      if (ctx.signal?.aborted) throw e;
+      ctx.warn(`${d.server_name}: ${e.message}`);
+      failed.push(`${d.server_name}: ${e.message}`);
+    }
+  }
+  if (done.length) logEvent(failed.length ? 'warn' : 'success', `${project.name}: ${what} installed on ${done.map((x) => `${x.name}${x.where === 'files' ? ' (files only — no nginx site found)' : ''}`).join(', ')}`, { projectId: project.id, jobId: ctx.id, user: ctx.user });
+  if (params.strict && !failed.length && parseJSON(project.dns_records, []).length) {
+    ctx.step('Switch Cloudflare SSL to "Full (strict)"');
+    const st = await sslStatus(project);
+    const problems = sslProblems(st, 'strict');
+    if (problems.length) ctx.warn(`SSL mode NOT changed — strict would break: ${problems.join('; ')}`);
+    else {
+      for (const z of await applySsl(project, { mode: 'strict', alwaysHttps: true })) {
         const zn = st.zones.find((x) => x.zone_id === z.zone_id)?.zone_name || z.zone_id;
         ctx.log(`Cloudflare SSL of ${zn}: ${z.before} → strict, Always Use HTTPS on`);
         logEvent('info', `${project.name}: Cloudflare SSL of ${zn}: ${z.before} → strict, Always Use HTTPS on`, { projectId: project.id, jobId: ctx.id, user: ctx.user });

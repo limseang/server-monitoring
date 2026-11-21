@@ -1,5 +1,5 @@
 import { ref, reactive, computed, onMounted } from '/vendor/vue.js';
-import { http, toast, confirmBox, store, isPrivateIp, runJob } from './lib.js';
+import { http, toast, confirmBox, store, isPrivateIp } from './lib.js';
 
 const MODES = [
   ['off', 'Off'],
@@ -141,20 +141,6 @@ export const DnsManage = {
         busy.ssl = false;
       }
     }
-    const certForm = reactive({ strict: true });
-    async function originCert() {
-      const servers = (p.deployments || []).map((d) => d.server_name).join(', ');
-      const ok = await confirmBox({
-        title: 'Install a Cloudflare Origin Certificate?',
-        message:
-          `Each server (${servers}) makes a new private key, Cloudflare signs a certificate for ${(ssl.value?.cert_hostnames || []).join(', ')} (valid 15 years), and it is installed on Switchboard's web proxy for this project.\n\n` +
-          'On a server where your own nginx/Docker serves the site, the files are only saved in /etc/ssl/cloudflare/ — the job log shows the two lines to add to your nginx config.' +
-          (certForm.strict ? '\n\nAfterwards SSL is switched to "Full (strict)" — only if every proxied hostname of the zone passes the check.' : '') +
-          '\n\nYour Cloudflare token needs "Zone · SSL and Certificates · Edit".',
-        confirmText: 'Install certificate',
-      });
-      if (ok) runJob(http.post(`/projects/${p.id}/ssl/origin-cert`, { strict: certForm.strict }));
-    }
     const zonesLabel = computed(() => (ssl.value?.zones || []).map((z) => z.zone_name).join(', '));
     const otherHosts = computed(() => (ssl.value?.zones || []).reduce((n, z) => n + z.other_hosts, 0));
 
@@ -165,7 +151,7 @@ export const DnsManage = {
       }
     });
     return { p, state, rows, loading, busy, edit, deps, privateOk, isPrivateIp, refresh, depFor, startEdit, cancel, wantedIp, applyIp, toggleProxy, ipOf,
-      ssl, sslLoading, sslForm, problems, loadSsl, applySsl, certForm, originCert, MODES, MODE_HINT, zonesLabel, otherHosts };
+      ssl, sslLoading, sslForm, problems, loadSsl, applySsl, MODES, MODE_HINT, zonesLabel, otherHosts };
   },
   template: `
   <div class="stack" style="gap:14px">
@@ -225,13 +211,7 @@ export const DnsManage = {
         <button class="btn btn-sm btn-danger" @click="applySsl(true)" :disabled="busy.ssl">Change anyway</button></div>
       <div class="row gap-8"><button class="btn btn-primary btn-sm" @click="applySsl(false)" :disabled="busy.ssl || !ssl"><span v-if="busy.ssl" class="spinner"></span>Apply SSL setting</button></div>
 
-      <div class="card card-body stack" style="gap:8px;margin-top:4px" v-if="ssl">
-        <b class="small">Cloudflare Origin Certificate <span class="muted">· for Full (strict)</span></b>
-        <div class="hint">A free certificate from Cloudflare (valid 15 years) for each server of this project, so Cloudflare can check it really talks to your server. Browsers still see Cloudflare's own certificate. Covers <code v-for="(h, i) in ssl.cert_hostnames" :key="h">{{ h }}{{ i < ssl.cert_hostnames.length - 1 ? ' ' : '' }}</code>.</div>
-        <label class="check"><input type="checkbox" v-model="certForm.strict"><span class="check-text"><b>Then switch SSL to Full (strict)</b><span class="hint">Only if every proxied hostname of the zone passes the check — otherwise it stays as it is.</span></span></label>
-        <div class="row gap-8"><button class="btn btn-sm" @click="originCert" :disabled="!p.deployments || !p.deployments.length">Install Origin Certificate on {{ (p.deployments || []).length }} server{{ (p.deployments || []).length === 1 ? '' : 's' }}</button>
-          <span class="muted small">Then press "Check servers" to see the result.</span></div>
-      </div>
+      <div class="hint" v-if="ssl">Certificates on the servers (Cloudflare Origin, your own, or Let's Encrypt) are set up in the <b>SSL certificates on the servers</b> card below.</div>
     </div>
   </div>`,
 };

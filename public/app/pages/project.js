@@ -5,6 +5,7 @@ import { TrafficTab } from './traffic.js';
 import { CicdTab } from '../cicd.js';
 import { DbAccessTab } from '../dbaccess.js';
 import { DnsManage } from '../dnsmanage.js';
+import { SslSetup } from '../sslsetup.js';
 import { StatusHero } from '../statushero.js';
 import { ProxyTab } from '../proxy.js';
 import { GitLinkBanner, ReadyBanner } from '../gitlink.js';
@@ -37,7 +38,7 @@ docker compose exec -T app php artisan optimize`;
 const ProjectSettings = {
   props: { project: Object },
   emits: ['saved'],
-  components: { RecordsPicker, CronField, DnsManage },
+  components: { RecordsPicker, CronField, DnsManage, SslSetup },
   setup(props, { emit }) {
     const p = props.project;
     const f = reactive({
@@ -105,6 +106,8 @@ const ProjectSettings = {
       <dns-manage v-if="!editDns && project.dns_records.length" :project="project" :key="'dm' + project.dns_records.map(r => r.id).join()" />
       <div v-else-if="editDns && f.dns_records.length" class="hint">Save settings to point these records at a server, turn the proxy on/off, or set up SSL.</div>
     </div>
+
+    <ssl-setup :project="project" :key="'ssl' + (project.deployments || []).map(d => d.id).join()" />
 
     <div class="card card-body form">
       <h3>Health check</h3>
