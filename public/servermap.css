@@ -52,7 +52,7 @@
     radial-gradient(ellipse at 50% 40%, #ffffff, var(--sm-stage));
 }
 
-.smap-stats { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid color-mix(in srgb, var(--sm-line) 16%, transparent); }
+.smap-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); border-bottom: 1px solid color-mix(in srgb, var(--sm-line) 16%, transparent); }
 .smap-stat { padding: 10px 16px; border-right: 1px solid color-mix(in srgb, var(--sm-line) 16%, transparent); }
 .smap-stat:last-child { border-right: 0; }
 .smap-k { font: 700 10px/1.4 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.7; }
@@ -232,3 +232,109 @@
 @keyframes smap-bob { 50% { transform: translateY(-3px); } }
 @keyframes smap-pop { from { transform: scale(0); } }
 @keyframes smap-burst { from { transform: scale(1); opacity: 0.9; } to { transform: scale(2.6); opacity: 0; } }
+
+/* ---------- CI/CD on the home map: Git box, code packets, servers at work ---------- */
+.smap { --sm-git: #a78bfa; --sm-git-top: #4c3a86; --sm-git-front: #3a2c6a; --sm-git-side: #2b2050; }
+:root[data-theme='light'] .smap { --sm-git: #7c3aed; --sm-git-top: #c4b5fd; --sm-git-front: #a78bfa; --sm-git-side: #8b5cf6; }
+.smap-git polygon.t { fill: var(--sm-git-top); stroke: var(--sm-git); }
+.smap-git polygon.f { fill: var(--sm-git-front); stroke: var(--sm-git); }
+.smap-git polygon.s { fill: var(--sm-git-side); stroke: var(--sm-git); }
+.smap-git { opacity: 0.7; transition: opacity 0.4s; }
+.smap-git.on { opacity: 1; filter: drop-shadow(0 0 12px color-mix(in srgb, var(--sm-git) 60%, transparent)); animation: smap-breathe 1.4s ease-in-out infinite; }
+.smap-git .smap-cf-icon path { stroke: #f3eeff; }
+.smap-git .smap-cf-icon circle { fill: #f3eeff; }
+.smap-git .smap-bays rect { stroke: #f3eeff; }
+.smap-git.on .smap-gbay { fill: #f3eeff; animation: smap-blink 0.5s steps(2, jump-none) infinite; }
+.lg-git { background: var(--sm-git); box-shadow: 0 0 6px var(--sm-git); }
+.smap-v.git { color: var(--sm-git); }
+
+.smap-glink { stroke: color-mix(in srgb, var(--sm-git) 40%, var(--sm-link)); }
+.smap-glink.gl-deploy { stroke: color-mix(in srgb, var(--sm-git) 70%, var(--sm-link)); stroke-dasharray: none; stroke-width: 2.6; }
+.smap-glink.gl-wait { animation: smap-march 1s linear infinite; }
+.smap-gpacket { fill: var(--sm-git); }
+
+/* a server that gets new code: purple glow, works (bobs), scan line, gears + code flying up */
+.smap-srv.ci-deploy .smap-body polygon { stroke: var(--sm-git); }
+.smap-srv.ci-deploy .smap-body { filter: drop-shadow(0 0 12px color-mix(in srgb, var(--sm-git) 65%, transparent)); animation: smap-work 0.45s ease-in-out infinite alternate; }
+.smap-srv.ci-deploy .smap-led { fill: var(--sm-git); animation-duration: 0.18s; }
+.smap-srv.ci-wait .smap-body polygon { stroke: color-mix(in srgb, var(--sm-git) 60%, var(--sm-line)); }
+.smap-srv.ci-wait .smap-body { animation: smap-gitpulse 1.8s ease-in-out infinite; }
+.smap-scan { fill: var(--sm-git); opacity: 0.85; filter: drop-shadow(0 0 3px var(--sm-git)); animation: smap-scan 1.3s ease-in-out infinite; }
+.smap-gear { fill: none; stroke: var(--sm-git); stroke-width: 3.6; stroke-dasharray: 2.6 2.2; transform-box: fill-box; transform-origin: center; animation: smap-spin 1.6s linear infinite; }
+.smap-gear.rev { stroke-width: 2.8; stroke-dasharray: 2 1.8; animation-direction: reverse; animation-duration: 1.1s; }
+.smap-gear-hub { fill: var(--sm-git); }
+.smap-gears.waiting .smap-gear { animation-duration: 5s; opacity: 0.6; }
+.smap-gears { animation: smap-pop 0.4s cubic-bezier(.3, 1.6, .5, 1); transform-box: fill-box; transform-origin: center; }
+.smap-glyph { font: 700 8px var(--mono); fill: var(--sm-git); opacity: 0; transform-box: fill-box; transform-origin: center; animation: smap-glyph 1.8s ease-out infinite; }
+.smap-sub-git { fill: var(--sm-git); opacity: 1; font-weight: 700; }
+
+/* factory mode: 2+ servers at once — the whole floor runs */
+.smap-factory { box-shadow: 0 0 0 1px color-mix(in srgb, var(--sm-git) 45%, transparent), 0 0 30px color-mix(in srgb, var(--sm-git) 18%, transparent); }
+.smap-factory .smap-svg { animation: smap-in 0.6s ease-out; }
+.smap-factory { animation: smap-floor 2.2s linear infinite; }
+.smap-factory-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 16px; font: 12px var(--mono); color: #fff;
+  background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--sm-git) 85%, #000) 0 14px, color-mix(in srgb, var(--sm-git) 65%, #000) 14px 28px);
+  background-size: 40px 40px; animation: smap-belt 0.9s linear infinite;
+}
+.smap-factory-banner b { letter-spacing: 0.08em; text-transform: uppercase; }
+.smap-fb-icon { display: inline-block; font-size: 16px; animation: smap-spin 1.4s linear infinite; }
+
+@keyframes smap-work { to { transform: translateY(-2.5px); } }
+@keyframes smap-gitpulse { 50% { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--sm-git) 50%, transparent)); } }
+@keyframes smap-scan { 0% { transform: translateY(1px); } 50% { transform: translateY(46px); } 100% { transform: translateY(1px); } }
+@keyframes smap-spin { to { transform: rotate(360deg); } }
+@keyframes smap-glyph { 0% { opacity: 0; transform: translateY(0) scale(0.7); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(-38px) scale(1.15); } }
+@keyframes smap-march { to { stroke-dashoffset: -18; } }
+@keyframes smap-belt { to { background-position: 40px 0; } }
+@keyframes smap-floor {
+  from { background-position: 0 0, 0 0, 0 0; }
+  to { background-position: 28px 28px, 28px 28px, 0 0; }
+}
+
+/* ---------- CI/CD pulse list (public/app/cipulse.js) ---------- */
+.cip { --cip-git: #8b5cf6; margin-bottom: 18px; padding: 0; overflow: hidden; }
+.cip-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; }
+.cip.busy .cip-head { border-bottom: 1px solid var(--border); }
+.cip.busy { border-color: color-mix(in srgb, var(--cip-git) 55%, var(--border)); }
+.cip.many { box-shadow: 0 0 0 1px color-mix(in srgb, var(--cip-git) 40%, transparent), 0 0 22px color-mix(in srgb, var(--cip-git) 16%, transparent); }
+.cip-radar { position: relative; width: 12px; height: 12px; border-radius: 50%; background: color-mix(in srgb, var(--cip-git) 35%, transparent); flex: none; }
+.cip-radar.on { background: var(--cip-git); }
+.cip-radar i { position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--cip-git); opacity: 0; animation: cip-ping 2.6s ease-out infinite; }
+.cip-radar.on i { animation-duration: 1s; }
+.cip-list { display: flex; flex-direction: column; }
+.cip-row {
+  position: relative; display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(0, 220px) 64px; align-items: center; gap: 10px;
+  padding: 9px 16px 12px; color: var(--text); text-decoration: none; border-top: 1px solid var(--border);
+}
+.cip-row:first-child { border-top: 0; }
+.cip-row:hover { background: color-mix(in srgb, var(--cip-git) 6%, transparent); }
+.cip-icon { font-size: 15px; text-align: center; color: var(--cip-git); }
+.ph-deploy .cip-icon { animation: cip-drop 0.9s ease-in-out infinite; }
+.ph-build .cip-icon { animation: smap-spin 1.6s linear infinite; display: inline-block; }
+.cip-main { display: flex; flex-direction: column; min-width: 0; }
+.cip-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cip-step { color: var(--cip-git); text-align: right; }
+.cip-time { text-align: right; opacity: 0.75; }
+.cip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: color-mix(in srgb, var(--cip-git) 12%, transparent); }
+.cip-bar i {
+  display: block; height: 100%; transition: width 0.6s;
+  background: repeating-linear-gradient(90deg, var(--cip-git) 0 10px, color-mix(in srgb, var(--cip-git) 55%, #fff) 10px 20px);
+  background-size: 40px 100%; animation: smap-belt 0.8s linear infinite;
+}
+.ph-wait .cip-bar i { animation: none; opacity: 0.5; }
+@keyframes cip-ping { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(2.6); opacity: 0; } }
+@keyframes cip-drop { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(2px); } }
+
+/* badges on the cards */
+.badge-git { background: color-mix(in srgb, #8b5cf6 18%, transparent); color: #8b5cf6; }
+.badge-git.git-deploy { background: #8b5cf6; color: #fff; animation: smap-breathe 1s ease-in-out infinite; }
+.server-card-git { border-color: color-mix(in srgb, #8b5cf6 60%, var(--border)); box-shadow: 0 0 0 1px color-mix(in srgb, #8b5cf6 35%, transparent); }
+
+@media (max-width: 700px) {
+  .cip-row { grid-template-columns: 22px minmax(0, 1fr) 56px; }
+  .cip-step { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cip *, .cip, .badge-git, .smap-factory, .smap-factory-banner { animation: none !important; }
+}

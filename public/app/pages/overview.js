@@ -2,6 +2,7 @@ import { computed } from '/vendor/vue.js';
 import { store, openDialog, bytes, uptimeStr, freshness, HEALTH, ago, tick } from '../lib.js';
 import { UptimeBar, MeterBar, JobsTable, HealthPill } from '../components.js';
 import { ServerMap } from '../servermap.js';
+import { CiPulse, ciByServer } from '../cipulse.js';
 import { DueBadge, money, dateText, totalsText, dueLabel, dueClass } from '../billing.js';
 
 export const ProjectCard = {
@@ -9,6 +10,7 @@ export const ProjectCard = {
   components: { UptimeBar, HealthPill },
   setup(props) {
     const p = computed(() => props.project);
+    const ci = computed(() => ciByServer(store.overview?.ci, p.value.parent_id || p.value.id));
     const label = (d) => {
       if (d.health === 'up' && d.health_detail?.ms != null) return `${d.health_detail.ms} ms`;
       return (HEALTH[d.health] || HEALTH.unknown).label;
@@ -16,6 +18,7 @@ export const ProjectCard = {
     const lastSwitch = computed(() => (tick.value, p.value.last_switch_at ? `Last switch ${ago(p.value.last_switch_at)}` : 'Never switched'));
     return {
       p,
+      ci,
       label,
       lastSwitch,
       freshness,
@@ -40,7 +43,7 @@ export const ProjectCard = {
       <div v-for="d in p.deployments" :key="d.id" class="proj-dep" :class="{ active: d.is_active }">
         <span class="dot" :class="'dot-' + (HEALTH[d.health] || HEALTH.unknown).cls" :title="(HEALTH[d.health] || HEALTH.unknown).label"></span>
         <div style="min-width:0">
-          <div class="proj-dep-name"><span class="ellipsis">{{ d.server_name }}</span><span v-if="d.is_active" class="badge badge-green">LIVE</span><span v-if="d.maintenance" class="badge badge-blue">MAINT</span></div>
+          <div class="proj-dep-name"><span class="ellipsis">{{ d.server_name }}</span><span v-if="d.is_active" class="badge badge-green">LIVE</span><span v-if="d.maintenance" class="badge badge-blue">MAINT</span><span v-if="ci.get(d.server_id)" class="badge badge-git" :class="'git-' + ci.get(d.server_id).phase" :title="ci.get(d.server_id).project + ': ' + ci.get(d.server_id).step">{{ ci.get(d.server_id).phase === 'deploy' ? 'NEW CODE' : 'CODE WAITS' }}</span></div>
           <div class="tiny muted mono">{{ d.server_ip }}</div>
         </div>
         <uptime-bar :bars="d.bars" />
@@ -70,12 +73,13 @@ export const ServerCard = {
     const m = computed(() => props.server.metrics);
     const running = computed(() => (m.value?.containers || []).filter((c) => c.state === 'running').length);
     const status = computed(() => ({ up: 'green', down: 'red' })[props.server.status] || 'gray');
-    return { m, running, status, bytes, uptimeStr };
+    const ci = computed(() => ciByServer(store.overview?.ci).get(props.server.id) || null);
+    return { m, running, status, ci, bytes, uptimeStr };
   },
   template: `
-  <a class="card server-card" :href="'#/servers/' + server.id">
+  <a class="card server-card" :class="{ 'server-card-git': ci && ci.phase === 'deploy' }" :href="'#/servers/' + server.id">
     <div class="row between gap-8">
-      <div class="row gap-8" style="min-width:0"><span class="dot" :class="'dot-' + status"></span><b class="ellipsis">{{ server.name }}</b><span v-if="m && m.busy" class="badge badge-red" title="CPU or memory has been high for a while">BUSY</span><due-badge v-if="server.billing && server.billing.days_left !== null && server.billing.days_left <= 7" :billing="server.billing" /></div>
+      <div class="row gap-8" style="min-width:0"><span class="dot" :class="'dot-' + status"></span><b class="ellipsis">{{ server.name }}</b><span v-if="m && m.busy" class="badge badge-red" title="CPU or memory has been high for a while">BUSY</span><span v-if="ci" class="badge badge-git" :class="'git-' + ci.phase" :title="ci.project + ': ' + ci.step">{{ ci.phase === 'deploy' ? 'DEPLOYING' : 'CODE WAITS' }}</span><due-badge v-if="server.billing && server.billing.days_left !== null && server.billing.days_left <= 7" :billing="server.billing" /></div>
       <span class="muted mono small">{{ server.ip }}</span>
     </div>
     <template v-if="m">
@@ -89,7 +93,7 @@ export const ServerCard = {
 };
 
 export default {
-  components: { ProjectCard, ServerCard, JobsTable, ServerMap },
+  components: { ProjectCard, ServerCard, JobsTable, ServerMap, CiPulse },
   setup() {
     const data = computed(() => store.overview);
     const errors = computed(() => (data.value?.alerts || []).filter((a) => a.level === 'error').length);
@@ -124,7 +128,8 @@ export default {
         <div class="tile"><div class="tile-label">Jobs running</div><div class="tile-value">{{ data.running }}</div></div>
       </div>
 
-      <server-map v-if="data.servers.length" :servers="data.servers" :projects="data.projects" />
+      <server-map v-if="data.servers.length" :servers="data.servers" :projects="data.projects" :ci="data.ci" />
+      <ci-pulse v-if="data.ci" :ci="data.ci" />
 
       <div v-if="data.alerts.length" class="alerts">
         <a v-for="(a, i) in data.alerts" :key="i" :href="a.link" class="alert" :class="'alert-' + a.level"><span class="alert-icon">{{ icon[a.level] }}</span><span>{{ a.message }}</span></a>

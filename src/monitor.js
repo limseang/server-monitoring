@@ -17,6 +17,7 @@ import { inRotation } from './lb/nginx.js';
 import { httpCheck } from './health.js';
 import { getServer } from './models.js';
 import { pollAllCi } from './ops/ci.js';
+import { startCiPulse, stopCiPulse } from './ops/cipulse.js';
 import { runDueHeld } from './ops/deployplan.js';
 import { collectAllTraffic, pruneTraffic } from './ops/traffic.js';
 import { recordUsage, pruneUsage } from './ops/usage.js';
@@ -533,11 +534,13 @@ export function startMonitor() {
   loop('traffic', () => 60, collectAllTraffic, 25000);
   loop('billing', () => 3600, () => checkBilling(), 50000); // server payment reminders (each sent once per due date)
   loop('backup-store', () => 600, () => cleanupLocal(), 45000); // S3: retry failed uploads, remove local copies that are in S3 // nginx access logs → Traffic tab + unusual-activity alerts
+  startCiPulse(8000); // which servers get code from Git right now (home screen animation)
   reloadSchedules();
   logEvent('info', 'Switchboard started');
 }
 
 export function stopMonitor() {
+  stopCiPulse();
   for (const t of Object.values(timers)) clearTimeout(t);
   for (const set of crons.values()) Object.values(set).forEach((c) => c.stop());
   for (const c of cleanupCrons.values()) c.stop();

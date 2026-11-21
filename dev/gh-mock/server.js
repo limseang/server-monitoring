@@ -220,6 +220,12 @@ http
         const jobs = (r.jobs || []).map((j, i) => ({ id: r.id * 100 + i, run_id: r.id, html_url: `${r.html_url}/job/${i}`, steps: [], labels: ['ubuntu-latest'], ...j }));
         return send(res, 200, { total_count: jobs.length, jobs });
       }
+      if (rest === '/actions/runs') {
+        const st = url.searchParams.get('status');
+        const n = Number(url.searchParams.get('per_page')) || 30;
+        const runs = (S.runs[repo] || []).filter((r) => !st || r.status === st).slice(0, n);
+        return send(res, 200, { total_count: runs.length, workflow_runs: runs });
+      }
       // Runs are kept per repo; a run made with "workflow" belongs to that file (default switchboard.yml).
       if ((m = rest.match(/^\/actions\/workflows\/([^/]+)\/runs$/))) {
         const runs = (S.runs[repo] || []).filter((r) => (r.workflow || 'switchboard.yml') === decodeURIComponent(m[1]));
