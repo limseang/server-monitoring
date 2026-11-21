@@ -291,7 +291,6 @@ if [ "$U" = ${RUNNER_USER} ]; then
   command -v sudo >/dev/null 2>&1 || { echo '>>> Installing sudo'; DEBIAN_FRONTEND=noninteractive apt-get install -y -q sudo >/dev/null 2>&1 || dnf install -y -q sudo; }
   cat > /etc/sudoers.d/switchboard-runner.tmp <<'EOF'
 # Written by Switchboard: the GitHub runner may only run these helper commands as root.
-Defaults:${RUNNER_USER} !requiretty
 ${RUNNER_USER} ALL=(root) NOPASSWD: /usr/local/bin/switchboard-helper deploy *, /usr/local/bin/switchboard-helper preview-up *, /usr/local/bin/switchboard-helper preview-down *
 EOF
   chmod 440 /etc/sudoers.d/switchboard-runner.tmp
