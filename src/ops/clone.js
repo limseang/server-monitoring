@@ -958,8 +958,14 @@ export async function startStack(ctx, conn, server, st) {
   try {
     await runRemote(ctx, conn, asRoot(server, `${base} ${mode} --no-build --pull never`), { timeout: 15 * 60000 });
   } catch (e) {
-    if (!/unknown flag|pull/i.test(e.message)) throw e;
-    await runRemote(ctx, conn, asRoot(server, `${base} ${mode} --no-build`), { timeout: 15 * 60000 });
+    if (/no such image|pull access denied|image .* not found/i.test(e.message)) {
+      // The copied image is not there (e.g. it was rebuilt or removed on the source after the scan, or the
+      // load failed quietly). The project folder was copied, so build what has a "build:" and pull the rest.
+      ctx.warn(`An image of "${st.project}" is missing on ${server.name} — building it from ${st.dir} (and pulling images from registries)`);
+      await runRemote(ctx, conn, asRoot(server, `${base} ${mode} --build`), { timeout: 30 * 60000 });
+    } else if (/unknown flag|pull/i.test(e.message)) {
+      await runRemote(ctx, conn, asRoot(server, `${base} ${mode} --no-build`), { timeout: 15 * 60000 });
+    } else throw e;
   }
   const stopped = [...new Set(st.containers.filter((c) => !c.running).map((c) => c.service))];
   if (st.running && stopped.length) {

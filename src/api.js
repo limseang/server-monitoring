@@ -1314,8 +1314,27 @@ api.get('/projects/:id', (req, res) => {
     traffic: trafficNow(data.deployments.map((d) => d.server_id)),
     tool_check: { needs: projectNeeds(p), servers: missingFor(p) },
     available_servers: all('SELECT id, name, ip FROM servers ORDER BY name').filter((s) => !used.has(s.id)),
+    code: codeVersions(p, data.deployments),
   });
 });
+
+/**
+ * Which branch and commit each server runs (as last seen by a deploy or Git check), and the newest
+ * commit of the project's branch on GitHub — so the server card can say "newest" or "N behind".
+ */
+function codeVersions(p, deps) {
+  const root = rootOf(p);
+  if (!root.git_repo) return null;
+  const branch = p.git_branch || root.git_branch || 'main';
+  const git = gitStates(root);
+  const run = get('SELECT sha, title, created_at FROM ci_runs WHERE project_id = ? AND branch = ? AND event != ? ORDER BY run_id DESC LIMIT 1', root.id, branch, 'pull_request');
+  const servers = {};
+  for (const d of deps) {
+    const g = git[d.id];
+    if (g) servers[d.id] = { branch: g.branch || null, commit: g.commit || null, remote_commit: g.remote_commit || null, behind: Number.isFinite(g.behind) ? g.behind : null, changed: g.changed || 0, state: g.state || null, at: g.at || null };
+  }
+  return { branch, newest: run?.sha ? run : null, servers };
+}
 
 api.put('/projects/:id', (req, res) => {
   const p = mustProject(req.params.id);
