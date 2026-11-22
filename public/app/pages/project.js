@@ -324,12 +324,25 @@ export default {
     const kindBadge = { manual: 'badge-accent', scheduled: 'badge-blue', sync: 'badge-gray', 'pre-sync': 'badge-amber', 'pre-restore': 'badge-amber' };
     const kindLabel = { manual: 'manual', scheduled: 'scheduled', sync: 'copy source', 'pre-sync': 'before copy', 'pre-restore': 'before restore' };
     const sslFor = (d) => ssl.value?.origins?.[d.id];
+    // Branch @ commit this server runs, and whether it is the newest commit of the project's branch.
+    function codeOf(d) {
+      const c = p.value.code;
+      const g = c?.servers?.[d.id];
+      if (!g || !g.commit) return { text: g?.state && g.state !== 'ok' ? `not a Git checkout (${g.state.replace(/_/g, ' ')})` : 'not checked yet — CI/CD tab → Check servers', title: '' };
+      const newest = c.newest?.sha || g.remote_commit;
+      const title = `${g.commit}${g.at ? ` · seen ${fmtDate(g.at)}` : ''}${c.newest?.sha ? `\nNewest on ${c.branch}: ${c.newest.sha.slice(0, 7)} ${c.newest.title || ''}` : ''}`;
+      const branch = g.branch && g.branch !== 'detached' ? g.branch : c.branch;
+      const edits = g.changed ? ` · ${g.changed} file(s) edited on the server` : '';
+      if (newest && g.commit === newest) return { branch, commit: g.commit, text: `newest ✓${edits}`, cls: g.changed ? 'text-amber' : 'text-green', title };
+      if (newest) return { branch, commit: g.commit, text: `${g.behind > 0 && newest === g.remote_commit ? `${g.behind} commit(s) behind` : `not the newest (${newest.slice(0, 7)})`}${edits}`, cls: 'text-amber', title };
+      return { branch, commit: g.commit, text: `newest unknown${edits}`, cls: 'muted', title };
+    }
 
     return {
       openDialog,
       store, isPrivateIp, privateOk, p, notFound, tab, backups, jobs, events, busy, active, staleHours, dns, dnsRows, ssl, dbLabel, freshness, fmtDate, bytes, HEALTH,
       openTab, load, openSwitch, openSync, addDep, editDep, openCommand, checkNow, refreshDns, fixDns, adopt, toggleMaint, backup, backupLive,
-      deploy, deployAll, rollBack, removeDep, copyDep, restore, reprovision, delBackup, keepBackup, kindBadge, kindLabel, sslFor, lb, lbCount, LB_BADGE, scaleOut, moveHere, lbMember,
+      deploy, deployAll, rollBack, removeDep, copyDep, restore, reprovision, delBackup, keepBackup, kindBadge, kindLabel, sslFor, codeOf, lb, lbCount, LB_BADGE, scaleOut, moveHere, lbMember,
     };
   },
   template: `
@@ -421,6 +434,7 @@ export default {
           <div><span>Database <help-tip term="database" /></span><span class="small">{{ dbLabel(d) }}<span v-if="d.skip_backup && d.db_type !== 'none'" class="tiny muted"> · no backup before copy</span></span></div>
           <div><span>App <help-tip term="app" /></span><span class="mono small">{{ d.app_container || '—' }}</span></div>
           <div><span>Folder <help-tip term="folder" /></span><span class="mono small">{{ d.app_dir || '—' }}</span></div>
+          <div v-if="p.code"><span>Code <help-tip term="code" /></span><span class="small" :title="codeOf(d).title"><template v-if="codeOf(d).commit"><span class="mono">{{ codeOf(d).branch }} @ {{ codeOf(d).commit.slice(0, 7) }}</span> · <span :class="codeOf(d).cls">{{ codeOf(d).text }}</span></template><span v-else class="muted">{{ codeOf(d).text }}</span></span></div>
           <div v-if="sslFor(d) && sslFor(d).ok"><span>SSL</span><span class="small" :class="sslFor(d).days_left < 15 ? 'text-amber' : ''">{{ sslFor(d).days_left }} days left · {{ sslFor(d).issuer }}</span></div>
         </div>
         <div class="dep-actions">

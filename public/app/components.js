@@ -166,6 +166,7 @@ export const HELP = {
   database: ['Database', 'Where the app keeps its information (users, orders, posts…). Shown as type · database name @ the container it runs in.'],
   app: ['App container', 'The Docker container that runs your website code on this server.'],
   folder: ['Folder', 'Where your project files live on the server.'],
+  code: ['Code', 'The Git branch and commit this server runs, as seen at its last deploy or Git check. "newest" = the same commit as the newest one on the branch; otherwise press Deploy to update it.'],
   backup: ['Backup', 'Saves a copy of the database now, so you can go back to it later if something goes wrong.'],
   maintenance: ['Maintenance', 'Shows visitors a "back soon" page while you work on the site. Turn it off when you are done.'],
   deploy: ['Deploy', 'Puts your newest code on this server (runs the deploy script from Settings).'],
