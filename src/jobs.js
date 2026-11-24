@@ -1,6 +1,7 @@
 import { bus } from './bus.js';
 import { get, insert, run, now } from './db.js';
 import { localTime, stripAnsi } from './util.js';
+import { waitForApproval } from './approval.js';
 
 /**
  * Background job runner. Jobs of the same project run one at a time (in order),
@@ -153,12 +154,14 @@ async function execute(id) {
   let status = 'success';
   let error = null;
   try {
+    // "Ask me before every deploy": wait for Approve (Telegram or the dashboard) before building.
+    if (job.type === 'deploy') await waitForApproval(ctx, { title: job.title, user: job.user });
     await handlers.get(job.type)(ctx, JSON.parse(job.params || '{}'));
     ctx.flushOutput();
     ctx.log('✔ Finished successfully');
   } catch (e) {
     ctx.flushOutput();
-    status = controller.signal.aborted ? 'cancelled' : 'failed';
+    status = controller.signal.aborted || e?.notApproved ? 'cancelled' : 'failed';
     error = String(e?.message || e).slice(0, 2000);
     ctx.log(`✖ ${status === 'cancelled' ? 'Cancelled' : 'Failed'}: ${error}`);
     if (process.env.DEBUG) console.error(e);

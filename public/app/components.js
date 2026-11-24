@@ -307,7 +307,10 @@ export const JobLog = {
       // Live progress (e.g. a deploy: each server's phase) for the view above the log.
       es.addEventListener('progress', (e) => emit('progress', JSON.parse(e.data)));
       es.addEventListener('log', (e) => {
-        lines.value.push(JSON.parse(e.data).line);
+        const line = JSON.parse(e.data).line;
+        lines.value.push(line);
+        // "Ask me before every deploy": show or hide the Approve buttons.
+        if (/✋|Approved by/.test(line)) http.get(`/jobs/${props.jobId}`).then((j) => (job.value = j)).catch(() => {});
         if (lines.value.length > 10000) lines.value.splice(0, lines.value.length - 10000);
         if (status.value === 'queued') status.value = 'running';
         scroll();
@@ -326,6 +329,10 @@ export const JobLog = {
       if (!(await confirmBox({ title: 'Cancel this job?', message: 'Steps that already finished are not undone. A database copy that is interrupted is restored from its safety backup when possible.', confirmText: 'Cancel job', danger: true }))) return;
       await http.post(`/jobs/${props.jobId}/cancel`).catch((e) => toast(e.message, 'error'));
     }
+    async function approve(ok) {
+      if (!ok && !(await confirmBox({ title: 'Reject this deploy?', message: 'It does not run; the servers stay as they are.', confirmText: 'Reject', danger: true }))) return;
+      await http.post(`/jobs/${props.jobId}/approve`, { ok }).then(() => job.value && (job.value.waiting_approval = false)).catch((e) => toast(e.message, 'error'));
+    }
     function copy() {
       navigator.clipboard?.writeText(lines.value.join('\n')).then(() => toast('Log copied', 'success'));
     }
@@ -335,7 +342,7 @@ export const JobLog = {
       es?.close();
       es = null;
     });
-    return { lines, status, error, job, box, onScroll, cls, cancel, copy, conn, away, jump };
+    return { lines, status, error, job, box, onScroll, cls, cancel, copy, conn, away, jump, approve };
   },
   template: `
     <div class="stack" style="gap:10px">
@@ -351,6 +358,7 @@ export const JobLog = {
           <button v-if="status === 'running' || status === 'queued'" class="btn btn-sm btn-danger" @click="cancel">Cancel</button>
         </div>
       </div>
+      <div v-if="job?.waiting_approval && status === 'running'" class="alert alert-warn" style="align-items:center"><span class="alert-icon">✋</span><span class="grow"><b>This deploy waits for your OK.</b> Approve it here or with the button in Telegram.</span><span class="row gap-6 admin-only"><button class="btn btn-sm btn-primary" @click="approve(true)">Approve</button><button class="btn btn-sm" @click="approve(false)">Reject</button></span></div>
       <div v-if="status === 'failed' && error" class="alert alert-error"><span class="alert-icon">✖</span><span>{{ error }}</span></div>
       <div class="log-wrap"><div ref="box" class="log" :class="{ tall }" @scroll="onScroll">
         <div v-if="!lines.length" class="log-empty">{{ status === 'queued' ? 'Waiting for another job on this project to finish…' : 'Starting…' }}</div>

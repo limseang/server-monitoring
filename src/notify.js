@@ -47,7 +47,7 @@ export async function withRetry(fn, delays = []) {
 }
 
 /** Call the Telegram Bot API; errors come back in plain words with what to do. */
-async function telegramApi(token, method, body) {
+export async function telegramApi(token, method, body) {
   if (!/^\d+:[A-Za-z0-9_-]+$/.test(String(token || '').trim())) {
     throw new Error('The bot token looks wrong — it looks like 123456789:ABCdef… (copy it from @BotFather)');
   }
