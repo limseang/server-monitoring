@@ -318,6 +318,9 @@ export const SettingsPage = {
               <div class="row gap-8 wrap mt-8"><button v-for="c in tgChats.chats" :key="c.id" class="btn btn-sm" :class="f.telegram_chat_id === c.id ? 'btn-primary' : ''" @click="f.telegram_chat_id = c.id">{{ c.name }} <span class="muted mono">{{ c.id }}</span> <span class="muted">({{ c.type }})</span></button></div>
             </div>
           </div>
+          <div class="field"><label>Deploys</label>
+            <label class="check"><input type="checkbox" :checked="!!f.deploy_approval" @change="f.deploy_approval = $event.target.checked ? 1 : 0"><span class="check-text"><b>Ask me before every deploy</b><span class="hint">Every deploy Switchboard runs (your click, Pull &amp; rebuild, auto-deploy of a new commit, a held live server) waits until you press <b>Approve</b> — on the Telegram message or on the job's page. No answer within an hour: it does not run. Deploys done by your own GitHub workflow keep their own approval.</span></span></label>
+          </div>
           <div class="field"><label>Webhook URL <span class="muted">(Discord, Slack or any URL that accepts JSON)</span></label>
             <div class="row gap-8"><input v-model="f.webhook_url" type="password" autocomplete="off" class="code" :placeholder="s.has_webhook_url ? 'saved (' + s.webhook_url_hint + ')' : 'https://discord.com/api/webhooks/…'"><button v-if="s.has_webhook_url" class="btn btn-ghost" @click="clearSecret('webhook_url')">Remove</button></div></div>
           <div class="field"><label>Dashboard address <span class="muted">(optional, adds a link to alerts)</span></label><input v-model="f.dashboard_url" class="code" placeholder="https://ops.example.com"></div>

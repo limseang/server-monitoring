@@ -11,6 +11,7 @@ import * as auth from './auth.js';
 import { ROLES, ROLE_INFO, requireRole } from './roles.js';
 import { bus } from './bus.js';
 import { enqueue, getJob, cancelJob, summary, hasActiveJob } from './jobs.js';
+import { answer as answerApproval, isWaiting } from './approval.js';
 import { logEvent } from './events.js';
 import {
   getServer,
@@ -1877,7 +1878,16 @@ api.get('/jobs', (req, res) => {
 api.get('/jobs/:id', (req, res) => {
   const j = getJob(toId(req.params.id));
   if (!j) throw notFound('Job not found');
-  res.json({ ...summary(j), log: j.log, params: parseJSON(j.params, {}), progress: parseJSON(j.progress, null) });
+  res.json({ ...summary(j), log: j.log, params: parseJSON(j.params, {}), progress: parseJSON(j.progress, null), waiting_approval: isWaiting(j.id) });
+});
+
+/** A deploy that waits for your OK ("Ask me before every deploy"). Body: { ok: true | false }. */
+api.post('/jobs/:id/approve', (req, res) => {
+  const id = toId(req.params.id);
+  const ok = req.body?.ok !== false;
+  if (!answerApproval(id, ok, who(req))) throw bad('This job is not waiting for approval');
+  audit(req, ok ? 'info' : 'warn', `Job #${id} ${ok ? 'approved' : 'rejected'}`, { jobId: id });
+  res.json({ ok: true });
 });
 
 api.post('/jobs/:id/cancel', (req, res) => {
@@ -1917,6 +1927,7 @@ const NUMERIC = {
   traffic_enabled: [0, 1],
   notify_jobs_failed_only: [0, 1],
   billing_reminders: [0, 1],
+  deploy_approval: [0, 1],
   billing_overdue_daily: [0, 1],
   billing_remind_hour: [0, 23],
   traffic_spike_x: [2, 100],
